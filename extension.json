@@ -11,22 +11,22 @@
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "github",
-		"url": "https://github.com/WOLF4096"
+		"url": "https://github.com/WOLF4096/eext-gerber-import-tool"
 	},
-	"categories": ["PCB"],
+	"categories": ["PCB", "Other"],
 	"keywords": ["PCB", "Gerber", "PDF"],
 	"images": {
 		"logo": "./images/logo.png"
 	},
-	"homepage": "https://github.com/WOLF4096/easyeda_wolfblack_tool",
-	"bugs": "https://github.com/WOLF4096/easyeda_wolfblack_tool/issues",
+	"homepage": "https://github.com/WOLF4096",
+	"bugs": "https://github.com/WOLF4096/eext-gerber-import-tool/issues",
 	"activationEvents": {},
 	"entry": "./dist/index",
 	"dependentExtensions": {},
 	"headerMenus": {
 		"pcb": [
 			{
-				"id": "Gerber",
+				"id": "IGerber",
 				"title": "Gerber工具",
 				"menuItems": [
 					{
