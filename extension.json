@@ -1,7 +1,7 @@
 {
 	"name": "eext-gerber-import",
 	"uuid": "0000eext0gerber0import00wolf4096",
-	"displayName": "Gerber工具",
+	"displayName": "Gerber 转 PCB",
 	"description": "Gerber 查看 / 导入PCB画布 / 生成PCB文件 / 导出PDF文件",
 	"version": "3.3.0",
 	"publisher": "wolfblack",
