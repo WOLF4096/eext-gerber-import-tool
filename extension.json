@@ -1,0 +1,41 @@
+{
+	"name": "eext-gerber-import",
+	"uuid": "0000eext0gerber0import00wolf4096",
+	"displayName": "Gerber工具",
+	"description": "Gerber 查看 / 导入PCB画布 / 生成PCB文件 / 导出PDF文件",
+	"version": "3.3.0",
+	"publisher": "wolfblack",
+	"engines": {
+		"eda": "^2.2.45"
+	},
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "github",
+		"url": "https://github.com/WOLF4096"
+	},
+	"categories": ["PCB"],
+	"keywords": ["PCB", "Gerber", "PDF"],
+	"images": {
+		"logo": "./images/logo.png"
+	},
+	"homepage": "https://github.com/WOLF4096/easyeda_wolfblack_tool",
+	"bugs": "https://github.com/WOLF4096/easyeda_wolfblack_tool/issues",
+	"activationEvents": {},
+	"entry": "./dist/index",
+	"dependentExtensions": {},
+	"headerMenus": {
+		"pcb": [
+			{
+				"id": "Gerber",
+				"title": "Gerber工具",
+				"menuItems": [
+					{
+						"id": "ImportGerber",
+						"title": "导入Gerber",
+						"registerFn": "ImportGerber"
+					}
+				]
+			}
+		]
+	}
+}
