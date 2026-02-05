@@ -5,7 +5,7 @@
 
 ## 使用方法
 
-### [演示视频](https://pbt-pub.jlc.com/pbt/bbs/8707756117155397632-20260205_220643.mp4)
+### [演示视频](https://pbt-pub.jlc.com/pbt/bbs/8707762781426302976-20260205_220643.mp4)
 
 ![演示](images/Test.png)
 
