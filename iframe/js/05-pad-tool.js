@@ -202,6 +202,78 @@
                 return mergedPaths;
             };
 
+            // ---- 无段标记来源：过孔 / 焊盘 区分的预扫描 ----
+            // Gerber 不含网络信息，无法 100% 区分过孔与插件焊盘。这里用可验证的特征组合：
+            // 圆形光圈 + 同坐标存在钻孔 + 出现在 >=2 个铜层 → 过孔；其余一律焊盘。
+            // 矩形等非圆 Flash 永远不会被判成过孔（避免"矩形焊盘变成过孔"）。
+            // 注意：同一物理点在不同文件/图层间常有几微米浮点差（实测 0.004~0.014mm），
+            // 所以一律按 0.05mm 容差「就近归并」，绝不能用字符串精确相等。
+            const CLUSTER_TOL = 0.05;
+            const copperLayerIds = new Set();
+            const flashGroups = [];
+            const flashGrid = new Map();
+            const drillGroups = [];
+            const drillGrid = new Map();
+
+            // 在 0.05mm 栅格里就近查找分组，找不到就新建（顺带兼容边界跨格）
+            const _findOrPush = (groups, grid, x, y) => {
+                const cx = Math.floor(x / CLUSTER_TOL), cy = Math.floor(y / CLUSTER_TOL);
+                for (let gx = cx - 1; gx <= cx + 1; gx++) {
+                    for (let gy = cy - 1; gy <= cy + 1; gy++) {
+                        const idx = grid.get(gx + '_' + gy);
+                        if (idx === undefined) continue;
+                        const g = groups[idx];
+                        if (Math.abs(g.x - x) <= CLUSTER_TOL && Math.abs(g.y - y) <= CLUSTER_TOL) return idx;
+                    }
+                }
+                groups.push({ x: x, y: y, layers: new Set() });
+                const idx = groups.length - 1;
+                grid.set(cx + '_' + cy, idx);
+                return idx;
+            };
+            const _hasDrillNear = (x, y) => {
+                const cx = Math.floor(x / CLUSTER_TOL), cy = Math.floor(y / CLUSTER_TOL);
+                for (let gx = cx - 1; gx <= cx + 1; gx++) {
+                    for (let gy = cy - 1; gy <= cy + 1; gy++) {
+                        const idx = drillGrid.get(gx + '_' + gy);
+                        if (idx === undefined) continue;
+                        const g = drillGroups[idx];
+                        if (Math.abs(g.x - x) <= CLUSTER_TOL && Math.abs(g.y - y) <= CLUSTER_TOL) return true;
+                    }
+                }
+                return false;
+            };
+
+            files.forEach((_f) => {
+                const _lid = _f.layerId;
+                const _isCu = (_lid === 1 || _lid === 2 || (_lid >= 15 && _lid <= 46));
+                const _isDrill = (_lid === 47 || _lid === 500 || _lid === 501 || _lid === 502
+                    || /\.(drl|xln|nc|ncd)$/i.test(_f.name || ''));
+                if (!_isCu && !_isDrill) return;
+                const _cmds = (_f.data && _f.data.commands) ? _f.data.commands : [];
+                for (let _i = 0; _i < _cmds.length; _i++) {
+                    const _c = _cmds[_i];
+                    if (_c.type !== 3) continue;
+                    if (typeof _c.x !== 'number' || !isFinite(_c.x)) continue;
+                    if (typeof _c.y !== 'number' || !isFinite(_c.y)) continue;
+                    if (_isDrill) { _findOrPush(drillGroups, drillGrid, _c.x, _c.y); continue; }
+                    const _idx = _findOrPush(flashGroups, flashGrid, _c.x, _c.y);
+                    flashGroups[_idx].layers.add(_lid);
+                    copperLayerIds.add(_lid);
+                }
+            });
+            const copperLayerCount = copperLayerIds.size;
+            // 判定某个铜层 Flash 是否应作为「过孔」处理
+            const isViaFlash = (_lid, _cmd, _ap) => {
+                if (_lid >= 15 && _lid <= 46) return true;              // 内层不可能是普通焊盘
+                if (copperLayerCount < 2) return false;                 // 单面板无从判断
+                const _t = String((_ap && _ap.type) || 'C').toUpperCase();
+                if (!(_t === 'C' || _t === 'CIRCLE')) return false;     // 只有圆形才可能是过孔
+                const _idx = _findOrPush(flashGroups, flashGrid, _cmd.x, _cmd.y);
+                if (flashGroups[_idx].layers.size < 2) return false;    // 只出现在一个铜层 → 表贴焊盘
+                return _hasDrillNear(_cmd.x, _cmd.y);                   // 必须有对应钻孔
+            };
+
             files.forEach(file => {
                 const layerId = file.layerId;
                 const fileUnit = file.data.units; 
@@ -333,7 +405,10 @@
                     // 铜层 Drawing 是导线、其它层的 Drawing 是折线。不做这层推断，
                     // 焊盘与导线会被整体丢弃（用户看到的就是"只有钻孔导入成功"）。
                     const effMode = hasSectionMarkers ? mode
-                        : (cmd.type === 3) ? 'PAD'
+                        // 区域：铜层 → 覆铜（按需求用「折线闭合轮廓」承载）；其它层 → 填充
+                        : (cmd.type === 4) ? (isCopperLayer ? 'POUR' : 'FILL')
+                        // Flash：内层 / 圆形+有钻孔+跨层 → 过孔；其余 → 焊盘
+                        : (cmd.type === 3) ? (isViaFlash(layerId, cmd, file.data.apertures[cmd.ap]) ? 'VIA' : 'PAD')
                         : (cmd.type === 1 || cmd.type === 2) ? (isCopperLayer ? 'TRACK' : 'POLY')
                         : mode;
                     
@@ -397,8 +472,10 @@
 
                         if (effMode === "IMAGE" || effMode === "TEXT") {
                             rawImages.push({ layerId, path: pathData, isRegion: true });
-                        } else if (effMode === "COPPER") {
-                            rawFills.push({ layerId, path: pathData });
+                        } else if (effMode === "POUR" || effMode === "COPPER") {
+                            // 覆铜：按需求用「折线闭合轮廓」承载。
+                            // createPolygon 会把首尾不重合的路径自动闭合成区域轮廓。
+                            rawPolys.push({ layerId, width: currentWidth, path: pathData, isPour: true });
                         } else {
                             let targetLayer = layerId;
                             if (targetLayer === 56) targetLayer = 56; // 显式保留
@@ -1250,13 +1327,14 @@
 
                         // 生成 V2 格式的 PAD (V2 对槽孔通常作为 PAD 处理)
                         // 格式: ["PAD", id, group, net, layerId, pinNum, x, y, rot, holeShape, padShape, ...]
-                        // holeShape: ["SLOT", 长, 宽]
+                        // holeShape: ["ROUND", 圆头直径(短边), 高度(长边)]
+                        //   官方 EPCB_PrimitivePadHoleType 只有 ROUND(长圆形) / RECT，没有 SLOT —— 用 SLOT 会被判为非法
                         // padShape: ["OVAL", 长+5mil, 宽+5mil] (默认加一点铜环宽度)
                         const arr = [
                             "PAD", ids.id, 0, "", 12, "1",
                             PadTool.toMil(v.x), PadTool.toMil(v.y),
                             v.rotation || 0,
-                            ["SLOT", maxS, minS],
+                            ["ROUND", minS, maxS],
                             ["OVAL", maxS + 5, minS + 5], // 自动生成椭圆焊盘形状
                             [], 0, 0, 0, 1, 0, null, null, null, null, 0, null, null, null, null, []
                         ];

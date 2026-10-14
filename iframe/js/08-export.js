@@ -984,10 +984,12 @@
                 case 'PAD': // 焊盘
                     try {
                         let holeDef = line[9];
-                        if (Array.isArray(holeDef) && holeDef.length >= 3 && holeDef[0] === "SLOT") {
-                            const w = holeDef[1];
-                            const h = holeDef[2];
-                            holeDef = ["SLOT", h, w]; // 交换 直接 长度
+                        // 官方孔类型只有 ROUND(长圆形) / RECT；历史数据里的 "SLOT" 一并归一到 ROUND，
+                        // 并统一按 (短边, 长边) 排序，避免长短边颠倒。
+                        if (Array.isArray(holeDef) && holeDef.length >= 3 && (holeDef[0] === "SLOT" || holeDef[0] === "ROUND")) {
+                            const hw = holeDef[1];
+                            const hh = holeDef[2];
+                            holeDef = ["ROUND", Math.min(hw, hh), Math.max(hw, hh)];
                         }
                         eda.pcb_PrimitivePad.create(
                             line[4],                          // layer: 层编号
@@ -1082,7 +1084,12 @@
                 case 'POLY': // 折线
                     try {
                         // 创建多边形对象，第6项是多边形数据
-                        const polygon = eda.pcb_MathPolygon.createPolygon(line[6]);
+                        // 同上：兼容平铺 / 嵌套两种源数组
+                        const polySrc = line[6];
+                        const polygon = (Array.isArray(polySrc) && Array.isArray(polySrc[0]))
+                            ? eda.pcb_MathPolygon.createComplexPolygon(polySrc)
+                            : eda.pcb_MathPolygon.createPolygon(polySrc);
+                        if (!polygon) throw new Error('折线多边形数据不合法');
                         
                         // 调用折线API创建折线图元
                         eda.pcb_PrimitivePolyline.create(
@@ -1099,7 +1106,13 @@
                 case 'FILL': // 填充
                     try {
                         // 创建多边形对象，第7项是多边形数据数组
-                        const polygon = eda.pcb_MathPolygon.createPolygon(line[7]);
+                        // createPolygon 只接受「平铺」源数组；FILL 的 path 是 [[...]] 嵌套，
+                        // 直接喂给 createPolygon 会得到 undefined → 填充静默创建失败。
+                        const fillSrc = line[7];
+                        const polygon = (Array.isArray(fillSrc) && Array.isArray(fillSrc[0]))
+                            ? eda.pcb_MathPolygon.createComplexPolygon(fillSrc)
+                            : eda.pcb_MathPolygon.createPolygon(fillSrc);
+                        if (!polygon) throw new Error('填充多边形数据不合法');
                         
                         // 调用填充API创建填充图元
                         eda.pcb_PrimitiveFill.create(
