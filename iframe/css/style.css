@@ -1,0 +1,143 @@
+﻿/* ====================================================================================
+   style.css  —  界面样式表
+   ------------------------------------------------------------------------------------
+   来源：由原 iframe/ImportGerber.html 的内联 <style> 块原样拆出，样式内容未做任何修改。
+   分区：CSS 变量与重置 → 画布与标尺 → 侧边栏框架与 Tab → 通用控件 →
+         图层表格 → 导出面板 → 弹窗与遮罩 → 调试面板。
+   ==================================================================================== */
+
+
+    /* --- 全局变量与基础重置 --- */
+    :root { --bg-color: #1e1e1e; --panel-bg: #252526; --panel-header-bg: #333337; --text-color: #cccccc; --text-sub: #999999; --border-color: #3e3e42; --accent-color: #007acc; --accent-hover: #0062a3; --success-color: #2ea043; --hover-bg: #2a2d2e; --input-bg: #3c3c3c; --ruler-bg: #333333; --font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 0; width: 100vw; height: 100vh; background-color: var(--bg-color); color: var(--text-color); font-family: var(--font-family); font-size: 13px; overflow: hidden; display: flex; }
+
+    /* --- 画布区域 (Canvas) --- */
+    #canvas-container { flex: 1; position: relative; background-color: #000; overflow: hidden; }
+    canvas { display: block; }
+    .ruler-h { position: absolute; top: 0; left: 0; height: 20px; width: 100%; background: var(--ruler-bg); z-index: 10; pointer-events: none; }
+    .ruler-v { position: absolute; top: 0; left: 0; width: 20px; height: 100%; background: var(--ruler-bg); z-index: 10; pointer-events: none; }
+    .unit-switch { position: absolute; top: 0; left: 0; width: 20px; height: 20px; background: #444; color: #fff; font-size: 10px; display: flex; align-items: center; justify-content: center; cursor: pointer; z-index: 20; border-bottom: 1px solid #555; border-right: 1px solid #555; }
+    .unit-switch:hover { background: var(--accent-color); }
+    #loading-overlay { position: absolute; top:0; left:0; width:100%; height:100%; background: rgba(0,0,0,0.7); display: none; justify-content: center; align-items: center; color: white; z-index: 100; }
+    #global-drop-zone { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.85); z-index: 9999; display: none; flex-direction: column; justify-content: center; align-items: center; pointer-events: none; }
+    #global-drop-zone.active { display: flex; pointer-events: auto; }
+    .drop-text { font-size: 60px; color: var(--accent-color); }
+
+    /* --- 侧边栏框架与 Tab 导航 --- */
+    #sidebar { width: 320px; background-color: var(--panel-bg); border-left: 1px solid var(--border-color); display: flex; flex-direction: column; z-index: 30; }
+    .sidebar-tabs { display: flex; background-color: #2d2d2d; border-bottom: 1px solid var(--border-color); flex-shrink: 0; }
+    .tab-item { flex: 1; text-align: center; padding: 10px 0; font-size: 12px; font-weight: 600; cursor: pointer; color: var(--text-sub); border-bottom: 2px solid transparent; transition: all 0.2s; }
+    .tab-item:hover { color: var(--text-color); background-color: var(--hover-bg); }
+    .tab-item.active { color: #fff; border-bottom-color: var(--accent-color); background-color: var(--panel-bg); }
+    .tab-content { flex: 1; display: none; flex-direction: column; overflow-y: auto; padding: 0; }
+    .tab-content.active { display: flex; }
+
+    /* --- 通用控件与排版 --- */
+    .section-title { font-size: 12px; font-weight: bold; color: var(--text-sub); text-transform: uppercase; margin: 15px 15px 8px 15px; display: flex; align-items: center; justify-content: space-between; }
+    .control-group { padding: 0 15px; margin-bottom: 15px; }
+    .control-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: -6px; }
+    .control-label { font-size: 12px; color: var(--text-color); }
+    .sub-label { font-size: 11px; color: #888; margin-right: 8px; }
+
+    /* --- 分段选择器 (Segmented Control) --- */
+    .seg-control { display: flex; background: #111; border-radius: 4px; border: 1px solid var(--border-color); overflow: hidden; width: 100%; height: 26px; }
+    .seg-btn { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; color: #888; cursor: pointer; border-right: 1px solid #333; transition: background 0.2s; }
+    .seg-btn:last-child { border-right: none; }
+    .seg-btn:hover { background: #333; color: #ccc; }
+    .seg-btn.active { background: var(--accent-color); color: white; font-weight: 600; }
+
+    /* --- 步进器 (Stepper) --- */
+    .stepper { display: flex; align-items: center; background: #111; border: 1px solid var(--border-color); border-radius: 4px; height: 24px; width: 80px; }
+    .step-btn { width: 24px; height: 100%; display: flex; justify-content: center; align-items: center; cursor: pointer; color: #888; font-weight: bold; }
+    .step-btn:hover { background-color: #333; color: #fff; }
+    .step-val { flex: 1; text-align: center; font-family: 'Consolas', monospace; font-size: 12px; color: #fff; border-left: 1px solid #333; border-right: 1px solid #333; line-height: 22px; }
+
+    /* --- 复选框行 --- */
+    .checkbox-row { display: flex; align-items: center; padding: 8px 15px; background-color: var(--input-bg); margin: 0 15px 10px 15px; border-radius: 4px; cursor: pointer; }
+    .checkbox-row:hover { background-color: #444; }
+    .checkbox-row input { margin-right: 10px; }
+    .checkbox-row span { font-size: 12px; }
+
+    /* --- 按钮样式 --- */
+    .btn-block { display: flex; align-items: center; justify-content: center; width: 100%; padding: 8px 0; margin-bottom: 10px; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; color: white; transition: opacity 0.2s; }
+    .btn-block:hover { opacity: 0.9; }
+    .btn-primary { background-color: var(--accent-color); }
+    .btn-success { background-color: var(--success-color); }
+    .btn-secondary { background-color: #3e3e42; color: #ddd; }
+    .btn-secondary:hover { background-color: #4e4e52; }
+    .btn-group-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; padding: 0 15px; }
+    .btn-small { background-color: #333; border: 1px solid var(--border-color); color: #ccc; padding: 8px 0; border-radius: 3px; font-size: 11px; cursor: pointer; text-align: center; }
+    .btn-small:hover { border-color: var(--accent-color); color: white; background-color: #444; }
+
+    /* --- DPI 选择器专用样式 --- */
+    .dpi-combined-group { display: flex; background: #111; border-radius: 4px; border: 1px solid var(--border-color); overflow: hidden; height: 32px; margin-bottom: 12px; }
+    .dpi-btn { flex: 1; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #888; cursor: pointer; border-right: 1px solid #333; transition: all 0.2s; background: #181818; padding: 0 2px; white-space: nowrap; }
+    .dpi-btn:hover { background: #333; color: #ccc; }
+    .dpi-btn.active { background: var(--accent-color); color: white; }
+    .dpi-input-wrapper { flex: 1.5; display: flex; align-items: center; background: var(--input-bg); padding: 0 6px 0 8px; border-left: 1px solid #333; }
+    .dpi-custom-input-inline { flex: 1; width: 0; min-width: 30px; background: transparent; border: none; color: #fff; font-family: 'Consolas', monospace; font-size: 11px; text-align: right; outline: none; padding: 0; -moz-appearance: textfield; }
+    .dpi-custom-input-inline::-webkit-outer-spin-button, .dpi-custom-input-inline::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+    .dpi-custom-input-inline:focus { color: var(--accent-color); }
+    .dpi-unit-inline { font-size: 9px; color: #666; margin-left: 4px; font-weight: bold; white-space: nowrap; margin-top: 1px; }
+
+    /* --- DEBUG区域 --- */
+    #debug-panel { flex-direction: column; flex: 1; min-height: 200px; overflow: hidden; padding-bottom: 0; margin-bottom: 0; box-sizing: border-box; }
+    #debug-source-area { width: 100%; flex: 1; height: auto !important; resize: none; box-sizing: border-box; display: block; margin-bottom: 0; border-bottom: none; border-radius: 0; }
+
+    /* --- 图层列表与表格 --- */
+    .layer-header { background-color: var(--panel-header-bg); padding: 6px 10px; font-weight: bold; border-bottom: 1px solid var(--border-color); border-top: 1px solid var(--border-color); display: flex; align-items: center; color: #eee; font-size: 11px; }
+    .layer-table-head { display: flex; background: #222; padding: 5px; border-bottom: 1px solid #444; color: #aaa; font-size: 11px; font-weight: bold; }
+    .layer-row { display: flex; align-items: center; padding: 4px 5px; border-bottom: 1px solid #2d2d30; }
+    .layer-row:hover { background-color: var(--hover-bg); }
+    .col-color { width: 30px; display: flex; justify-content: center; }
+    .col-vis { width: 30px; display: flex; justify-content: center; }
+    .col-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 5px; font-size: 12px; }
+    .col-layer { width: 86px; }
+    select.layer-select { width: 100%; background-color: var(--input-bg); color: #fff; border: 1px solid #555; padding: 2px; font-size: 11px; }
+    input[type="color"] { -webkit-appearance: none; border: none; width: 14px; height: 14px; padding: 0; background: none; cursor: pointer; vertical-align: middle; }
+    input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; }
+    input[type="color"]::-webkit-color-swatch { border: 1px solid #666; border-radius: 2px; }
+
+    /* --- 埋盲孔设置子行 --- */
+    .layer-sub-row { display: flex; align-items: center; background-color: #222; padding: 5px 5px 5px 64px; border-bottom: 1px solid #2d2d30; font-size: 11px; color: #999; }
+    .layer-sub-row select { background-color: #333; color: #eee; border: 1px solid #555; border-radius: 2px; padding: 1px 4px; margin: 0 8px 0 4px; font-size: 11px; width: 80px; }
+    .arrow-icon { margin: 0 5px; color: #666; font-family: monospace; }
+
+    /* --- 滚动条 --- */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: var(--bg-color); }
+    ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+    /* --- 免责声明弹窗样式 --- */
+    .modal-overlay {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0, 0, 0, 0.7); z-index: 10000;
+        display: none; justify-content: center; align-items: center;
+        backdrop-filter: blur(2px);
+    }
+    .modal-box {
+        background-color: var(--panel-bg); width: 470px; max-height: 320px;
+        border: 1px solid var(--border-color); border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: flex; flex-direction: column;
+    }
+    .modal-header {
+        padding: 15px 20px; border-bottom: 1px solid var(--border-color);
+        font-size: 16px; font-weight: bold; color: #eee;
+    }
+    .modal-content {
+        padding: 20px; overflow-y: auto; font-size: 13px; line-height: 1.6; color: #ccc;
+        background-color: #1e1e1e;
+    }
+    .modal-content h3 { color: var(--accent-color); margin-top: 15px; margin-bottom: 10px; font-size: 14px; }
+    .modal-content strong { color: #fff; font-weight: bold; }
+    .modal-content ul { padding-left: 20px; margin: 5px 0; }
+    .modal-content li { margin-bottom: 4px; }
+    .modal-footer {
+        padding: 15px 20px; border-top: 1px solid var(--border-color);
+        display: flex; justify-content: flex-end; gap: 10px; background-color: var(--panel-header-bg);
+        border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+    }
+
+    

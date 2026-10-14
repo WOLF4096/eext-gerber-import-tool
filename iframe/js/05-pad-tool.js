@@ -1,0 +1,1582 @@
+﻿// ====================================================================================
+// 05-pad-tool.js  —  逆向还原引擎（Reverse Engineering Tool）
+// ------------------------------------------------------------------------------------
+// 职责：const PadTool —— 本项目技术核心，将 Gerber 矢量图形「智能聚合」为 EDA 逻辑图元。
+//   · extractRawData      从各图层提取 焊盘/过孔/导线/多边形/填充/钻孔/图片/文字
+//   · consolidate         聚合归并，把零散矢量图元还原为逻辑图元
+//   · generatePrimitives  生成 V2 数组格式 或 V3 "元信息||内容" 图元字符串
+//   · toMil / calcRadiusRatio  单位与圆角换算工具
+// 依赖：rawFilesCache（03-state.js）在运行时读取；被 08-export.js 调用。
+// 加载顺序：第 5 个
+// ====================================================================================
+
+// ====================================================================================
+// 4. 逆向工程工具 (Reverse Engineering Tool)
+// ====================================================================================
+
+    const PadTool = {
+        // --- 工具：单位转换 (mm -> mil) ---
+        toMil: (mm) => {
+            if (mm === null || mm === undefined || isNaN(mm)) return null;
+            // 1 mm = 39.3700787 mil
+            return parseFloat((mm * 39.3700787).toFixed(4));
+        },
+
+        // --- 工具：计算圆角比例 (0-100) ---
+        calcRadiusRatio: (radius, width, height) => {
+            if (!radius || radius <= 0) return 0;
+            const minSide = Math.min(Math.abs(width), Math.abs(height));
+            if (minSide === 0) return 0;
+            const maxRadius = minSide / 2;
+            if (Math.abs(radius - maxRadius) < 0.002) return 100;
+            let ratio = Math.round(Math.abs(radius / maxRadius) * 100);
+            return Math.max(0, Math.min(100, ratio));
+        },
+
+        
+        // --- 1. 提取阶段 (修改：钻孔图层数据强制转换为 Image 图元) ---
+        extractRawData: (files) => {
+            const rawPads = []; 
+            const rawVias = []; 
+            const rawTracks = []; 
+            const rawPolys = [];    
+            const rawFills = []; 
+            const rawImages = []; 
+            const rawTextLines = []; 
+            const drills = []; 
+            const slotOccupiedPoints = []; 
+
+            const getRawContent = (fileName) => {
+                const f = rawFilesCache.find(r => r.name === fileName);
+                return f ? f.content : "";
+            };
+
+            // 1. 宏解析函数
+            const parseGerberMacros = (content) => {
+                const macros = {};
+                if (!content) return macros;
+                const regex = /%AM(\w+)\*(.*?)%/g;
+                let match;
+                while ((match = regex.exec(content)) !== null) {
+                    const name = match[1];
+                    const body = match[2];
+                    const primParts = body.split(',').map(Number);
+                    // 仅简单支持 Primitive 4 (Polygon) 
+                    // 格式: 4, Exposure, PointCount, x1, y1, ...
+                    if (primParts[0] === 4) { 
+                        const count = primParts[2];
+                        const points = [];
+                        for (let i = 0; i < count; i++) {
+                            const idx = 3 + (i * 2);
+                            if (idx + 1 < primParts.length) {
+                                points.push({ x: primParts[idx], y: primParts[idx+1] });
+                            }
+                        }
+                        macros[name] = { type: 'POLYGON', points: points };
+                    }
+                }
+                return macros;
+            };
+
+            // 2. 辅助：将光圈(宏或标准形状)转换为路径数据
+            const getAperturePath = (ap, cx, cy, toMM, macroDefs) => {
+                const pathData = [];
+                // A. 优先检查是否为宏定义 (IconRect, IconStar, etc.)
+                if (macroDefs[ap.type]) {
+                    const macro = macroDefs[ap.type];
+                    if (macro.type === 'POLYGON' && macro.points.length > 0) {
+                        const start = macro.points[0];
+                        pathData.push({ cmd: 'M', x: cx + toMM(start.x), y: cy + toMM(start.y) });
+                        for (let i = 1; i < macro.points.length; i++) {
+                            const pt = macro.points[i];
+                            pathData.push({ cmd: 'L', x: cx + toMM(pt.x), y: cy + toMM(pt.y) });
+                        }
+                        pathData.push({ cmd: 'L', x: cx + toMM(start.x), y: cy + toMM(start.y) }); // Close
+                        return pathData;
+                    }
+                }
+
+                // B. 标准形状处理 (C, R, RECT)
+                const p = ap.params || [];
+                const type = ap.type.toUpperCase();
+                
+                if (type === 'C' || type === 'CIRCLE') {
+                    // 圆形模拟 (用两个半圆弧)
+                    const r = toMM(p[0]) / 2;
+                    pathData.push({ cmd: 'M', x: cx - r, y: cy });
+                    pathData.push({ cmd: 'A', x: cx + r, y: cy, i: r, j: 0, mode: 3, startX: cx - r, startY: cy }); // 上半圆
+                    pathData.push({ cmd: 'A', x: cx - r, y: cy, i: -r, j: 0, mode: 3, startX: cx + r, startY: cy }); // 下半圆
+                } 
+                else if (type === 'R' || type === 'RECT' || type === 'RECTANGLE') {
+                    // 矩形
+                    const w = toMM(p[0]);
+                    const h = toMM(p[1] || p[0]); // 如果只有一个参数则为正方形
+                    const hw = w / 2;
+                    const hh = h / 2;
+                    pathData.push({ cmd: 'M', x: cx - hw, y: cy - hh });
+                    pathData.push({ cmd: 'L', x: cx + hw, y: cy - hh });
+                    pathData.push({ cmd: 'L', x: cx + hw, y: cy + hh });
+                    pathData.push({ cmd: 'L', x: cx - hw, y: cy + hh });
+                    pathData.push({ cmd: 'L', x: cx - hw, y: cy - hh });
+                }
+                
+                return pathData.length > 0 ? pathData : null;
+            };
+
+            // 3. 路径合并算法 (保持不变)
+            const mergeSegments = (segments) => {
+                if (segments.length === 0) return [];
+                const mergedPaths = [];
+                const pool = [...segments]; 
+                const isEq = (a, b) => Math.abs(a - b) < 0.02; 
+
+                while (pool.length > 0) {
+                    const first = pool.shift();
+                    const pathDeque = [first];
+                    let headX = first.x1, headY = first.y1;
+                    let tailX = first.x2, tailY = first.y2;
+                    const pathWidth = first.width;
+
+                    let changed = true;
+                    while(changed) {
+                        changed = false;
+                        for (let i = 0; i < pool.length; i++) {
+                            const seg = pool[i];
+                            if (Math.abs(seg.width - pathWidth) > 0.05) continue;
+
+                            if (isEq(tailX, seg.x1) && isEq(tailY, seg.y1)) {
+                                pathDeque.push(seg);
+                                tailX = seg.x2; tailY = seg.y2;
+                                pool.splice(i, 1); i--; changed = true;
+                            }
+                            else if (isEq(tailX, seg.x2) && isEq(tailY, seg.y2)) {
+                                const rev = { ...seg, x1: seg.x2, y1: seg.y2, x2: seg.x1, y2: seg.y1 };
+                                if (rev.type === 'ARC') rev.angle = -rev.angle; 
+                                pathDeque.push(rev);
+                                tailX = rev.x2; tailY = rev.y2;
+                                pool.splice(i, 1); i--; changed = true;
+                            }
+                            else if (isEq(headX, seg.x2) && isEq(headY, seg.y2)) {
+                                pathDeque.unshift(seg);
+                                headX = seg.x1; headY = seg.y1;
+                                pool.splice(i, 1); i--; changed = true;
+                            }
+                            else if (isEq(headX, seg.x1) && isEq(headY, seg.y1)) {
+                                const rev = { ...seg, x1: seg.x2, y1: seg.y2, x2: seg.x1, y2: seg.y1 };
+                                if (rev.type === 'ARC') rev.angle = -rev.angle;
+                                pathDeque.unshift(rev);
+                                headX = rev.x1; headY = rev.y1;
+                                pool.splice(i, 1); i--; changed = true;
+                            }
+                        }
+                    }
+
+                    const currentPath = [];
+                    currentPath.push({ cmd: 'M', x: headX, y: headY });
+                    pathDeque.forEach(seg => {
+                        if (seg.type === 'ARC') {
+                            currentPath.push({ cmd: 'A', x: seg.x2, y: seg.y2, sweep: seg.angle });
+                        } else {
+                            currentPath.push({ cmd: 'L', x: seg.x2, y: seg.y2 });
+                        }
+                    });
+                    mergedPaths.push({ path: currentPath, width: pathWidth });
+                }
+                return mergedPaths;
+            };
+
+            files.forEach(file => {
+                const layerId = file.layerId;
+                const fileUnit = file.data.units; 
+                const toMM = (val) => (val === null || val === undefined) ? 0 : (fileUnit === 'in' ? val * 25.4 : val);
+                
+                const rawContent = getRawContent(file.name);
+                const macroDefs = parseGerberMacros(rawContent);
+
+                // A. 钻孔文件处理
+                // [修复] 增加 layerId === 502 (埋盲孔)，确保该图层被作为钻孔数据提取
+                if (layerId === 47 || layerId === 500 || layerId === 501 || layerId === 502 || file.name.endsWith('.drl') || file.name.endsWith('.txt')) {
+                    if (rawContent) {
+                        const fileLines = rawContent.split(/\r?\n/);
+                        const tools = {}; let currentTool = null;
+                        const regexToolDef = /T(\d+)[^C]*C([\d.]+)/; const regexToolSel = /T(\d+)(?!C)/; 
+                        let drillUnitMult = rawContent.includes("INCH") ? 25.4 : 1;
+                        const manualToMM = (val) => val * drillUnitMult;
+                        for (let line of fileLines) {
+                            line = line.trim();
+                            const matchDef = line.match(regexToolDef); if (matchDef) { tools[matchDef[1]] = parseFloat(matchDef[2]); continue; }
+                            const matchSel = line.match(regexToolSel); if (matchSel) { currentTool = matchSel[1]; continue; }
+                            if (line.includes('G85') && currentTool) {
+                                const coords = line.match(/X([\d.-]+)Y([\d.-]+).*?X([\d.-]+)Y([\d.-]+)/);
+                                if (coords) {
+                                    const x1 = manualToMM(parseFloat(coords[1])); const y1 = manualToMM(parseFloat(coords[2]));
+                                    const x2 = manualToMM(parseFloat(coords[3])); const y2 = manualToMM(parseFloat(coords[4]));
+                                    const dia = manualToMM(tools[currentTool]);
+                                    const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
+                                    const dx = x2 - x1; const dy = y2 - y1;
+                                    const len = Math.sqrt(dx*dx + dy*dy);
+                                    let rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+                                    while (rotation > 90.1) rotation -= 180; while (rotation < -89.9) rotation += 180;
+                                    drills.push({ 
+                                        x: cx, y: cy, w: len + dia, h: dia, 
+                                        rotation: rotation, dia: dia, 
+                                        isPlated: layerId !== 501, 
+                                        isSlot: true,
+                                        pairStart: file.pairStart, // <--- 新增
+                                        pairEnd: file.pairEnd      // <--- 新增
+                                    });
+                                    slotOccupiedPoints.push({x: cx, y: cy}, {x: x1, y: y1}, {x: x2, y: y2});
+                                }
+                            }
+                        }
+                    }
+                    file.data.commands.forEach(cmd => {
+                        if (cmd.type === 3) { 
+                            const cx = toMM(cmd.x); const cy = toMM(cmd.y);
+                            if (slotOccupiedPoints.some(p => Math.abs(p.x - cx) < 0.05 && Math.abs(p.y - cy) < 0.05)) return;
+                            const ap = file.data.apertures[cmd.ap];
+                            if (ap) {
+                                let w = 0, h = 0; const p = ap.params;
+                                if (ap.type === 'C') { w = toMM(p[0]); h = w; } else if (ap.type === 'O' || ap.type === 'R') { w = toMM(p[0]); h = toMM(p[1]); }
+                                // [修改 2] 在 push 时增加 pairStart 和 pairEnd
+                                if (w > 0) drills.push({ 
+                                    x: cx, y: cy, w: w, h: h, 
+                                    rotation: 0, dia: Math.min(w, h), 
+                                    isPlated: layerId !== 501, 
+                                    isSlot: Math.abs(w - h) > 0.01,
+                                    pairStart: file.pairStart, // <--- 新增
+                                    pairEnd: file.pairEnd      // <--- 新增
+                                });
+                            }
+                        }
+                    });
+                    return; 
+                }
+
+                // B. 图层文件解析
+                let mode = "NONE"; 
+                const cmds = file.data.commands;
+                let currX = 0, currY = 0;
+                let tempPolySegments = []; 
+                let currentWidth = 0.254;
+
+                const flushPoly = () => {
+                    if (tempPolySegments.length > 0) {
+                        const merged = mergeSegments(tempPolySegments);
+                        merged.forEach(m => {
+                            if (mode === "IMAGE") {
+                                rawImages.push({ layerId, width: m.width, path: m.path });
+                            } else if (mode === "TEXT") {
+                                rawTextLines.push({ layerId, width: m.width, path: m.path });
+                            } else {
+                                let targetLayer = layerId;
+                                // 56 是 DrillDrawing, 导出时通常归类到 Document(13) 或保持 56
+                                // 这里保持 56，GeneratePrimitives 中已处理
+                                rawPolys.push({ layerId: targetLayer, width: m.width, path: m.path });
+                            }
+                        });
+                        tempPolySegments = [];
+                    }
+                };
+
+                for (let i = 0; i < cmds.length; i++) {
+                    const cmd = cmds[i];
+                    
+                    // 1. G04 状态切换
+                    if (cmd.type === 5) { 
+                        if (cmd.text.includes("Pad Start")) { flushPoly(); mode = "PAD"; }
+                        else if (cmd.text.includes("Pad End")) { mode = "NONE"; }
+                        else if (cmd.text.includes("Via Start")) { flushPoly(); mode = "VIA"; }
+                        else if (cmd.text.includes("Via End")) { mode = "NONE"; }
+                        else if (cmd.text.includes("Track Start")) { flushPoly(); mode = "TRACK"; }
+                        else if (cmd.text.includes("Track End")) { mode = "NONE"; }
+                        else if (cmd.text.includes("PolygonModel Start") || cmd.text.includes("Rect Start") || cmd.text.includes("Circle Start")) { 
+                            flushPoly(); mode = "POLY"; 
+                        }
+                        else if (cmd.text.includes("PolygonModel End") || cmd.text.includes("Rect End") || cmd.text.includes("Circle End")) { 
+                            flushPoly(); mode = "NONE"; 
+                        }
+                        else if (cmd.text.includes("Image Start")) { flushPoly(); mode = "IMAGE"; }
+                        else if (cmd.text.includes("Image End")) { flushPoly(); mode = "NONE"; }
+                        else if (cmd.text.includes("Text Start")) { flushPoly(); mode = "TEXT"; }
+                        else if (cmd.text.includes("Text End")) { flushPoly(); mode = "NONE"; }
+                        else if (cmd.text.includes("Copper Start")) { flushPoly(); mode = "COPPER"; }
+                        else if (cmd.text.includes("Copper End")) { flushPoly(); mode = "NONE"; }
+                        // [新增] 钻孔图支持
+                        else if (cmd.text.includes("Drill Drawing Start")) { flushPoly(); mode = "DRILL_SYM"; }
+                        else if (cmd.text.includes("Drill Drawing End")) { flushPoly(); mode = "NONE"; }
+                        continue;
+                    }
+
+                    // 2. 区域填充 (G36/G37)
+                    if (cmd.type === 4) { 
+                        const pathData = cmd.path.map(op => {
+                            if (op.cmd === 'M' || op.cmd === 'L') return { cmd: op.cmd, x: toMM(op.x), y: toMM(op.y) };
+                            if (op.cmd === 'A') {
+                                const sX = toMM(op.startX); const sY = toMM(op.startY);
+                                const eX = toMM(op.x); const eY = toMM(op.y);
+                                const cX = sX + toMM(op.i); const cY = sY + toMM(op.j);
+                                const startAngle = Math.atan2(sY - cY, sX - cX);
+                                const endAngle = Math.atan2(eY - cY, eX - cX);
+                                let sweep = endAngle - startAngle;
+                                if (op.mode === 3) { if (sweep <= 0) sweep += 2 * Math.PI; } 
+                                else { if (sweep >= 0) sweep -= 2 * Math.PI; }
+                                const sweepDeg = sweep * 180 / Math.PI;
+                                return { cmd: 'ARC', x: eX, y: eY, sweep: sweepDeg, cx: cX, cy: cY };
+                            }
+                        });
+
+                        if (mode === "PAD") {
+                            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                            pathData.forEach(pt => {
+                                if (pt.x !== undefined && pt.y !== undefined) {
+                                    if (pt.x < minX) minX = pt.x; if (pt.x > maxX) maxX = pt.x;
+                                    if (pt.y < minY) minY = pt.y; if (pt.y > maxY) maxY = pt.y;
+                                }
+                            });
+                            const cx = (minX + maxX) / 2; const cy = (minY + maxY) / 2;
+                            rawPads.push({ layerId, x: cx, y: cy, shape: 'POLYGON', path: pathData, w: 0, h: 0, rotation: 0 });
+                            continue;
+                        }
+
+                        if (mode === "IMAGE" || mode === "TEXT") {
+                            rawImages.push({ layerId, path: pathData, isRegion: true });
+                        } else if (mode === "COPPER") {
+                            rawFills.push({ layerId, path: pathData });
+                        } else {
+                            let targetLayer = layerId;
+                            if (targetLayer === 56) targetLayer = 56; // 显式保留
+                            rawFills.push({ layerId: targetLayer, path: pathData });
+                        }
+                        continue;
+                    }
+
+                    // 3. 线性绘图 (G01/02/03)
+                    if (cmd.type === 1 || cmd.type === 2) {
+                        const targetX = toMM(cmd.x); const targetY = toMM(cmd.y);
+                        
+                        if (cmd.type === 1) {
+                            const ap = file.data.apertures[cmd.ap];
+                            if (ap) currentWidth = toMM(ap.params[0]);
+                        }
+
+                        if (mode === "TRACK" || mode === "COPPER") {
+                            const isCopperLayer = (layerId === 1 || layerId === 2 || (layerId >= 15 && layerId <= 46));
+                            if (isCopperLayer && cmd.type === 1) {
+                                if (cmd.mode === 1) { rawTracks.push({ type: "LINE", layerId, x1: currX, y1: currY, x2: targetX, y2: targetY, width: currentWidth }); } 
+                                else { 
+                                    const centerX = currX + toMM(cmd.i); const centerY = currY + toMM(cmd.j);
+                                    const startAngle = Math.atan2(currY - centerY, currX - centerX);
+                                    const endAngle = Math.atan2(targetY - centerY, targetX - centerX);
+                                    let sweep = endAngle - startAngle;
+                                    if (cmd.mode === 3) { if (sweep <= 0) sweep += 2 * Math.PI; } else { if (sweep >= 0) sweep -= 2 * Math.PI; }
+                                    rawTracks.push({ type: "ARC", layerId, x1: currX, y1: currY, x2: targetX, y2: targetY, angle: sweep * 180 / Math.PI, width: currentWidth });
+                                }
+                            }
+                        }
+                        else if (mode === "POLY" || mode === "IMAGE" || mode === "TEXT" || mode === "DRILL_SYM") { 
+                            // 注意：DRILL_SYM 的线段也作为 POLY 处理
+                            if (cmd.type !== 2) {
+                                let seg = { x1: currX, y1: currY, x2: targetX, y2: targetY, width: currentWidth };
+                                if (cmd.mode === 1) { seg.type = 'LINE'; } 
+                                else {
+                                    seg.type = 'ARC';
+                                    const centerX = currX + toMM(cmd.i); const centerY = currY + toMM(cmd.j);
+                                    const startAngle = Math.atan2(currY - centerY, currX - centerX);
+                                    const endAngle = Math.atan2(targetY - centerY, targetX - centerX);
+                                    let sweep = endAngle - startAngle;
+                                    if (cmd.mode === 3) { if (sweep <= 0) sweep += 2 * Math.PI; } else { if (sweep >= 0) sweep -= 2 * Math.PI; }
+                                    seg.angle = sweep * 180 / Math.PI;
+                                }
+                                tempPolySegments.push(seg);
+                            }
+                        }
+
+                        currX = targetX; currY = targetY;
+                        continue;
+                    }
+
+                    // 4. Flash 指令 (Pad/Via/DrillSymbol)
+                    if (cmd.type === 3) { 
+                        const ap = file.data.apertures[cmd.ap];
+                        if (!ap) continue;
+                        
+                        currX = toMM(cmd.x); 
+                        currY = toMM(cmd.y);
+
+                        // [新增] 处理 Drill Drawing 的图标 Flash
+                        if (mode === "DRILL_SYM") {
+                            const pathData = getAperturePath(ap, currX, currY, toMM, macroDefs);
+                            if (pathData) {
+                                // [修改] 钻孔图层不支持 Polygon，改为存入 rawImages 作为图片处理
+                                rawImages.push({ layerId: 56, path: pathData });
+                            }
+                            continue;
+                        }
+
+                        if (mode === "PAD") {
+                            // 检查宏定义
+                            if (macroDefs[ap.type]) {
+                                const macro = macroDefs[ap.type];
+                                if (macro.type === 'POLYGON') {
+                                    // 转换为绝对路径
+                                    const pathData = [];
+                                    const start = macro.points[0];
+                                    pathData.push({ cmd: 'M', x: currX + toMM(start.x), y: currY + toMM(start.y) });
+                                    for (let k = 1; k < macro.points.length; k++) {
+                                        const pt = macro.points[k];
+                                        pathData.push({ cmd: 'L', x: currX + toMM(pt.x), y: currY + toMM(pt.y) });
+                                    }
+                                    pathData.push({ cmd: 'L', x: currX + toMM(start.x), y: currY + toMM(start.y) });
+
+                                    rawPads.push({ layerId, x: currX, y: currY, shape: 'POLYGON', path: pathData, w: 0, h: 0, rotation: 0 });
+                                    continue;
+                                }
+                            }
+
+                            // 检查重叠
+                            const hasPolygonAlready = rawPads.some(existing => 
+                                existing.shape === 'POLYGON' &&
+                                Math.abs(existing.x - currX) < 0.005 &&
+                                Math.abs(existing.y - currY) < 0.005
+                            );
+                            if (hasPolygonAlready) continue;
+
+                            // 标准处理
+                            const p = ap.params || [];
+                            const type = (ap.type || 'C').toUpperCase();
+                            let w = toMM(p[0]||0.1); let h = w; if (p.length > 1) h = toMM(p[1]);
+
+                            let shape = 'ELLIPSE'; let rotation = 0; let radiusRatio = 0;
+                            if (p.length >= 5 && (type.includes('RECT') || type.includes('OVAL') || type.includes('ROUND'))) {
+                                const dia = toMM(p[0]); const p1_x = toMM(p[1]); const p1_y = toMM(p[2]); const p2_x = toMM(p[3]); const p2_y = toMM(p[4]);
+                                const dx = p2_x - p1_x; const dy = p2_y - p1_y;
+                                const len1 = Math.sqrt(dx*dx + dy*dy); const dx2 = (-p1_x) - p2_x; const dy2 = (-p1_y) - p2_y; const len2 = Math.sqrt(dx2*dx2 + dy2*dy2);
+                                let dimX = len1 + dia; let dimY = len2 + dia;
+                                let rawAngle = Math.atan2(dy, dx) * 180 / Math.PI;
+                                w = dimX; h = dimY; rotation = rawAngle;
+                                while (rotation > 90.1) { rotation -= 90; [w, h] = [h, w]; } while (rotation < -89.9) { rotation += 90; [w, h] = [h, w]; }
+                                rotation = parseFloat(rotation.toFixed(2)); if (Math.abs(rotation) < 0.01) rotation = 0;
+                                if (type.includes('OVAL')) shape = 'OVAL'; else { shape = 'RECT'; radiusRatio = PadTool.calcRadiusRatio(dia / 2, w, h); }
+                            } else if (type === 'O' || type.includes('OVAL') || type.includes('OBROUND')) {
+                                shape = 'OVAL'; w = toMM(p[0]); h = p.length > 1 ? toMM(p[1]) : w; if (p.length >= 3 && p[2]) rotation = parseFloat(p[2]);
+                            } else {
+                                w = toMM(p[0]||0.1); h = p.length > 1 ? toMM(p[1]) : w; 
+                                if (p.length >= 3 && p[2]) rotation = parseFloat(p[2]);
+                                if (p.length >= 4 && p[3] > 0) radiusRatio = PadTool.calcRadiusRatio(toMM(p[3]), w, h);
+                                if (type === 'C' || type === 'CIRCLE') { shape = 'ELLIPSE'; h = w; } else { shape = 'RECT'; }
+                            }
+                            if (w > 0 && h > 0) rawPads.push({ layerId, x: toMM(cmd.x), y: toMM(cmd.y), shape, w, h, rotation, radiusRatio });
+                        }
+                        else if (mode === "VIA") {
+                            const p = ap.params || [];
+                            let dia = toMM(p[0]||0.1);
+                            rawVias.push({ layerId, x: toMM(cmd.x), y: toMM(cmd.y), dia });
+                        }
+                    }
+                }
+                flushPoly();
+            });
+
+            return { rawPads, rawVias, rawTracks, rawPolys, rawFills, drills, rawImages, rawTextLines }; 
+        },
+
+        // --- 2. 聚合阶段 ---
+        consolidate: (rawPads, rawVias, rawTracks, rawPolys, rawFills, rawDrills, rawImages, rawTextLines, rawCoppers) => {
+            const map = new Map(); 
+            const getKey = (x, y) => `${x.toFixed(3)}_${y.toFixed(3)}`;
+
+            // 1. 聚合所有层的焊盘到节点
+            rawPads.forEach(p => {
+                const key = getKey(p.x, p.y);
+                if (!map.has(key)) map.set(key, { x: p.x, y: p.y, top: null, bottom: null, maskTop: null, maskBot: null, pasteTop: null, pasteBot: null, inners: [], drill: null });
+                const node = map.get(key);
+                if (p.layerId === 1) node.top = p; else if (p.layerId === 2) node.bottom = p; else if (p.layerId === 5) node.maskTop = p; else if (p.layerId === 6) node.maskBot = p; else if (p.layerId === 7) node.pasteTop = p; else if (p.layerId === 8) node.pasteBot = p; else if (p.layerId >= 15 && p.layerId <= 46) node.inners.push(p);
+            });
+            
+            const viaMap = new Map();
+            if (rawVias) {
+                rawVias.forEach(v => {
+                    const key = getKey(v.x, v.y);
+                    // [修改 1] 增加 layers 对象用于存储任意层的过孔数据
+                    if (!viaMap.has(key)) viaMap.set(key, { top: null, maskTop: null, maskBot: null, layers: {} });
+                    const node = viaMap.get(key);
+                    
+                    // [修改 2] 将该过孔数据存入对应的 layerId 中
+                    if (node.layers) node.layers[v.layerId] = v;
+
+                    if (v.layerId === 1) node.top = v; 
+                    else if (v.layerId === 5) node.maskTop = v; 
+                    else if (v.layerId === 6) node.maskBot = v; 
+                });
+            }
+
+            // 2. 匹配钻孔 (修复核心：增加模糊匹配)
+            const processedDrills = new Set();
+            // 先去重 (简单处理)
+            const uniqueDrills = [];
+            rawDrills.forEach(newD => {
+                const existingIdx = uniqueDrills.findIndex(exD => Math.abs(exD.x - newD.x) < 0.02 && Math.abs(exD.y - newD.y) < 0.02);
+                if (existingIdx === -1) uniqueDrills.push(newD);
+                else { const exD = uniqueDrills[existingIdx]; if (newD.isSlot && !exD.isSlot) uniqueDrills[existingIdx] = newD; }
+            });
+            
+            const drills = uniqueDrills;
+
+            // [辅助] 获取总层数 (上一轮添加的代码，保持不变)
+            const copperCountEl = document.getElementById('cfg-copper-layers');
+            const totalLayers = copperCountEl ? (parseInt(copperCountEl.value) || 2) : 2;
+            const getLyrIdx = (id) => {
+                if (id === 1) return 1;
+                if (id === 2) return totalLayers;
+                if (id >= 15 && id <= 46) return (id - 15) + 2;
+                return null;
+            };
+
+            drills.forEach((d, idx) => {
+                // 1. 埋盲孔跳过逻辑 (保持不变)
+                if (d.pairStart && d.pairEnd) {
+                    const s = getLyrIdx(d.pairStart);
+                    const e = getLyrIdx(d.pairEnd);
+                    if (s !== null && e !== null) {
+                        const min = Math.min(s, e);
+                        const max = Math.max(s, e);
+                        if (min !== 1 || max !== totalLayers) return; 
+                    }
+                }
+
+                // [新增] 合并检查函数
+                const tryMergeDrillToPad = (node, drill) => {
+                    // 核心修复：
+                    // 如果不是槽孔(Slot)，且该位置并没有同时具备 Top 和 Bottom 焊盘
+                    // (即：它是一个单面焊盘，比如只有 Bottom)，
+                    // 那么强行合并会导致它变成 Layer12 多层焊盘，从而错误地增加顶层铜环。
+                    // 这里的策略是：不合并。让 Pad 保持单层，让 Drill 变成独立的 Via。
+                    const isSingleSide = (!node.top || !node.bottom);
+                    
+                    if (!drill.isSlot && isSingleSide) {
+                        return; // 跳过合并 -> 结果：单层焊盘 + 独立过孔 (Visual效果正确)
+                    }
+
+                    // 执行合并
+                    if (!node.drill || drill.isSlot) node.drill = drill;
+                    processedDrills.add(drill);
+                    drill.isConsumed = true;
+                };
+
+                const key = getKey(d.x, d.y);
+                
+                // 2.1 尝试精确匹配
+                if (map.has(key)) { 
+                    tryMergeDrillToPad(map.get(key), d);
+                } 
+                else {
+                    // 2.2 模糊匹配
+                    let minDist = 0.05; 
+                    let matchedKey = null;
+                    for (const [k, node] of map) { 
+                        const dist = Math.sqrt(Math.pow(node.x - d.x, 2) + Math.pow(node.y - d.y, 2)); 
+                        if (dist < minDist) { 
+                            minDist = dist; 
+                            matchedKey = k; 
+                        } 
+                    }
+                    if (matchedKey) { 
+                        tryMergeDrillToPad(map.get(matchedKey), d);
+                    }
+                }
+            });
+
+            // 3. 生成最终对象
+            const unifiedPads = [];
+            map.forEach(node => {
+                const calcExp = (mask, copper) => { if (!mask || !copper) return null; if (mask.w <= 0 || copper.w <= 0) return null; const mMin = Math.min(mask.w, mask.h); const cMin = Math.min(copper.w, copper.h); const exp = (mMin - cMin) / 2; if (exp > 1.0 || exp < -0.05) return null; if (Math.abs(exp) < 0.002) return 0; return exp; };
+                let innerRep = null; if (node.inners.length > 0) { innerRep = node.inners.reduce((prev, curr) => (curr.w < prev.w) ? curr : prev); innerRep = { ...innerRep }; }
+                // [修改] 增加 inners: node.inners，将所有内层数据透传
+                unifiedPads.push({ 
+                    x: node.x, y: node.y, 
+                    top: node.top, 
+                    bottom: node.bottom, 
+                    innerRep: innerRep, 
+                    inners: node.inners, // <--- 关键修改：保留所有内层焊盘列表
+                    drill: node.drill, 
+                    exps: { 
+                        mt: calcExp(node.maskTop, node.top), 
+                        mb: calcExp(node.maskBot, node.bottom), 
+                        pt: calcExp(node.pasteTop, node.top), 
+                        pb: calcExp(node.pasteBot, node.bottom) 
+                    } 
+                });
+            });
+            
+            const remainingVias = drills.filter(d => !d.isConsumed).map(d => {
+                const key = getKey(d.x, d.y); 
+                const viaNode = viaMap.get(key); 
+                
+                // 默认外径 (如果没有找到对应的Gerber定义)
+                let padDia = d.dia; 
+                let topExp = null; let botExp = null;
+                
+                if (viaNode) { 
+                    // [修改 3] 优先根据埋盲孔的起始层获取外径
+                    if (d.pairStart && viaNode.layers && viaNode.layers[d.pairStart]) {
+                        padDia = viaNode.layers[d.pairStart].dia;
+                    }
+                    // 如果不是埋盲孔或没找到起始层定义，尝试使用顶层定义
+                    else if (viaNode.top) {
+                        padDia = viaNode.top.dia; 
+                    }
+
+                    if (viaNode.maskTop && viaNode.top) { const exp = (viaNode.maskTop.dia - viaNode.top.dia) / 2; if (exp >= -0.05) topExp = exp; } 
+                    if (viaNode.maskBot && viaNode.top) { const exp = (viaNode.maskBot.dia - viaNode.top.dia) / 2; if (exp >= -0.05) botExp = exp; } 
+                }
+                
+                return { 
+                    x: d.x, y: d.y, w: d.w, h: d.h, 
+                    dia: d.dia, padDia: padDia, 
+                    topExp: topExp, botExp: botExp, 
+                    isPlated: d.isPlated, 
+                    isSlot: d.isSlot, 
+                    rotation: d.rotation,
+                    pairStart: d.pairStart,
+                    pairEnd: d.pairEnd
+                };
+            });
+
+            // [修改] 返回对象增加 coppers
+            return { 
+                unifiedPads, remainingVias, 
+                tracks: rawTracks, polys: rawPolys, fills: rawFills,
+                images: rawImages, textLines: rawTextLines, coppers: rawCoppers 
+            };
+        },
+
+        // --- 3. 生成阶段 (修改：移除特殊的 RECT/CIRCLE 逻辑，统一用 path) ---
+        generatePrimitives: (data, versionObj, config) => { 
+            const { unifiedPads, remainingVias } = data;
+            const isV3 = versionObj.isV3;
+            const output = [];
+            
+            let ticket = versionObj.ticket || 1;
+            let idCounter = versionObj.id || 1;
+            const nextIds = () => { ticket++; idCounter++; return { t: ticket, id: `e${idCounter}` }; };
+
+            // ... (A. Netlist Data 构建 - 保持不变) ...
+            // const netlistMap = new Map(); 
+            const netlistPoints = []; 
+            const compCounts = {}; 
+            let hasNetlist = false;
+
+            if (config && config.tryNetlist && typeof flyingProbeData !== 'undefined' && flyingProbeData) {
+                 try {
+                    const rows = flyingProbeData.pins.rows;
+                    const fields = flyingProbeData.pins.fields;
+                    const idxName = fields.indexOf("PIN_NAME");
+                    const idxX = fields.indexOf("PIN_X");
+                    const idxY = fields.indexOf("PIN_Y");
+                    const idxNet = fields.indexOf("NET_NAME");
+                    
+                    if (idxName >= 0 && idxX >= 0 && idxY >= 0 && idxNet >= 0) {
+                        rows.forEach(row => {
+                            const rawX = parseFloat(row[idxX]); 
+                            const rawY = parseFloat(row[idxY]);
+                            const netName = row[idxNet]; 
+                            const fullPinName = row[idxName]; 
+                            let compName = ""; 
+                            let pinNum = fullPinName;
+                            const lastUnder = fullPinName.lastIndexOf('_');
+                            if (lastUnder > 0) { 
+                                compName = fullPinName.substring(0, lastUnder); 
+                                pinNum = fullPinName.substring(lastUnder + 1); 
+                            } else { 
+                                compName = fullPinName; 
+                            }
+                            if (compName && !compName.toUpperCase().startsWith("PAD")) {
+                                if (!compCounts[compName]) compCounts[compName] = 0; 
+                                compCounts[compName]++;
+                            }
+                            netlistPoints.push({ x: rawX, y: rawY, net: netName, num: pinNum, comp: compName });
+                        });
+                        hasNetlist = true;
+                        console.log(`已加载 ${netlistPoints.length} 个网络节点用于匹配`);
+                    }
+                } catch (e) { console.error("解析飞针网络数据失败:", e); }
+            }
+
+            const getCornerObj = (prim) => {
+                if (prim && prim.shape === 'RECT' && prim.radiusRatio > 0) return ["ROUND", prim.radiusRatio, prim.radiusRatio];
+                return null;
+            };
+
+            // [新增] 路径生成函数引用，确保 generatePathStr 在此处可用
+            // (通常它定义在 generatePrimitives 内部或作为 PadTool 的方法)
+            const generatePathStr = (pathArr) => {
+                if (!pathArr || pathArr.length === 0) return [];
+                const res = [];
+                const startPt = pathArr[0];
+                const startX = (startPt.x !== undefined) ? startPt.x : 0;
+                const startY = (startPt.y !== undefined) ? startPt.y : 0;
+                
+                res.push(PadTool.toMil(startX)); 
+                res.push(PadTool.toMil(startY)); 
+
+                for (let i = 1; i < pathArr.length; i++) {
+                    const pt = pathArr[i];
+                    if (pt.cmd === 'L') { 
+                        res.push("L"); 
+                        res.push(PadTool.toMil(pt.x)); 
+                        res.push(PadTool.toMil(pt.y)); 
+                    } 
+                    else if (pt.cmd === 'A' || pt.cmd === 'ARC') { 
+                        res.push("ARC"); 
+                        let val = 0;
+                        if (pt.sweep !== undefined) val = pt.sweep;
+                        else if (pt.angle !== undefined) val = pt.angle;
+                        if (typeof val !== 'number') val = 0;
+
+                        res.push(parseFloat(val.toFixed(2))); 
+                        res.push(PadTool.toMil(pt.x)); 
+                        res.push(PadTool.toMil(pt.y)); 
+                    }
+                }
+                return res;
+            };
+
+            // --- 物理层索引计算辅助函数 ---
+            const copperCountVal = document.getElementById('cfg-copper-layers') ? parseInt(document.getElementById('cfg-copper-layers').value) : 2;
+            
+            const getPhysLayerIndex = (layerId) => {
+                if (!layerId) return null;
+                // 顶层总是 1
+                if (layerId === 1) return 1;
+                // 底层总是等于总层数
+                if (layerId === 2) return copperCountVal;
+                // 内层转换: Inner1(15) -> 2, Inner2(16) -> 3 ...
+                if (layerId >= 15 && layerId <= 46) {
+                    return (layerId - 15) + 2;
+                }
+                return null;
+            };
+
+
+            // ... (B. Pads 生成 - 修改版) ...
+            unifiedPads.forEach(pad => {
+                // 1. 公共计算
+                const padXMil = PadTool.toMil(pad.x); 
+                const padYMil = PadTool.toMil(pad.y);
+                let netName = ""; let pinNumber = "1"; let groupId = 0; 
+
+                if (hasNetlist) {
+                    const tolerance = 2.5; 
+                    const match = netlistPoints.find(p => Math.abs(p.x - padXMil) < tolerance && Math.abs(p.y - padYMil) < tolerance);
+                    if (match) { 
+                        // netName = match.net || ""; 
+                        netName = ""; //当前版本暂不生成网络
+                        pinNumber = match.num || "1"; 
+                        const cName = match.comp; 
+                        if (cName && compCounts[cName] > 1) groupId = cName; 
+                    }
+                }
+
+                const targets = [];
+                
+                if (pad.drill) {
+                    let holeShape = null; let holeRotation = 0;
+                    const holeW = PadTool.toMil(pad.drill.w); 
+                    const holeH = PadTool.toMil(pad.drill.h);
+                    
+                    if (pad.drill.isSlot) { 
+                        const maxSide = Math.max(holeW, holeH); 
+                        const minSide = Math.min(holeW, holeH); 
+                        holeShape = ["SLOT", maxSide, minSide]; 
+                        holeRotation = pad.drill.rotation || 0; 
+                    } else { 
+                        holeShape = ["ROUND", holeW, holeW]; 
+                    }
+                    const mainPrim = pad.top || pad.bottom || pad.innerRep;
+                    if (mainPrim) {
+                        targets.push({ layerId: 12, prim: mainPrim, holeShape: holeShape, holeRotation: holeRotation, isPlated: pad.drill.isPlated });
+                    }
+                } else {
+                    // === 无钻孔的情况 (Surface Mount / SMT / Blind Inner) ===
+                    
+                    // 1. 顶层焊盘 (保持原逻辑，生成 PAD)
+                    if (pad.top) {
+                        targets.push({ layerId: 1, prim: pad.top, isPlated: true });
+                    }
+                    
+                    // 2. 底层焊盘 (保持原逻辑，生成 PAD)
+                    if (pad.bottom) {
+                        targets.push({ layerId: 2, prim: pad.bottom, isPlated: true });
+                    }
+                    
+                    // 3. 内层处理 (修改：遍历 pad.inners，为每个存在的内层生成 FILL)
+                    if (pad.inners && pad.inners.length > 0) {
+                        // 遍历该位置下所有的内层焊盘数据
+                        pad.inners.forEach(prim => {
+                            const ids = nextIds(); 
+                            
+                            // 准备几何数据
+                            const x = PadTool.toMil(prim.x);
+                            const y = PadTool.toMil(prim.y);
+                            const w = PadTool.toMil(prim.w);
+                            const h = PadTool.toMil(prim.h);
+                            const rotation = prim.rotation || 0;
+                            
+                            let pathContent = [];
+
+                            if (prim.shape === 'POLYGON') {
+                                // 异形：直接转换路径
+                                pathContent = generatePathStr(prim.path);
+                            } else if (prim.shape === 'OVAL') {
+                                // === 长圆形 (Obround) 逻辑 ===
+                                if (Math.abs(w - h) < 0.01) {
+                                    // 宽高接近，视为圆形
+                                    pathContent = ["CIRCLE", x, y, w / 2];
+                                } else {
+                                    // 计算旋转参数
+                                    const rad = -rotation * Math.PI / 180;
+                                    const cos = Math.cos(rad);
+                                    const sin = Math.sin(rad);
+                                    const rotate = (px, py) => ({
+                                        x: parseFloat((x + px * cos - py * sin).toFixed(4)),
+                                        y: parseFloat((y + px * sin + py * cos).toFixed(4))
+                                    });
+
+                                    const r = Math.min(w, h) / 2;
+                                    const dist = (Math.max(w, h) / 2) - r; 
+                                    const isHorizontal = w > h;
+
+                                    let p1, p2, p3, p4;
+                                    
+                                    if (isHorizontal) {
+                                        p1 = {x: -dist, y: r};
+                                        p2 = {x: dist, y: r};
+                                        p3 = {x: dist, y: -r};
+                                        p4 = {x: -dist, y: -r};
+                                    } else {
+                                        p1 = {x: -r, y: dist};
+                                        p2 = {x: r, y: dist};
+                                        p3 = {x: r, y: -dist};
+                                        p4 = {x: -r, y: -dist};
+                                    }
+
+                                    const P1 = rotate(p1.x, p1.y);
+                                    const P2 = rotate(p2.x, p2.y);
+                                    const P3 = rotate(p3.x, p3.y);
+                                    const P4 = rotate(p4.x, p4.y);
+
+                                    if (isHorizontal) {
+                                        pathContent = [
+                                            P1.x, P1.y, "L",
+                                            P2.x, P2.y, "ARC", -180, // 右侧半圆
+                                            P3.x, P3.y, "L",
+                                            P4.x, P4.y, "ARC", -180, // 左侧半圆
+                                            P1.x, P1.y
+                                        ];
+                                    } else {
+                                        pathContent = [
+                                            P1.x, P1.y, "ARC", -180, // 顶部半圆
+                                            P2.x, P2.y, "L",
+                                            P3.x, P3.y, "ARC", -180, // 底部半圆
+                                            P4.x, P4.y, "L",
+                                            P1.x, P1.y
+                                        ];
+                                    }
+                                }
+                            } else if (prim.shape === 'RECT' || prim.shape === 'ROUNDRECT') {
+                                // === 矩形/圆角矩形逻辑 (修正版：修复旋转方向) ===
+                                const dx = w / 2;
+                                const dy = h / 2;
+                                
+                                // [关键修改]：移除负号。
+                                // EDA 坐标系通常 Y 轴向上，正角度为逆时针旋转。
+                                // 原代码的 -rotation 导致了顺时针旋转，视觉上产生水平翻转的效果。
+                                const rad = rotation * Math.PI / 180; 
+                                
+                                const cos = Math.cos(rad);
+                                const sin = Math.sin(rad);
+                                
+                                // 旋转变换函数 (标准笛卡尔坐标系旋转)
+                                // x' = x*cos - y*sin
+                                // y' = x*sin + y*cos
+                                const rotate = (px, py) => ({
+                                    x: parseFloat((x + px * cos - py * sin).toFixed(4)),
+                                    y: parseFloat((y + px * sin + py * cos).toFixed(4))
+                                });
+
+                                // 计算圆角半径
+                                let r = 0;
+                                if (prim.radiusRatio && prim.radiusRatio > 0) {
+                                    r = Math.min(w, h) / 2 * (prim.radiusRatio / 100);
+                                }
+
+                                if (r > 0.001) {
+                                    // --- 生成圆角填充路径 (Line + Arc) ---
+                                    // 逆时针顺序绘制：上边 -> 左边 -> 下边 -> 右边 (或反之)
+                                    // 这里保持顺时针点序绘制，配合 -90 的 Arc Sweep (顺时针弧)
+                                    // 点的定义基于未旋转的矩形，然后应用 rotate 函数变换到世界坐标
+                                    
+                                    const pt_top_l = rotate(-dx + r, dy); // 顶左
+                                    const pt_top_r = rotate(dx - r, dy);  // 顶右
+                                    
+                                    const pt_right_t = rotate(dx, dy - r); // 右上
+                                    const pt_right_b = rotate(dx, -dy + r);// 右下
+                                    
+                                    const pt_bottom_r = rotate(dx - r, -dy); // 底右
+                                    const pt_bottom_l = rotate(-dx + r, -dy);// 底左
+                                    
+                                    const pt_left_b = rotate(-dx, -dy + r); // 左下
+                                    const pt_left_t = rotate(-dx, dy - r);  // 左上
+
+                                    pathContent = [
+                                        pt_top_l.x, pt_top_l.y, "L",
+                                        pt_top_r.x, pt_top_r.y, "ARC", -90, pt_right_t.x, pt_right_t.y,
+                                        "L",
+                                        pt_right_b.x, pt_right_b.y, "ARC", -90, pt_bottom_r.x, pt_bottom_r.y,
+                                        "L",
+                                        pt_bottom_l.x, pt_bottom_l.y, "ARC", -90, pt_left_b.x, pt_left_b.y,
+                                        "L",
+                                        pt_left_t.x, pt_left_t.y, "ARC", -90, pt_top_l.x, pt_top_l.y
+                                    ];
+
+                                } else {
+                                    // --- 直角矩形逻辑 ---
+                                    const p1 = rotate(-dx, -dy);
+                                    const p2 = rotate(dx, -dy);
+                                    const p3 = rotate(dx, dy);
+                                    const p4 = rotate(-dx, dy);
+
+                                    pathContent = [
+                                        p1.x, p1.y, "L",
+                                        p2.x, p2.y, "L",
+                                        p3.x, p3.y, "L",
+                                        p4.x, p4.y, "L",
+                                        p1.x, p1.y
+                                    ];
+                                }
+                            } else {
+                                // 圆形
+                                const r = Math.min(w, h) / 2;
+                                pathContent = ["CIRCLE", x, y, r];
+                            }
+
+                            // 生成图元 JSON
+                            // 注意：这里的 layerId 使用的是当前遍历到的 prim.layerId
+                            // 这样就能分别生成 Inner1, Inner2, Inner3 等层的填充
+                            if (isV3) {
+                                const obj = { "type": "FILL", "ticket": ids.t, "id": ids.id };
+                                const content = {
+                                    "partitionId": "", "groupId": groupId, "netName": netName, 
+                                    "layerId": prim.layerId, 
+                                    "width": 0, 
+                                    "fillStyle": "SOLID", 
+                                    "path": [pathContent], 
+                                    "locked": false, "zIndex": -1, "isBridgingCopper": false, "networkList": [], "refs": null
+                                };
+                                output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                            } else {
+                                const arr = ["FILL", ids.id, groupId, netName, prim.layerId, 0, 0, [pathContent], 0];
+                                output.push(JSON.stringify(arr));
+                            }
+                        });
+                    }
+                }
+
+                targets.forEach(tgt => {
+                    const ids = nextIds();
+                    const layerId = tgt.layerId;
+                    const mainPrim = tgt.prim;
+
+                    let rotation = mainPrim.rotation || 0;
+                    if (tgt.holeShape && tgt.holeShape[0] === "SLOT" && Math.abs(rotation) < 0.1 && Math.abs(tgt.holeRotation) > 0.1) {
+                        rotation = tgt.holeRotation;
+                    }
+                    
+                    let primW = PadTool.toMil(mainPrim.w); 
+                    let primH = PadTool.toMil(mainPrim.h);
+                    const originalRot = mainPrim.rotation || 0;
+                    
+                    const rotDiff = Math.abs(rotation - originalRot) % 180;
+                    if (Math.abs(rotDiff - 90) < 1.0) { const temp = primW; primW = primH; primH = temp; }
+
+                    const makeShapeArr = (s, w, h, rr) => {
+                        let shapeName = s;
+                        if (shapeName === 'ROUND') shapeName = 'ELLIPSE';
+                        if (shapeName === 'ELLIPSE' || shapeName === 'OVAL') return [shapeName, w, h];
+                        
+                        // [修改处] 强制保留第4位参数，即使是 0
+                        if (shapeName === 'RECT') return ["RECT", w, h, rr || 0];
+                        
+                        return [shapeName, w, h];
+                    };
+                    
+                    // --- [新增/修改] 对异形焊盘的处理 ---
+                    let defaultShape;
+                    if (mainPrim.shape === 'POLYGON') {
+                        // 异形焊盘：["POLYGON", [path...]]
+                        const pathArr = generatePathStr(mainPrim.path);
+                        defaultShape = ["POLYGON", pathArr];
+                    } else {
+                        // 普通焊盘
+                        defaultShape = makeShapeArr(mainPrim.shape, primW, primH, mainPrim.radiusRatio || 0);
+                    }
+                    // ------------------------------------
+
+                    let cornerObj = getCornerObj(mainPrim);
+                    
+                    let specialPads = []; 
+                    if (layerId === 12) {
+                        const t = pad.top; const b = pad.bottom; const i = pad.innerRep;
+                        const isEq = (o1, o2) => {
+                            if (!o1 && !o2) return true;
+                            if (!o1 || !o2) return false;
+                            // 异形焊盘暂时不支持作为 specialPads 的比较逻辑，因为 path 太复杂
+                            if (o1.shape === 'POLYGON' || o2.shape === 'POLYGON') return false;
+
+                            return Math.abs(o1.w - o2.w) < 0.005 && Math.abs(o1.h - o2.h) < 0.005 && Math.abs((o1.rotation||0) - (o2.rotation||0)) < 0.1 && (o1.radiusRatio||0) === (o2.radiusRatio||0) && o1.shape === o2.shape;
+                        };
+                        
+                        if (!(isEq(t, b) && (i ? isEq(t, i) : true))) {
+                            const processInner = (p) => {
+                                // 简单处理：如果是 Polygon，这里暂不支持转为内层特殊焊盘形状，回退到 Rect
+                                if (p.shape === 'POLYGON') return ["RECT", 10, 10]; 
+
+                                let pw = PadTool.toMil(p.w); let ph = PadTool.toMil(p.h);
+                                const innerRot = p.rotation || 0; const innerDiff = Math.abs(rotation - innerRot) % 180;
+                                if (Math.abs(innerDiff - 90) < 1.0) [pw, ph] = [ph, pw];
+                                return makeShapeArr(p.shape, pw, ph, p.radiusRatio);
+                            };
+                            if (t) specialPads.push([1, 1, processInner(t)]);
+                            if (i) specialPads.push([1, 2, processInner(i)]); 
+                            if (b) specialPads.push([2, 2, processInner(b)]);
+                        }
+                    }
+
+                    let mt = null, mb = null, pt = null, pb = null;
+                    if (layerId === 12) {
+                         mt = PadTool.toMil(pad.exps.mt); mb = PadTool.toMil(pad.exps.mb);
+                         pt = PadTool.toMil(pad.exps.pt); pb = PadTool.toMil(pad.exps.pb);
+                    } else if (layerId === 1) { 
+                         mt = PadTool.toMil(pad.exps.mt); 
+                         pt = PadTool.toMil(pad.exps.pt);
+                    } else if (layerId === 2) { 
+                         mb = PadTool.toMil(pad.exps.mb); 
+                         pb = PadTool.toMil(pad.exps.pb);
+                    }
+
+                    let relRotation = 0;
+                    if (tgt.holeShape && tgt.holeShape[0] === 'SLOT') { 
+                        if (Math.abs(rotation - tgt.holeRotation) > 0.1) relRotation = tgt.holeRotation - rotation; 
+                    }
+
+                    if (isV3) {
+                        const obj = { "type": "PAD", "ticket": ids.t, "id": ids.id };
+                        // [修复代码]：增加 radius 字段，支持圆角矩形
+                        const padInfoObj = (defaultShape[0] === 'POLYGON') 
+                            ? { "padType": "POLYGON", "path": defaultShape[1] } 
+                            : { 
+                                "padType": defaultShape[0], 
+                                "width": defaultShape[1], 
+                                "height": defaultShape[2], 
+                                "radius": defaultShape[3] || 0  // <--- 核心修复：取出数组第4位的圆角参数
+                            };
+                        const content = { 
+                            "partitionId": "", "groupId": groupId, "netName": netName, "layerId": layerId, "num": pinNumber, 
+                            "centerX": padXMil, "centerY": padYMil, "padAngle": rotation, 
+                            "hole": tgt.holeShape ? { "holeType": tgt.holeShape[0], "width": tgt.holeShape[1], "height": tgt.holeShape[2] } : null, 
+                            "defaultPad": padInfoObj, 
+                            "specialPad": specialPads.map(sp => ({ "startLayer": sp[0], "endLayer": sp[1], "pad": { "padType": sp[2][0], "width": sp[2][1], "height": sp[2][2], "radius": sp[2][3]||0 } })), 
+                            "padOffsetX": 0, "padOffsetY": 0, "relativeAngle": relRotation, 
+                            "plated": tgt.isPlated !== undefined ? tgt.isPlated : true, 
+                            "padType": "NORMAL", 
+                            "topSolderExpansion": mt, "bottomSolderExpansion": mb, "topPasteExpansion": pt, "bottomPasteExpansion": pb, 
+                            "locked": false, "zIndex": null, "connectMode": null, "spokeSpace": null, "spokeWidth": null, "spokeAngle": null, "unusedInnerLayers": [], "padLen": 0, "attrsMap": {} 
+                        };
+                        output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                    } else {
+                        const arr = [ 
+                            "PAD", ids.id, groupId, netName, layerId, pinNumber, 
+                            padXMil, padYMil, rotation, 
+                            tgt.holeShape, 
+                            defaultShape, 
+                            specialPads, 
+                            0, 0, relRotation, 
+                            tgt.isPlated ? 1 : 0, 
+                            0, 
+                            mt, mb, pt, pb, 
+                            0, cornerObj, null, null, null, null, [] 
+                        ];
+                        output.push(JSON.stringify(arr));
+                    }
+                });
+            });
+
+            // ... (C. Vias 生成 - 保持不变) ...
+             remainingVias.forEach(v => {
+                const ids = nextIds();
+                const diaMil = PadTool.toMil(v.w);
+                // --- [新增 2] 计算过孔的层范围字符串 ---
+                let layerRangeStr = ""; 
+                if (v.pairStart && v.pairEnd) {
+                    const startIdx = getPhysLayerIndex(v.pairStart);
+                    const endIdx = getPhysLayerIndex(v.pairEnd);
+                    
+                    // 只有当两个都是有效的物理层，且不构通孔(1-Max)时才写入
+                    // 当然，如果用户显式选了 Top-Bottom，写 "1-N" 也是合法的，或者是空字符串表示通孔
+                    // 这里为了严谨，只要有定义且有效，就生成字符串
+                    if (startIdx !== null && endIdx !== null) {
+                        // 确保小的在前，大的在后 (例如 "1-2")
+                        const s = Math.min(startIdx, endIdx);
+                        const e = Math.max(startIdx, endIdx);
+                        
+                        // 如果是全通孔 (Top -> Bottom)，标准格式通常为空字符串，也可以是 "1-N"
+                        // 为了兼容性，如果是全层，保持空字符串；如果是埋盲孔，则输出
+                        if (s === 1 && e === copperCountVal) {
+                            layerRangeStr = ""; 
+                        } else {
+                            layerRangeStr = `${s}-${e}`;
+                        }
+                    }
+                }
+                // ------------------------------------
+                
+                // 遍历处理剩余的独立钻孔数据 v
+                if (!v.isPlated) {
+                    // === 分支 1：非金属化孔 (NPTH) ===
+                    // 计算半径和 mil 单位的坐标
+                    const radius = diaMil / 2;
+                    const x = PadTool.toMil(v.x);
+                    const y = PadTool.toMil(v.y);
+
+                    if (isV3) {
+                        // --- [修改] V3 格式处理：使用 FILL (实心填充) 替代 VIA ---
+                        const obj = { "type": "FILL", "ticket": ids.t, "id": ids.id };
+                        const content = { 
+                            "partitionId": "", 
+                            "groupId": 0, 
+                            "netName": "", 
+                            "layerId": 12,      // 12 = Multi-Layer
+                            "width": 1,         // 线宽，保留示例中的 1
+                            "fillStyle": "SOLID", // 填充模式：实心
+                            "path": [["CIRCLE", x, y, radius]], // 路径定义：[类型, x, y, 半径]
+                            "locked": false, 
+                            "zIndex": null, 
+                            "isBridgingCopper": false, 
+                            "networkList": [], 
+                            "refs": null 
+                        };
+                        output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                    } else {
+                        // --- V2 格式处理 ---
+                        // V2 中通常使用 "FILL" (填充区域) 或 "HOLE" (挖孔) 来表示非金属化孔
+                        // 此处生成一个圆形挖孔区域 (CIRCLE)，layerId 12 (Multi-Layer)
+                        // 格式: ["FILL", id, group, net, layerId, type(1=solid), 0, path, rot]
+                        const arr = ["FILL", ids.id, 0, "", 12, 1, 0, [["CIRCLE", x, y, radius]], 0];
+                        output.push(JSON.stringify(arr));
+                    }
+                } else {
+                    // === 分支 2：金属化孔 (PTH) ===
+                    
+                    if (v.isSlot) {
+                        // --- 情况 2.1：槽孔 (Slot) ---
+                        // 转换槽孔尺寸到 mil
+                        const w = PadTool.toMil(v.w);
+                        const h = PadTool.toMil(v.h);
+                        // 确定长边和短边
+                        const maxS = Math.max(w, h);
+                        const minS = Math.min(w, h);
+
+                        // 生成 V2 格式的 PAD (V2 对槽孔通常作为 PAD 处理)
+                        // 格式: ["PAD", id, group, net, layerId, pinNum, x, y, rot, holeShape, padShape, ...]
+                        // holeShape: ["SLOT", 长, 宽]
+                        // padShape: ["OVAL", 长+5mil, 宽+5mil] (默认加一点铜环宽度)
+                        const arr = [
+                            "PAD", ids.id, 0, "", 12, "1",
+                            PadTool.toMil(v.x), PadTool.toMil(v.y),
+                            v.rotation || 0,
+                            ["SLOT", maxS, minS],
+                            ["OVAL", maxS + 5, minS + 5], // 自动生成椭圆焊盘形状
+                            [], 0, 0, 0, 1, 0, null, null, null, null, 0, null, null, null, null, []
+                        ];
+                        output.push(JSON.stringify(arr));
+                    } else {
+                        // --- 情况 2.2：圆形钻孔 (Standard Via) ---
+                        const padMil = PadTool.toMil(v.padDia); // 过孔外径
+                        const mt = PadTool.toMil(v.topExp);     // 顶层阻焊扩展
+                        const mb = PadTool.toMil(v.botExp);     // 底层阻焊扩展
+
+                        if (isV3) {
+                            // --- V3 格式处理 ---
+                            const obj = { "type": "VIA", "ticket": ids.t, "id": ids.id };
+                            
+                            const content = {
+                                "partitionId": "",
+                                "groupId": 0,
+                                "netName": "",
+                                "ruleName": layerRangeStr,
+                                "centerX": PadTool.toMil(v.x),
+                                "centerY": PadTool.toMil(v.y),
+                                
+                                // [修改] 使用 Diameter (直径) 替代 Radius (半径)
+                                "holeDiameter": diaMil,   // 钻孔直径
+                                "viaDiameter": padMil,    // 过孔直径
+                                
+                                // [修改] 类型设为 NORMAL (参考你提供的正常源码)
+                                "viaType": "NORMAL",      
+                                
+                                "topSolderExpansion": mt,
+                                "bottomSolderExpansion": mb,
+                                "locked": false,
+                                "unusedInnerLayers": []   // 补充空数组，保持格式一致
+                            };
+                            output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                        } else {
+                            // --- V2 格式处理 ---
+                            // --- [修改 3] V2 格式导出逻辑 ---
+                            // 格式: ["VIA", id, group, net, layerRangeStr, x, y, drillDia, padDia, rot, topExp, botExp, 0]
+                            // layerRangeStr: 用于表示盲埋孔层对 (如 "1-2")，若是通孔则为空字符串 ""
+                            const arr = [
+                                "VIA", ids.id, 0, "",
+                                layerRangeStr,         // 之前计算好的层对字符串
+                                PadTool.toMil(v.x),
+                                PadTool.toMil(v.y),
+                                diaMil,                // 钻孔直径
+                                padMil,                // 过孔直径
+                                0,                     // 旋转角度
+                                mt,                    // 顶层阻焊扩展
+                                mb,                    // 底层阻焊扩展
+                                0
+                            ];
+                            output.push(JSON.stringify(arr));
+                        }
+                    }
+                }
+            });
+
+            // ... (D. Text 生成 - 保持不变) ...
+            if (config && config.tryNetlist && typeof flyingProbeData !== 'undefined' && flyingProbeData) {
+                try {
+                    const rows = flyingProbeData.components.rows;
+                    const fields = flyingProbeData.components.fields;
+                    const idxName = fields.indexOf("COMPONENT_NAME"); 
+                    const idxLayer = fields.indexOf("LAYER"); 
+                    const idxX = fields.indexOf("X_COORDINATE"); 
+                    const idxY = fields.indexOf("Y_COORDINATE"); 
+                    const idxAngle = fields.indexOf("ANGLE");
+
+                    if (idxName >= 0 && idxX >= 0) {
+                        let textCount = 0;
+                        rows.forEach(row => {
+                            const name = row[idxName];
+                            if (!name || name.toUpperCase().startsWith("PAD")) {
+                                return; 
+                            }
+                            const layerStr = row[idxLayer]; 
+                            const x = parseFloat(row[idxX]); 
+                            const y = parseFloat(row[idxY]); 
+                            const angle = parseFloat(row[idxAngle] || 0);
+
+                            let layerId = 9; // Top Assembly
+                            let isMirror = 0; 
+                            if (layerStr === "B") { 
+                                layerId = 10; // Bottom Assembly
+                                isMirror = 1; 
+                            }
+
+                            let groupId = 0; 
+                            if (compCounts[name] && compCounts[name] > 1) { 
+                                groupId = name; 
+                            }
+
+                            const ids = nextIds();
+                            
+                            if (isV3) {
+                                // --- [修改] V3 格式处理：使用 STRING (字符串) ---
+                                const obj = { "type": "STRING", "ticket": ids.t, "id": ids.id };
+                                
+                                const content = { 
+                                    "partitionId": "", 
+                                    "groupId": groupId, 
+                                    "layerId": layerId, 
+                                    "x": x,                       // 位置 X
+                                    "y": y,                       // 位置 Y
+                                    "text": name,                 // 内容 (元件位号)
+                                    "fontFamily": "default2",     // 字体名称
+                                    "fontSize": 20,               // 字号 (mil)
+                                    "strokeWidth": 4,             // 粗细 (mil)
+                                    "bold": false,                // 是否加粗 (示例为0, 定义为boolean, 使用false)
+                                    "italic": false,              // 是否斜体
+                                    // [注意] 对齐模式：原 V2 代码使用的 5 代表 CENTER-CENTER。
+                                    // 即使示例给了 LEFT_BOTTOM，为了保证导入位置不偏移，这里建议使用 "CENTER"。
+                                    // 如果你确定坐标是左下角坐标，可以改为 "LEFT_BOTTOM"。
+                                    "origin": "CENTER_MIDDLE",           
+                                    "angle": angle,               // 旋转角度
+                                    "reverse": false,             // 是否反相扩展
+                                    "expansion": 0,               // 反相扩展尺寸
+                                    "mirror": !!isMirror,         // 是否镜像
+                                    "locked": false,              // 是否锁定
+                                    "zIndex": null,               // Z 轴高度
+                                    "specialColor": null          // 特殊颜色
+                                };
+                                output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                            } else {
+                                const arr = ["STRING", ids.id, groupId, layerId, x, y, name, "default2", 20, 4, 0, 0, 5, angle, 0, 0, isMirror, 0];
+                                output.push(JSON.stringify(arr));
+                            }
+                            textCount++;
+                        });
+                        console.log(`生成了 ${textCount} 个位号标记`);
+                    }
+                } catch (e) { console.error("生成位号标记失败:", e); }
+            }
+
+            // ... (E. Tracks 生成 - 保持不变) ...
+            if (data.tracks) {
+                data.tracks.forEach(t => {
+                    const ids = nextIds();
+                    const x1 = PadTool.toMil(t.x1); const y1 = PadTool.toMil(t.y1);
+                    const x2 = PadTool.toMil(t.x2); const y2 = PadTool.toMil(t.y2);
+                    const width = PadTool.toMil(t.width);
+                    if (isV3) {
+                        // --- [修改] V3 格式处理 ---
+                        
+                        // 1. 确定图元类型
+                        // 原逻辑将 LINE 转为 TRACK，根据新定义，LINE 对应的 type 就是 "LINE"
+                        const objType = t.type; 
+                        const obj = { "type": objType, "ticket": ids.t, "id": ids.id };
+
+                        // 2. 构建通用 Content (LINE 和 ARC 共有的字段)
+                        const content = { 
+                            "partitionId": "", 
+                            "groupId": 0, 
+                            "netName": "", 
+                            "layerId": t.layerId, 
+                            "locked": false, 
+                            "zIndex": null, 
+                            "width": width,        // [修改] 线宽属性名为 width (原为 strokeWidth)
+                            "startX": x1,          // [修改] 起始 X
+                            "startY": y1,          // [修改] 起始 Y
+                            "endX": x2,            // [修改] 结束 X
+                            "endY": y2             // [修改] 结束 Y
+                        };
+
+                        // 3. 针对 ARC (圆弧) 的特殊处理
+                        if (objType === 'ARC') {
+                            content.angle = t.angle; // 圆弧角
+                            content.arcType = "DOT"; // [新增] 圆弧类型：DOT (两点圆弧)
+                        }
+
+                        output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                    } else {
+                        // --- V2 格式处理 (保持不变) ---
+                        if (t.type === 'LINE') { 
+                            const arr = ["LINE", ids.id, 0, "", t.layerId, x1, y1, x2, y2, width, 0]; 
+                            output.push(JSON.stringify(arr)); 
+                        } else { 
+                            const angle = parseFloat(t.angle.toFixed(4)); 
+                            const arr = ["ARC", ids.id, 0, "", t.layerId, x1, y1, x2, y2, angle, width, 0]; 
+                            output.push(JSON.stringify(arr)); 
+                        }
+                    }
+                });
+                console.log(`生成了 ${data.tracks.length} 条导线`);
+            }
+
+            // ... (F. Polys 生成 - 保持不变) ...
+            if (data.polys) {
+                data.polys.forEach(p => {
+                    const ids = nextIds();
+                    const width = PadTool.toMil(p.width);
+                    const pathObj = generatePathStr(p.path);
+
+                    if (isV3) {
+                    // --- [修改] V3 格式处理：使用 POLY (折线) 替代 REGION ---
+                    const obj = { "type": "POLY", "ticket": ids.t, "id": ids.id };
+                    
+                    const content = {
+                        "partitionId": "",
+                        "groupId": 0,
+                        "netName": "",
+                        "layerId": p.layerId,
+                        "locked": false,
+                        "zIndex": null,
+                        "width": width,          // [修改] 线宽属性名为 width (原为 strokeWidth)
+                        "path": pathObj,         // 路径数组 [x, y, "L", x, y...]
+                        "polyType": "NORMAL"     // [新增] 折线类型：NORMAL (普通)
+                    };
+                    
+                    output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                } else {
+                    // --- V2 格式处理 (保持不变) ---
+                    // ["POLY", id, group, net, layer, width, path, type]
+                    const arr = ["POLY", ids.id, 0, "", p.layerId, width, pathObj, 0];
+                    output.push(JSON.stringify(arr));
+                }
+                });
+                console.log(`生成了 ${data.polys.length} 个折线`);
+            }
+
+            // ... (G. Fills 生成 - 保持不变) ...
+            if (data.fills) {
+                data.fills.forEach(f => {
+                    const ids = nextIds();
+                    const singlePath = generatePathStr(f.path);
+                    if (isV3) {
+                        // --- [修改] V3 格式处理 ---
+                        const obj = { "type": "FILL", "ticket": ids.t, "id": ids.id };
+                        
+                        const content = {
+                            "partitionId": "",
+                            "groupId": 0,
+                            "netName": "",
+                            "layerId": f.layerId,
+                            "width": 0.2,           // 线宽 (保持与 V2 逻辑一致，或者设为 0)
+                            "fillStyle": "SOLID",   // [新增] 填充模式：SOLID (实心填充)
+                            "path": [singlePath],   // [注意] 路径需要包裹在数组中 [[x, y, ...]]
+                            "locked": false,
+                            "zIndex": null,
+                            "isBridgingCopper": false, // 是否是桥接铜
+                            "networkList": [],
+                            "refs": null            // 关联图元
+                        };
+                        
+                        output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                    } else {
+                        // --- V2 格式处理 (保持不变) ---
+                        // ["FILL", id, group, net, layer, type(0.2?? width?), type(0=solid), path, rot]
+                        const arr = ["FILL", ids.id, 0, "", f.layerId, 0.2, 0, [singlePath], 0];
+                        output.push(JSON.stringify(arr));
+                    }
+                });
+                console.log(`生成了 ${data.fills.length} 个填充区域`);
+            }
+
+            // ... (H. Image 生成 - 保持不变) ...
+            if (data.images) {
+                data.images.forEach(img => {
+                    const ids = nextIds();
+                    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                    
+                    const processPt = (xMM, yMM) => {
+                        const x = PadTool.toMil(xMM);
+                        const y = PadTool.toMil(yMM);
+                        if (x < minX) minX = x; if (x > maxX) maxX = x;
+                        if (y < minY) minY = y; if (y > maxY) maxY = y;
+                        return { x, y };
+                    };
+                    const rawPath = img.path;
+                    if (!rawPath || rawPath.length === 0) return;
+                    const pathArr = [];
+                    if (rawPath[0].cmd === 'M') {
+                        const p = processPt(rawPath[0].x, rawPath[0].y);
+                        pathArr.push(p.x, p.y); 
+                    } else {
+                        const p = processPt(rawPath[0].x, rawPath[0].y);
+                        pathArr.push(p.x, p.y);
+                    }
+                    for (let i = 1; i < rawPath.length; i++) {
+                        const op = rawPath[i];
+                        if (op.cmd === 'L') {
+                            const p = processPt(op.x, op.y);
+                            pathArr.push("L", p.x, p.y);
+                        } else if (op.cmd === 'A') {
+                            const p = processPt(op.x, op.y);
+                            pathArr.push("L", p.x, p.y); 
+                        }
+                    }
+                    // --- [修改开始] 计算宽高并进行非零校验 ---
+                    const width = maxX - minX;
+                    const height = maxY - minY;
+
+                    // 如果尺寸无效 (<= 0.001 mil)，则剔除
+                    if (width <= 0.001 || height <= 0.001) return; 
+                    // --- [修改结束] ---
+                    // const width = maxX - minX;
+                    // const height = maxY - minY;
+                    const tlX = minX;
+                    const tlY = maxY;
+                    let imgRot = 0;
+                    let imgMirror = 0;
+                    // (前置逻辑：判断是否为底层，设置旋转和镜像)
+                    if ([2, 4, 6, 8, 10].includes(img.layerId)) {
+                        imgRot = 360;  
+                        imgMirror = 1; 
+                    }
+
+                    if (isV3) {
+                        // --- [修改] V3 格式处理：IMAGE 图元 ---
+                        const obj = { "type": "IMAGE", "ticket": ids.t, "id": ids.id };
+                        
+                        const content = {
+                            "partitionId": "",
+                            "groupId": 0,
+                            "layerId": img.layerId,
+                            
+                            // 坐标与尺寸
+                            "startX": tlX,          // 左上 X
+                            "startY": tlY,          // 左上 Y
+                            "width": width,         // 宽
+                            "height": height,       // 高
+                            
+                            // 变换属性
+                            "angle": imgRot,        // 旋转角度 (通常底层为 360)
+                            "mirror": !!imgMirror,  // 镜像 (将 0/1 转为 false/true)
+                            
+                            // 路径数据：需注意 V3 图片路径是二维数组 [[path...]]
+                            "path": [pathArr],      
+                            
+                            // 通用属性
+                            "locked": false,
+                            "zIndex": -1,
+                            "specialColor": null
+                        };
+
+                        output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                    } else {
+                        // --- V2 格式处理 (保持不变) ---
+                        // ["IMAGE", id, group, layer, x, y, w, h, rot, mirror, [path], locked]
+                        const arr = ["IMAGE", ids.id, 0, img.layerId, tlX, tlY, width, height, imgRot, imgMirror, [pathArr], 0];
+                        output.push(JSON.stringify(arr));
+                    }
+                });
+                console.log(`生成了 ${data.images.length} 个图片图元`);
+            }
+
+            // ... (I. Text Lines 生成 - 保持不变) ...
+            if (data.textLines) {
+                data.textLines.forEach(t => {
+                    const ids = nextIds();
+                    const width = PadTool.toMil(t.width);
+                    const pathObj = generatePathStr(t.path);
+                    if (isV3) {
+                    // --- [修改] V3 格式处理：文字折线使用 POLY 图元 ---
+                    const obj = { "type": "POLY", "ticket": ids.t, "id": ids.id };
+                    
+                    const content = { 
+                        "partitionId": "", 
+                        "groupId": 0, 
+                        "netName": "", 
+                        "layerId": t.layerId, 
+                        "locked": false, 
+                        "zIndex": null, 
+                        "width": width,          // [修改] 线宽属性名为 width (原为 strokeWidth)
+                        "path": pathObj,         // 路径数组
+                        "polyType": "NORMAL"     // [新增] 折线类型：普通
+                    };
+                    
+                    output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                } else {
+                    // --- V2 格式处理 (保持不变) ---
+                    // ["POLY", id, group, net, layer, width, path, type]
+                    const arr = ["POLY", ids.id, 0, "", t.layerId, width, pathObj, 0];
+                    output.push(JSON.stringify(arr));
+                }
+                });
+                console.log(`生成了 ${data.textLines.length} 条文字折线`);
+            }
+
+            return output;
+        }
+    };
+

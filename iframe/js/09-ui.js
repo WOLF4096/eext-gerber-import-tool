@@ -1,0 +1,1126 @@
+﻿// ====================================================================================
+// 09-ui.js  —  UI 渲染与交互
+// ------------------------------------------------------------------------------------
+// 职责：
+//   · 图层表格渲染 renderLayerTable，分组与图层类型下拉初始化渲染
+//   · 画布绘制 drawCanvas / resizeCanvas / requestDraw / drawRulers / autoFitView
+//   · Tab 切换、单位切换、DPI 选择、板层数与板子类型等交互
+//   · 缩放 / 平移 / 框选，以及挂到 window 上供 HTML 内联 onclick 调用的处理函数
+// 依赖：03-state.js（画布上下文）、02-config.js（图层数据）。
+// 注意：本文件在【加载时】即为画布注册 wheel / mousedown / contextmenu 等监听。
+// 加载顺序：第 9 个
+// ====================================================================================
+
+// ====================================================================================
+// 7. UI 交互与渲染 (UI & Rendering)
+// ====================================================================================
+
+    // renderLayerTable 表格渲染 (DOM 生成)。
+    function renderLayerTable() {
+        const container = document.getElementById('layer-list-content');
+        container.innerHTML = `
+            <div class="layer-table-head">
+                <div class="col-color">颜色</div>
+                <div class="col-vis">启用</div>
+                <div class="col-name">文件名</div>
+                <div class="col-layer">图层类型</div>
+            </div>
+        `;
+
+        const copperCountEl = document.getElementById('cfg-copper-layers');
+        const copperCount = copperCountEl ? (parseInt(copperCountEl.value) || 2) : 2;
+        const maxInnerId = 12 + copperCount; // InnerX 的最大 ID 限制
+
+        // --- 1. 构建图层类型下拉菜单 (保持原逻辑) ---
+        let selectOptionsHtml = '';
+        uiGroups.forEach(group => {
+            const validIds = group.ids.filter(id => {
+                if (group.id === "INNER") {
+                    if (copperCount <= 2) return false;
+                    return id <= maxInnerId;
+                }
+                return true; 
+            });
+            if (validIds.length === 0) return; 
+
+            selectOptionsHtml += `<optgroup label="${group.name}">`;
+            validIds.forEach(id => {
+                const def = layerDefs[id];
+                if (def) selectOptionsHtml += `<option value="${id}">${def.name}</option>`;
+            });
+            selectOptionsHtml += `</optgroup>`;
+        });
+
+        // --- [新增] 2. 构建“仅铜层”下拉菜单选项 (Top, Inner..., Bottom) ---
+        // 用于埋盲孔的起始/结束层选择
+        let copperPairOptions = '';
+        
+        // Top (ID 1)
+        copperPairOptions += `<option value="1">顶层线路</option>`;
+        
+        // Inner Layers (ID 15 ~ maxInnerId)
+        // 注意：maxInnerId = 12 + copperCount. 
+        // 比如 4层板: max=16 (Inner1=15, Inner2=16)
+        if (copperCount > 2) {
+            for (let i = 15; i < 15 + (copperCount - 2); i++) {
+                // 如果 layerDefs 中有定义中文名则使用，否则用 InnerX
+                const name = layerDefs[i] ? layerDefs[i].name : `内层${i-14}`;
+                copperPairOptions += `<option value="${i}">${name}</option>`;
+            }
+        }
+        
+        // Bottom (ID 2)
+        copperPairOptions += `<option value="2">底层线路</option>`;
+
+
+        // --- 3. 渲染列表 ---
+        let currentGroupId = null;
+
+        loadedFiles.forEach(file => {
+            const gid = getGroupId(file.layerId);
+            const groupName = uiGroups.find(g => g.id === gid).name;
+
+            if (gid !== currentGroupId) {
+                const gDiv = document.createElement('div');
+                gDiv.className = 'layer-header'; 
+                gDiv.innerHTML = `
+                    <input type="checkbox" id="group-cb-${gid}" onchange="toggleGroup('${gid}', this.checked)" style="margin-right:8px">
+                    <span>${groupName}</span>
+                `;
+                container.appendChild(gDiv);
+                currentGroupId = gid;
+            }
+
+            // 主行
+            const row = document.createElement('div');
+            row.className = 'layer-row';
+            row.dataset.group = gid;
+            
+            const def = layerDefs[file.layerId] || layerDefs[57];
+            const rowSelectHtml = selectOptionsHtml.replace(`value="${file.layerId}"`, `value="${file.layerId}" selected`);
+
+            row.innerHTML = `
+                <div class="col-color"><input type="color" value="${def.color}" onchange="updateColor(${file.layerId},this.value)"></div>
+                <div class="col-vis"><input type="checkbox" class="file-cb" ${file.visible?'checked':''} onchange="toggleFile(${file.index},this.checked)"></div>
+                <div class="col-name" title="${file.name}">${file.name}</div>
+                <div class="col-layer"><select class="layer-select" onchange="changeLayer(${file.index},this.value)">${rowSelectHtml}</select></div>
+            `;
+            container.appendChild(row);
+
+            // --- [新增] 如果是埋盲孔 (ID 502)，插入子行 ---
+            if (file.layerId === 502) {
+                const subRow = document.createElement('div');
+                subRow.className = 'layer-sub-row';
+                
+                // 确定下拉框的默认值
+                // 如果文件对象里没有 pairStart/End (比如手动切过来的)，默认设为 Top/Bottom
+                const valStart = file.pairStart || 1; 
+                const valEnd = file.pairEnd || 2;
+
+                // 生成带有 selected 的 HTML
+                const startHtml = copperPairOptions.replace(`value="${valStart}"`, `value="${valStart}" selected`);
+                const endHtml = copperPairOptions.replace(`value="${valEnd}"`, `value="${valEnd}" selected`);
+
+                subRow.innerHTML = `
+                    <span>└ 从 </span>
+                    <select onchange="updateViaPair(${file.index}, 'start', this.value)">${startHtml}</select>
+                    <span> 到 </span>
+                    <select onchange="updateViaPair(${file.index}, 'end', this.value)">${endHtml}</select>
+                `;
+                container.appendChild(subRow);
+            }
+        });
+
+        const activeGroups = [...new Set(loadedFiles.map(f => getGroupId(f.layerId)))];
+        activeGroups.forEach(gid => updateGroupCheckboxState(gid));
+    }
+
+    // 新增 forceSolid 参数，用于独立控制是否强制 100% 不透明
+    function drawCanvas(forceNoDpr = false, forceSolid = false) {
+        // --- [核心修复] ---
+        // 如果是导出模式 (forceNoDpr=true)，强制 dpr=1，忽略屏幕缩放
+        // 否则使用屏幕的 devicePixelRatio
+        const dpr = forceNoDpr ? 1 : (window.devicePixelRatio || 1);
+        
+        // 1. 清空主画布 (使用逻辑像素尺寸)
+        const logicalW = mainCanvas.width / dpr;
+        const logicalH = mainCanvas.height / dpr;
+
+        ctx.save();
+        ctx.setTransform(1,0,0,1,0,0); // 重置矩阵以清空全屏
+        ctx.clearRect(0,0, mainCanvas.width, mainCanvas.height);
+        ctx.restore(); 
+        
+        // --- 修复：在导出模式下，由于 mainCanvas.width 重置清除了 context 状态，
+        // 我们需要手动补上 scale，否则画面会极小。
+        // 但在屏幕渲染模式下，scale 是由 resizeCanvas 处理的，这里不需要补。
+        if (forceNoDpr) {
+            ctx.save();
+            ctx.scale(1, 1); // 显式重置为 1:1
+        } else {
+            // 屏幕渲染时，resizeCanvas 已经做过 scale(dpr, dpr) 了
+            // 但为了保险，drawCanvas 内部恢复 context 状态时要小心
+            ctx.save();
+        }
+
+        // 绘制原点
+        ctx.save();
+        ctx.translate(viewState.offsetX, viewState.offsetY);
+        ctx.scale(viewState.scale, -viewState.scale); 
+        ctx.beginPath(); ctx.strokeStyle = '#CCC'; ctx.lineWidth = 1/viewState.scale;
+        ctx.moveTo(-200000,0); ctx.lineTo(200000,0); ctx.moveTo(0,-200000); ctx.lineTo(0,200000); ctx.stroke();
+        ctx.restore();
+
+
+        // 权重排序 (数值越大越靠上层显示，后绘制)
+        const renderPriority = {
+            // --- Level 1: 最高优先级 ---
+            11: 1000, // 板框 (Outline)
+            47: 900,  // 钻孔 (Drill)
+            500: 900, // 金属化通孔
+            501: 900, // 非金属化通孔
+            502: 900, // 埋盲孔
+
+            // --- Level 2: 顶层堆叠 (铜 < 阻焊 < 丝印 < 锡膏 < 补强 < 装配) ---
+            9:  850,  // Top Assembly
+            58: 840,  // Top Stiffener
+            7:  830,  // Top Paste
+            3:  820,  // Top Silk
+            5:  810,  // Top Solder Mask
+            1:  800,  // Top Copper
+
+            // --- Level 3: 内层 (动态计算，位于 600~700 之间) ---
+
+            // --- Level 4: 底层堆叠 (铜 < 阻焊 < 丝印 < 锡膏 < 补强 < 装配) ---
+            10: 450,  // Bot Assembly
+            59: 440,  // Bot Stiffener
+            8:  430,  // Bot Paste
+            4:  420,  // Bot Silk
+            6:  410,  // Bot Solder Mask
+            2:  400,  // Bot Copper
+
+            // --- Level 5: 背景层 ---
+            57: 200,  // Other
+            56: 100,  // Drill Drawing
+            14: 60,   // Mechanical
+            13: 50    // Document
+        };
+
+        const getZ = (id) => {
+            // 1. 如果在静态表中定义了，直接返回
+            if (renderPriority[id] !== undefined) return renderPriority[id];
+            
+            // 2. 动态计算内层优先级 (Inner1 ~ Inner32 对应 ID 15 ~ 46)
+            // 要求: Inner1 (ID 15) > Inner2 (ID 16) > ...
+            // 算法: 基础值 600 + (最大ID 46 - 当前ID)
+            // 结果: Inner1 (15) => 600 + 31 = 631
+            //       Inner32 (46) => 600 + 0 = 600
+            if (id >= 15 && id <= 46) {
+                return 600 + (46 - id); 
+            }
+            
+            return 0; // 未知图层沉底
+        };
+        
+        // 排序
+        const renderOrder = loadedFiles.slice().sort((a,b) => getZ(a.layerId) - getZ(b.layerId));
+
+
+        // 2. 循环绘制每个文件
+        renderOrder.forEach(file => {
+            if (!file.visible) return;
+            const def = layerDefs[file.layerId] || layerDefs[57] || { color: '#888', alpha: 1 };
+
+            // A. 清空 Buffer
+            bufCtx.save();
+            bufCtx.setTransform(1,0,0,1,0,0);
+            bufCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+            bufCtx.restore(); // 如果 bufferCanvas 上下文没有做 dpr scale，这里其实不需要 restore，但为了安全
+            
+            // B. Buffer 绘图设置
+            bufCtx.save();
+            // 关键：Buffer 也要应用 dpr 和 视图变换
+            bufCtx.scale(dpr, dpr); 
+            bufCtx.translate(viewState.offsetX, viewState.offsetY);
+            bufCtx.scale(viewState.scale, -viewState.scale);
+
+            bufCtx.fillStyle = def.color;
+            bufCtx.strokeStyle = def.color;
+            if(file.layerId === 47) { bufCtx.fillStyle="#ffffff"; bufCtx.strokeStyle="#ffffff"; }
+            
+            // ... (原有的绘制 Loop 保持不变，包含 commands 遍历) ...
+            const { commands, apertures } = file.data;
+            let currX=0, currY=0;
+            bufCtx.lineCap = 'round'; bufCtx.lineJoin = 'round'; 
+            bufCtx.beginPath();
+
+            for (let i = 0; i < commands.length; i++) {
+                const cmd = commands[i];
+
+                // 极性处理
+                if (cmd.polarity === 'C') {
+                    bufCtx.stroke(); 
+                    bufCtx.beginPath();
+                    bufCtx.globalCompositeOperation = 'destination-out'; 
+                } else {
+                    bufCtx.stroke(); 
+                    bufCtx.beginPath();
+                    bufCtx.globalCompositeOperation = 'source-over'; 
+                }
+
+                if (cmd.type === 2) { // Move
+                    bufCtx.stroke(); 
+                    bufCtx.beginPath();
+                    bufCtx.moveTo(cmd.x, cmd.y);
+                    currX = cmd.x; currY = cmd.y;
+                } else if (cmd.type === 1) { // Line / Arc
+                    const ap = apertures[cmd.ap];
+                    const width = (ap && ap.params && ap.params[0]) ? ap.params[0] : (0.05);
+                    
+                    if (bufCtx.lineWidth !== width) {
+                        bufCtx.stroke(); bufCtx.beginPath();
+                        bufCtx.lineWidth = width;
+                        bufCtx.moveTo(currX, currY); 
+                    }
+                    
+                    if (cmd.mode === 2 || cmd.mode === 3) { 
+                        const cx = cmd.prevX + cmd.i; const cy = cmd.prevY + cmd.j;
+                        const radius = Math.sqrt(cmd.i*cmd.i + cmd.j*cmd.j);
+                        const sa = Math.atan2(cmd.prevY - cy, cmd.prevX - cx);
+                        const ea = Math.atan2(cmd.y - cy, cmd.x - cx);
+                        bufCtx.arc(cx, cy, radius, sa, ea, cmd.mode === 2);
+                    } else {
+                        bufCtx.lineTo(cmd.x, cmd.y);
+                    }
+                    currX = cmd.x; currY = cmd.y;
+                } else if (cmd.type === 3) { // Flash (D03)
+                    bufCtx.stroke(); bufCtx.beginPath();
+                    const ap = apertures[cmd.ap];
+                    const safeAp = ap || { type:'C', params:[0.2] }; 
+                    
+                    // 【修改注意】: 这里不要直接转大写，因为宏名称是区分大小写的
+                    const rawType = safeAp.type; 
+                    const type = rawType.toUpperCase(); 
+                    const p = safeAp.params || [];
+
+                    // 获取宏定义 (注意 file.data.macros 是第一步 parse 返回的)
+                    const macros = file.data.macros || {}; 
+
+                    bufCtx.save();
+                    bufCtx.translate(cmd.x, cmd.y);
+                    
+                    // 【新增】优先检查宏
+                    if (macros[rawType]) {
+                        const macro = macros[rawType];
+                        if (macro.type === 'POLYGON' && macro.points.length > 0) {
+                            bufCtx.beginPath();
+                            bufCtx.moveTo(macro.points[0].x, macro.points[0].y);
+                            for (let k = 1; k < macro.points.length; k++) {
+                                bufCtx.lineTo(macro.points[k].x, macro.points[k].y);
+                            }
+                            bufCtx.closePath();
+                            bufCtx.fill();
+                        }
+                    }
+                    
+                    // --- 形状绘制逻辑 (包含对 EasyEDA Pro 宏形状的支持) ---
+                    
+                    if (type === 'RECT' || (type === 'R' && p.length >= 2)) {
+                        // 标准矩形
+                        if (p.length >= 3 && p[2]) bufCtx.rotate(p[2] * Math.PI / 180); // 仅在有旋转参数时旋转
+                        bufCtx.fillRect(-p[0]/2, -p[1]/2, p[0], p[1]);
+                    }
+                    // --- EasyEDA Pro Drill Symbols (宏映射) ---
+                    else if (type.includes('ICON')) {
+                        const size = 0.5; // 默认图标大小
+                        const hs = size/2;
+                        
+                        if (type.includes('RECT')) {
+                            // IconRect, IconRect2
+                            bufCtx.fillRect(-hs, -hs, size, size);
+                        } else if (type.includes('TRIANGLE')) {
+                            // IconTriangle
+                            bufCtx.beginPath();
+                            bufCtx.moveTo(0, hs);
+                            bufCtx.lineTo(hs, -hs);
+                            bufCtx.lineTo(-hs, -hs);
+                            bufCtx.closePath();
+                            bufCtx.fill();
+                        } else if (type.includes('DIAMOND')) {
+                            // IconDiamond
+                            bufCtx.beginPath();
+                            bufCtx.moveTo(0, hs);
+                            bufCtx.lineTo(hs, 0);
+                            bufCtx.lineTo(0, -hs);
+                            bufCtx.lineTo(-hs, 0);
+                            bufCtx.closePath();
+                            bufCtx.fill();
+                        } else if (type.includes('PLUS')) {
+                            // IconPlus
+                            bufCtx.lineWidth = size * 0.2;
+                            bufCtx.moveTo(0, -hs); bufCtx.lineTo(0, hs);
+                            bufCtx.moveTo(-hs, 0); bufCtx.lineTo(hs, 0);
+                            bufCtx.stroke();
+                        } else if (type.includes('X')) {
+                            // IconX
+                            bufCtx.lineWidth = size * 0.2;
+                            bufCtx.moveTo(-hs, -hs); bufCtx.lineTo(hs, hs);
+                            bufCtx.moveTo(hs, -hs); bufCtx.lineTo(-hs, hs);
+                            bufCtx.stroke();
+                        } else if (type.includes('STAR')) {
+                            // IconStar4, IconStar6 (简化为 *)
+                            bufCtx.lineWidth = size * 0.15;
+                            bufCtx.moveTo(0, -hs); bufCtx.lineTo(0, hs);
+                            bufCtx.moveTo(-hs*0.86, -hs*0.5); bufCtx.lineTo(hs*0.86, hs*0.5);
+                            bufCtx.moveTo(hs*0.86, -hs*0.5); bufCtx.lineTo(-hs*0.86, hs*0.5);
+                            bufCtx.stroke();
+                        } else {
+                            // 未知 Icon，画个圈代替
+                            bufCtx.arc(0, 0, hs, 0, Math.PI*2); bufCtx.fill();
+                        }
+                    }
+                    // --- 标准形状 ---
+                    else if (type === 'ROUNDRECT' && p.length >= 5) {
+                        const dia = p[0], rad = dia/2;
+                        const dx = p[3]-p[1], dy = p[4]-p[2];
+                        const side1 = Math.sqrt(dx*dx + dy*dy);
+                        const side2 = Math.sqrt(Math.pow(-p[1]-p[3],2) + Math.pow(-p[2]-p[4],2));
+                        const rot = Math.atan2(dy, dx);
+                        bufCtx.rotate(rot);
+                        bufCtx.beginPath();
+                        if(bufCtx.roundRect) bufCtx.roundRect(-(side1+dia)/2, -(side2+dia)/2, side1+dia, side2+dia, rad);
+                        else bufCtx.rect(-(side1+dia)/2, -(side2+dia)/2, side1+dia, side2+dia);
+                        bufCtx.fill();
+                    }
+                    else if (type === 'OVAL' && p.length === 5) {
+                        bufCtx.lineCap = 'round'; bufCtx.lineWidth = p[0];
+                        bufCtx.beginPath(); bufCtx.moveTo(p[1], p[2]); bufCtx.lineTo(p[3], p[4]); bufCtx.stroke();
+                    }
+                    else if (type === 'C') { 
+                        // Circle
+                        const dia = p[0];
+                        bufCtx.beginPath(); bufCtx.arc(0, 0, dia/2, 0, Math.PI*2); bufCtx.fill();
+                        
+                        // 兼容处理：如果 C 后面跟了两个参数 (例如 EasyEDA Pro 的 0.44X0.37)，
+                        // 虽然这不符合标准 Gerber C 的定义，但为了避免空白，我们忽略第二个参数或将其视为孔。
+                        // 标准逻辑是：param[1] 是孔径。
+                        if (p.length > 1 && p[1] > 0) {
+                             bufCtx.globalCompositeOperation = "destination-out";
+                             bufCtx.beginPath(); bufCtx.arc(0,0,p[1]/2, 0, Math.PI*2); bufCtx.fill();
+                             // 恢复
+                             bufCtx.globalCompositeOperation = cmd.polarity === 'C' ? 'destination-out' : 'source-over';
+                        }
+                    } 
+                    else if (type === 'O') { // Obround
+                        const w=p[0], h=p[1], r=Math.min(w,h)/2;
+                        bufCtx.beginPath();
+                        if(bufCtx.roundRect) bufCtx.roundRect(-w/2, -h/2, w, h, r); else bufCtx.rect(-w/2, -h/2, w, h);
+                        bufCtx.fill();
+                        if (p.length > 2 && p[2] > 0) { // Hole
+                             bufCtx.globalCompositeOperation = "destination-out";
+                             bufCtx.beginPath(); bufCtx.arc(0,0,p[2]/2, 0, Math.PI*2); bufCtx.fill();
+                             bufCtx.globalCompositeOperation = cmd.polarity === 'C' ? 'destination-out' : 'source-over';
+                        }
+                    }
+                    
+                    bufCtx.restore();
+                    bufCtx.beginPath(); bufCtx.moveTo(cmd.x, cmd.y); currX = cmd.x; currY = cmd.y;
+
+                } else if (cmd.type === 4) { // Region
+                    bufCtx.stroke(); bufCtx.beginPath(); 
+                    cmd.path.forEach(op => {
+                        if (op.cmd === 'M') bufCtx.moveTo(op.x, op.y);
+                        else if (op.cmd === 'L') bufCtx.lineTo(op.x, op.y);
+                        else if (op.cmd === 'A') {
+                            const cx = op.startX + op.i, cy = op.startY + op.j;
+                            const r = Math.sqrt(op.i*op.i + op.j*op.j);
+                            const sa = Math.atan2(op.startY - cy, op.startX - cx);
+                            const ea = Math.atan2(op.y - cy, op.x - cx);
+                            bufCtx.arc(cx, cy, r, sa, ea, op.mode === 2);
+                        }
+                    });
+                    bufCtx.closePath(); bufCtx.fill('evenodd'); 
+                    bufCtx.beginPath(); 
+                    if (cmd.path.length > 0) {
+                        const last = cmd.path[cmd.path.length-1];
+                        currX = last.x; currY = last.y;
+                        bufCtx.moveTo(currX, currY); 
+                    }
+                } else if (cmd.type === 6) { //槽孔 (Slot) 绘制逻辑
+                    bufCtx.stroke(); bufCtx.beginPath();
+                    
+                    const ap = apertures[cmd.ap];
+                    // 获取钻刀直径
+                    const dia = (ap && ap.params && ap.params[0]) ? ap.params[0] : 0.1;
+                    
+                    // 设置绘制样式：线宽=直径，线端=圆头
+                    bufCtx.lineWidth = dia;
+                    bufCtx.lineCap = 'round';
+                    bufCtx.lineJoin = 'round';
+                    
+                    // 绘制直线（因为线宽和线端样式的存在，会自动变成两头圆的槽）
+                    bufCtx.moveTo(cmd.startX, cmd.startY);
+                    bufCtx.lineTo(cmd.x, cmd.y);
+                    
+                    bufCtx.stroke();
+                    
+                    // 重置，防止影响后续绘图
+                    bufCtx.beginPath();
+                    currX = cmd.x; currY = cmd.y;
+                }
+            }
+            bufCtx.stroke();
+            bufCtx.restore();
+
+            // C. 合成 (注意 drawImage 时因为 ctx 已经 scale 了 dpr，
+            // 而 bufferCanvas 本身是 dpr 倍大的，所以绘制尺寸要除以 dpr 或者调整 drawImage 参数)
+            
+            ctx.save();
+            // ctx.globalAlpha = def.alpha;
+			// ctx.globalAlpha = forceNoDpr ? 1.0 : def.alpha;
+			ctx.globalAlpha = forceSolid ? 1.0 : def.alpha;
+            // 关键：因为 ctx 已经 scale(dpr, dpr)，这里绘制逻辑尺寸即可
+            // bufferCanvas 是物理像素尺寸，drawImage 会自动映射
+            ctx.drawImage(bufferCanvas, 0, 0, logicalW, logicalH);
+            ctx.restore();
+        });
+        // 仅在非导出模式下绘制标尺
+        if (!forceNoDpr) drawRulers();
+    }
+
+    function resizeCanvas() {
+        const c = document.getElementById('canvas-container');
+        const dpr = window.devicePixelRatio || 1;
+        
+        // 1. 设置物理像素 (用于清晰度)
+        mainCanvas.width = c.clientWidth * dpr;
+        mainCanvas.height = c.clientHeight * dpr;
+        
+        rulerH.width = c.clientWidth * dpr;
+        rulerH.height = 20 * dpr; // 标尺高度固定
+        rulerV.width = 20 * dpr;
+        rulerV.height = c.clientHeight * dpr;
+        
+        bufferCanvas.width = mainCanvas.width;
+        bufferCanvas.height = mainCanvas.height;
+
+        // 2. 设置 CSS 尺寸 (用于布局)
+        mainCanvas.style.width = c.clientWidth + 'px';
+        mainCanvas.style.height = c.clientHeight + 'px';
+        rulerH.style.width = c.clientWidth + 'px';
+        rulerH.style.height = '20px';
+        rulerV.style.width = '20px';
+        rulerV.style.height = c.clientHeight + 'px';
+
+        // 3. 规范化坐标系：所有绘图操作依然使用 CSS 像素逻辑，Scale 自动处理 HiDPI
+        ctx.scale(dpr, dpr);
+        ctxH.scale(dpr, dpr);
+        ctxV.scale(dpr, dpr);
+        // buffer 不需要 scale，因为它是在内部 transform 处理的，或者也统一 scale
+
+        requestDraw(); // 触发重绘
+    }
+
+
+    // switchTab, setUnitUI (简单的 UI 响应)。
+    // --- UI 切换逻辑 (新增) ---
+    function switchTab(tabId, btnElement) {
+        // 1. 切换 Tab 样式
+        document.querySelectorAll('.tab-item').forEach(t => t.classList.remove('active'));
+        btnElement.classList.add('active');
+
+        // 2. 切换内容显示
+        document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+    }
+
+    // --- UI 控件适配逻辑 (适配新界面) ---
+    function setUnitUI(val, type) {
+        // 视觉切换
+        const group = document.getElementById(`ui-units-group-${type}`);
+        if (group) {
+            group.querySelectorAll('.seg-btn').forEach(btn => {
+                if(btn.dataset.val === val) btn.classList.add('active');
+                else btn.classList.remove('active');
+            });
+        }
+
+        // 逻辑映射
+        if (type === 'graphic') {
+            document.getElementById('cfg-units').value = val;
+        } 
+        // --- 【新增】钻孔单位逻辑 ---
+        else if (type === 'drill') {
+            document.getElementById('cfg-d-units').value = val;
+        }
+    }
+
+
+
+    // --- 排序与索引重置辅助函数 ---
+    function sortLoadedFiles() {
+        // 1. 创建优先级映射表
+        const idPriority = {};
+        let pCounter = 0;
+        uiGroups.forEach(g => g.ids.forEach(id => idPriority[id] = pCounter++));
+        
+        // 2. 根据图层ID的优先级进行排序
+        loadedFiles.sort((a,b) => {
+            const pa = idPriority[a.layerId] !== undefined ? idPriority[a.layerId] : 9999;
+            const pb = idPriority[b.layerId] !== undefined ? idPriority[b.layerId] : 9999;
+            return pa - pb;
+        });
+        
+        // 3. 关键修复：重新分配索引 (index)
+        loadedFiles.forEach((f, i) => f.index = i);
+    }
+
+    // --- [新增] 更新板子属性统计 ---
+    function updateBoardStats() {
+        // 1. 层数 (直接读取设置)
+        const layerEl = document.getElementById('cfg-copper-layers');
+        const layerCount = layerEl ? layerEl.value : 2;
+        document.getElementById('prop-layers').textContent = layerCount;
+
+        // 2. 尺寸 (基于板框层 ID 11 的包围盒)
+        const outlineFile = loadedFiles.find(f => f.layerId === 11);
+        const dimEl = document.getElementById('prop-dim');
+        
+        if (outlineFile) {
+            const b = outlineFile.data.bounds;
+            if (b.minX !== Infinity && b.maxX !== -Infinity) {
+                const w = (b.maxX - b.minX).toFixed(3);
+                const h = (b.maxY - b.minY).toFixed(3);
+                dimEl.textContent = `${w} x ${h} mm`;
+            } else {
+                dimEl.textContent = "无法计算";
+            }
+        } else {
+            dimEl.textContent = "未找到板框";
+        }
+
+        // 3. 钻孔统计
+        let thCount = 0; // 通孔 (ID 47, 500, 501)
+        let bbCount = 0; // 埋盲孔 (ID 502)
+
+        loadedFiles.forEach(f => {
+            // 统计 Flash 指令 (Type 3) 作为孔的数量
+            // 注意：某些通过 G85 槽孔定义的钻孔可能在 parse 阶段被转换，这里主要统计 Flash
+            const flashCount = f.data.commands.filter(c => c.type === 3).length;
+
+            if (f.layerId === 47 || f.layerId === 500 || f.layerId === 501) {
+                thCount += flashCount;
+            } else if (f.layerId === 502) {
+                bbCount += flashCount;
+            }
+        });
+
+        document.getElementById('prop-th').textContent = thCount;
+        
+        const bbRow = document.getElementById('row-prop-bb');
+        const bbEl = document.getElementById('prop-bb');
+        
+        if (bbCount > 0) {
+            bbEl.textContent = bbCount;
+            bbRow.style.display = 'flex';
+        } else {
+            bbRow.style.display = 'none';
+        }
+    }
+
+    // 自动适配视图
+    function autoFitView() {
+        if (loadedFiles.length === 0) return;
+        let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+        loadedFiles.forEach(f => {
+            const b = f.data.bounds;
+            if(b.minX !== Infinity) {
+                minX = Math.min(minX, b.minX); maxX = Math.max(maxX, b.maxX);
+                minY = Math.min(minY, b.minY); maxY = Math.max(maxY, b.maxY);
+            }
+        });
+        if(minX === Infinity) return;
+        const w = maxX - minX; const h = maxY - minY;
+        const cx = (minX + maxX) / 2; const cy = (minY + maxY) / 2;
+        const cw = document.getElementById('canvas-container').clientWidth;
+        const ch = document.getElementById('canvas-container').clientHeight;
+        const scaleX = cw / (w * 1.2 || 100); const scaleY = ch / (h * 1.2 || 100);
+        viewState.scale = Math.min(scaleX, scaleY);
+        if(!isFinite(viewState.scale)) viewState.scale = 10;
+        viewState.offsetX = cw / 2 - cx * viewState.scale; 
+        viewState.offsetY = ch / 2 + cy * viewState.scale;
+    }
+
+    // 辅助：获取图层所属的组ID
+    function getGroupId(layerId) {
+        let group = uiGroups.find(g => g.ids.includes(layerId));
+        if (!group) group = uiGroups[4]; // 默认为自定义/其他
+        return group.id;
+    }
+
+    // 辅助：更新指定组的复选框状态 (核心逻辑)
+    function updateGroupCheckboxState(gid) {
+        const groupCb = document.getElementById(`group-cb-${gid}`);
+        if (!groupCb) return;
+
+        // 找到该组下的所有文件
+        const groupFiles = loadedFiles.filter(f => getGroupId(f.layerId) === gid);
+        
+        if (groupFiles.length === 0) {
+            groupCb.checked = false;
+            groupCb.indeterminate = false;
+            return;
+        }
+
+        const total = groupFiles.length;
+        const visibleCount = groupFiles.filter(f => f.visible).length;
+
+        if (visibleCount === 0) {
+            // 1. 全不选
+            groupCb.checked = false;
+            groupCb.indeterminate = false;
+        } else if (visibleCount === total) {
+            // 2. 全选
+            groupCb.checked = true;
+            groupCb.indeterminate = false;
+        } else {
+            // 3. 半选 (显示横线)
+            groupCb.checked = false; // 这里设为false或true都可以，关键是下一行
+            groupCb.indeterminate = true;
+        }
+    }
+
+    // 更新颜色
+    window.updateColor = (id, val) => { if(layerDefs[id]) layerDefs[id].color = val; drawCanvas(); };
+
+    // --- [新增] 更新埋盲孔层对信息 ---
+    window.updateViaPair = (idx, type, val) => {
+        const file = loadedFiles[idx];
+        if (!file) return;
+        
+        const layerVal = parseInt(val);
+        if (type === 'start') {
+            file.pairStart = layerVal;
+        } else {
+            file.pairEnd = layerVal;
+        }
+        console.log(`File [${file.name}] pair updated: ${file.pairStart} -> ${file.pairEnd}`);
+    };
+
+    // 切换组可见性
+    window.toggleGroup = (gid, isChecked) => { 
+        // 1. 更新数据状态
+        let hasChanged = false;
+        loadedFiles.forEach(f => {
+            if (getGroupId(f.layerId) === gid) {
+                if (f.visible !== isChecked) {
+                    f.visible = isChecked;
+                    hasChanged = true;
+                }
+            }
+        });
+
+        // 2. 更新 DOM：同步下方所有子项的复选框
+        if (hasChanged) {
+            // 找到所有属于该组的行内的复选框
+            const rows = document.querySelectorAll(`.layer-row[data-group="${gid}"] .file-cb`);
+            rows.forEach(cb => cb.checked = isChecked);
+            
+            // 3. 更新自身状态 (清除半选样式)
+            const groupCb = document.getElementById(`group-cb-${gid}`);
+            if (groupCb) groupCb.indeterminate = false;
+
+            drawCanvas();
+        }
+    };
+
+    // 切换单文件可见性
+    window.toggleFile = (idx, isChecked) => { 
+        // 1. 更新文件可见性
+        const file = loadedFiles[idx];
+        file.visible = isChecked; 
+        
+        // 2. 反向更新组复选框状态 (核心修改)
+        const gid = getGroupId(file.layerId);
+        updateGroupCheckboxState(gid);
+
+        // 3. 重绘
+        drawCanvas(); 
+    };
+    
+    // 2. 修改图层类型
+    window.changeLayer = (idx, val) => { 
+        const newId = parseInt(val);
+        const file = loadedFiles[idx];
+        
+        // 如果旧的不是 502，新的变成了 502，或者反之，都需要重新渲染子行
+        const needsRerender = (file.layerId === 502) !== (newId === 502);
+
+        file.layerId = newId; 
+
+        if (newId === 58 || newId === 59) setBoardType('FPC');
+
+        sortLoadedFiles();
+        
+        // 关键修改：如果涉及 502 变化，必须 renderLayerTable 才能显示/隐藏下拉框
+        // 简单的做法是任何类型改变都重绘表格，不仅更安全，代码也更少
+        renderLayerTable(); 
+        drawCanvas(); 
+    };
+
+    // 请求绘制帧
+    function requestDraw() {
+        if (!isRenderPending) {
+            isRenderPending = true;
+            requestAnimationFrame(() => {
+                drawCanvas();
+                isRenderPending = false;
+            });
+        }
+    }
+
+    // --- 标尺绘制 (适配 HiDPI + 自适应步进算法 1-2-5序列) ---
+    function drawRulers() {
+        const dpr = window.devicePixelRatio || 1;
+        
+        // 1. 使用逻辑尺寸清空画布 (适配 Retina/HiDPI)
+        const logicalW = rulerH.width / dpr;
+        const logicalH = rulerH.height / dpr;
+        const logicalVH = rulerV.height / dpr;
+        const logicalVW = rulerV.width / dpr;
+
+        // ctxH/V 已经在 resizeCanvas 中被 scale(dpr, dpr)
+        ctxH.clearRect(0, 0, logicalW, logicalH);
+        ctxV.clearRect(0, 0, logicalVW, logicalVH);
+
+        // 2. 自适应步进计算核心逻辑
+        const isMM = viewState.unit === 'mm';
+        const mmToMil = 39.3700787;
+        
+        // [核心配置] 屏幕上理想的刻度间距 (像素)
+        // 算法会尝试让刻度间距接近这个值
+        const idealSpacingPx = 80; 
+        
+        // 计算当前缩放比例下，理想间距对应的"物理世界"距离 (单位: mm)
+        // viewState.scale 是 px/mm
+        const rawStepWorldMM = idealSpacingPx / viewState.scale;
+        
+        // 根据当前显示单位，转换到目标单位域进行"吸附"
+        // 如果是 mil 模式，我们希望吸附到 100mil, 50mil 这种整数，而不是 2.54mm 的倍数
+        let stepRawDisplay; 
+        if (isMM) {
+            stepRawDisplay = rawStepWorldMM;
+        } else {
+            stepRawDisplay = rawStepWorldMM * mmToMil;
+        }
+
+        // --- 1-2-5 序列吸附算法 ---
+        // 计算数量级 (例如 0.35 -> magnitude=0.1, 35 -> magnitude=10)
+        const magnitude = Math.pow(10, Math.floor(Math.log10(stepRawDisplay)));
+        // 计算残差 (例如 0.35/0.1 = 3.5)
+        const residual = stepRawDisplay / magnitude;
+        
+        // 查表吸附：选择最接近的标准化步进 (1, 2, 5)
+        let standardStep;
+        if (residual < 1.5) standardStep = 1;       // 1.0, 10, 0.1
+        else if (residual < 3.5) standardStep = 2;  // 2.0, 20, 0.2
+        else standardStep = 5;                      // 5.0, 50, 0.5
+        
+        // 最终计算出的"漂亮"的显示步进 (单位跟随 viewState.unit)
+        const niceDisplayStep = standardStep * magnitude; 
+        
+        // 将步进转换回世界坐标系 (mm)，用于后续绘图循环
+        const worldStep = isMM ? niceDisplayStep : (niceDisplayStep / mmToMil);
+
+        // --- 自动精度计算 ---
+        // 避免出现 0.300000004 这种情况
+        // 如果步进是 0.1，精度设为 1；步进是 0.5，精度设为 1；步进是 10，精度设为 0
+        let precision = 0;
+        if (niceDisplayStep < 1) {
+             precision = Math.max(0, Math.ceil(-Math.log10(niceDisplayStep)));
+        }
+
+        // 3. 样式设置
+        ctxH.fillStyle = '#aaa'; ctxH.font = '10px Arial'; ctxH.textAlign = 'left'; ctxH.strokeStyle = '#555';
+        ctxV.fillStyle = '#aaa'; ctxV.font = '10px Arial'; ctxV.textAlign = 'right'; ctxV.textBaseline = 'middle'; ctxV.strokeStyle = '#555';
+
+        // 4. 绘制 X 轴标尺 (Horizontal)
+        // 计算可见区域的世界坐标范围
+        const startWorldX = -viewState.offsetX / viewState.scale;
+        const endWorldX = (logicalW - viewState.offsetX) / viewState.scale;
+        
+        // 对齐起始点 (Snap to Grid)
+        // 关键：必须从 worldStep 的整数倍开始画，否则刻度会浮动
+        // 增加 buffer 防止边缘刻度没画出来
+        const startTickX = Math.floor(startWorldX / worldStep) * worldStep;
+        
+        ctxH.beginPath();
+        for (let x = startTickX; x < endWorldX + worldStep; x += worldStep) {
+            const screenX = x * viewState.scale + viewState.offsetX;
+            
+            // 剔除屏幕外的绘制指令 (性能优化)
+            if (screenX < -50 || screenX > logicalW + 50) continue;
+
+            // 绘制主刻度线
+            ctxH.moveTo(screenX, 0); ctxH.lineTo(screenX, 20);
+            
+            // 计算标签数值
+            let labelVal = isMM ? x : (x * mmToMil);
+            
+            // [防抖动] 处理 -0.000 问题
+            if (Math.abs(labelVal) < 1e-10) labelVal = 0;
+            
+            // 格式化文字 (应用自动精度)
+            const labelStr = labelVal.toFixed(precision);
+            ctxH.fillText(labelStr, screenX + 4, 12);
+
+            // 绘制次级刻度 (简单二分)
+            const subX = screenX + (worldStep / 2) * viewState.scale;
+            if (subX < logicalW) {
+                 ctxH.moveTo(subX, 15); ctxH.lineTo(subX, 20);
+            }
+        }
+        ctxH.stroke();
+
+        // 5. 绘制 Y 轴标尺 (Vertical)
+        // 注意：Canvas Y轴向下，但 PCB 坐标通常向上，viewState transform 中 Y 是翻转的 (-scale)
+        // 视口顶部的世界坐标 (World Y at Screen Top)
+        const topWorldY = viewState.offsetY / viewState.scale;
+        // 视口底部的世界坐标 (World Y at Screen Bottom)
+        const bottomWorldY = (viewState.offsetY - logicalVH) / viewState.scale;
+        
+        // 对齐起始点
+        const startTickY = Math.floor(topWorldY / worldStep) * worldStep;
+        
+        ctxV.beginPath();
+        // 因为坐标系翻转，WorldY 从上到下是减小的，所以用减法遍历
+        for (let y = startTickY; y > bottomWorldY - worldStep; y -= worldStep) {
+            const screenY = viewState.offsetY - y * viewState.scale;
+            
+            if (screenY < -50 || screenY > logicalVH + 50) continue;
+
+            // 绘制主刻度线
+            ctxV.moveTo(0, screenY); ctxV.lineTo(20, screenY);
+            
+            let labelVal = isMM ? y : (y * mmToMil);
+            if (Math.abs(labelVal) < 1e-10) labelVal = 0;
+            const labelStr = labelVal.toFixed(precision);
+            
+            // 旋转文字使其垂直阅读更自然
+            ctxV.save(); 
+            ctxV.translate(10, screenY - 2); 
+            ctxV.rotate(-Math.PI/2);
+            ctxV.fillText(labelStr, -2, 0); 
+            ctxV.restore();
+
+            // 绘制次级刻度
+            // 注意：屏幕 Y 向下增加，World Y 减小，所以次级刻度在当前刻度的"下方" (screenY + halfStep)
+            const subY = screenY + (worldStep / 2) * viewState.scale;
+            if (subY < logicalVH) {
+                ctxV.moveTo(15, subY); ctxV.lineTo(20, subY);
+            }
+        }
+        ctxV.stroke();
+        
+        // 6. 填充左上角死角背景
+        ctxH.fillStyle = '#252526'; ctxH.fillRect(0,0,20,20);
+    }
+
+    // --- 7. 鼠标交互 (优化版：带缩放限制) ---
+    mainCanvas.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        
+        // 1. 获取鼠标当前在画布上的位置
+        const rect = mainCanvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        // 2. 计算鼠标指向的世界坐标 (缩放前的实际物理坐标)
+        const wx = (mx - viewState.offsetX) / viewState.scale;
+        const wy = (viewState.offsetY - my) / viewState.scale;
+
+        // 3. 预计算新的缩放值
+        const zoomFactor = e.deltaY < 0 ? 1.5 : 0.6666;
+        let newScale = viewState.scale * zoomFactor;
+
+        // --- [新增] 缩放限制逻辑 ---
+        // 获取画布当前最小边长 (用于计算适配比例)
+        const minScreenDim = Math.min(mainCanvas.clientWidth, mainCanvas.clientHeight) || 500;
+
+        // 限制 A: 缩小限制 (最大可视范围 10000mm)
+        const minScale = minScreenDim / 10000;
+
+        // 限制 B: 放大限制 (最小可视范围 0.02mm)
+        const maxScale = minScreenDim / 0.02;
+
+        // 执行截断
+        if (newScale < minScale) newScale = minScale;
+        if (newScale > maxScale) newScale = maxScale;
+        // ---------------------------
+
+        // 4. 应用新的缩放值
+        viewState.scale = newScale;
+
+        // 5. 反向计算 Offset，确保鼠标指向的世界坐标位置不变 (实现以鼠标为中心缩放)
+        viewState.offsetX = mx - wx * viewState.scale;
+        viewState.offsetY = my + wy * viewState.scale; 
+
+        requestDraw(); // 使用异步绘制
+    }, { passive: false }); // 显式声明非被动，确保 preventDefault 生效
+
+    // 鼠标按下事件
+    mainCanvas.addEventListener('mousedown', (e) => {
+        if (e.button===2 || e.button===1) {
+            viewState.isDragging = true;
+            viewState.lastX = e.clientX; viewState.lastY = e.clientY;
+            mainCanvas.style.cursor = 'grabbing';
+        }
+    });
+    
+    // 鼠标移动事件
+    window.addEventListener('mousemove', (e) => {
+        if (viewState.isDragging) {
+            viewState.offsetX += e.clientX - viewState.lastX;
+            viewState.offsetY += e.clientY - viewState.lastY;
+            viewState.lastX = e.clientX; viewState.lastY = e.clientY;
+            requestDraw(); // 使用异步绘制
+        }
+    });
+    
+    // 鼠标松开事件
+    window.addEventListener('mouseup', () => { viewState.isDragging=false; mainCanvas.style.cursor='default'; });
+    
+    // 右键菜单屏蔽
+    mainCanvas.addEventListener('contextmenu', e=>e.preventDefault());
+    
+    // 单位切换按钮事件
+    document.getElementById('unit-btn').addEventListener('click', function() {
+        viewState.unit = viewState.unit==='mm'?'mil':'mm';
+        this.textContent = viewState.unit;
+        drawCanvas();
+    });
+
+    // --- 修复后的步进器与UI同步逻辑 ---
+
+    // 2. 步进器调整 (支持所有整数位/小数位调整)
+    window.stepVal = (targetId, delta) => {
+        const input = document.getElementById(targetId);
+        if (!input) return;
+
+        let val = parseInt(input.value) + delta;
+        // 限制范围 1 ~ 8
+        if (val < 1) val = 1;
+        if (val > 8) val = 8;
+        
+        input.value = val;
+        
+        // 立即更新对应的 UI 显示文本
+        // 规则：ID 为 'cfg-dec' 对应 'ui-val-dec'
+        // 其他规则：'cfg-xxx' 对应 'ui-val-xxx'
+        let uiId = "";
+        if (targetId === 'cfg-dec') {
+            uiId = 'ui-val-dec';
+        } else {
+            uiId = targetId.replace('cfg', 'ui-val');
+        }
+        
+        const uiEl = document.getElementById(uiId);
+        if (uiEl) uiEl.textContent = val;
+    };
+
+    // 3. 核心：从隐藏 Input 同步状态到 UI 显示
+    // (在自动检测、重置、手动点击后调用)
+    window.syncUiFromState = function() {
+        // 同步单位按钮状态
+        const currentUnit = document.getElementById('cfg-units').value;
+        setUnitUI(currentUnit, 'graphic'); // 确保图形单位UI同步
+        
+        // --- 修复：同步所有数值显示 ---
+        
+        // 1. 图形参数
+        const gInt = document.getElementById('cfg-g-int').value;
+        const gDec = document.getElementById('cfg-dec').value;
+        if(document.getElementById('ui-val-g-int')) document.getElementById('ui-val-g-int').textContent = gInt;
+        if(document.getElementById('ui-val-dec')) document.getElementById('ui-val-dec').textContent = gDec;
+
+        // 2. 钻孔参数
+        const dInt = document.getElementById('cfg-d-int').value;
+        const dDec = document.getElementById('cfg-d-dec').value;
+        if(document.getElementById('ui-val-d-int')) document.getElementById('ui-val-d-int').textContent = dInt;
+        if(document.getElementById('ui-val-d-dec')) document.getElementById('ui-val-d-dec').textContent = dDec;
+    };
+    // --- 新增：DPI 联动逻辑 ---
+
+    // 1. 点击预设按钮调用
+    window.updateDpiUI = (val) => {
+        val = parseInt(val);
+        // 更新隐藏的核心配置 Input
+        document.getElementById('cfg-dpi').value = val;
+        
+        // 更新输入框显示
+        document.getElementById('ui-dpi-input').value = val;
+        
+        // 更新按钮高亮状态
+        highlightDpiBtn(val);
+    };
+
+    // 2. 手动输入时调用
+    window.handleCustomDpiInput = (val) => {
+        if (!val) return;
+        const numVal = parseInt(val);
+        
+        // 更新隐藏的核心配置 Input
+        document.getElementById('cfg-dpi').value = numVal;
+        
+        // 尝试匹配按钮高亮 (如果输入的是 1200，则高亮 1200 按钮，否则取消所有高亮)
+        highlightDpiBtn(numVal);
+    };
+
+    // 辅助：高亮匹配的按钮
+    function highlightDpiBtn(val) {
+        // 修改点：这里的 ID 从 #ui-dpi-presets 改为 #ui-dpi-group，以匹配 HTML
+        document.querySelectorAll('#ui-dpi-group .dpi-btn').forEach(btn => {
+            if (parseInt(btn.dataset.val) === val) {
+                btn.classList.add('active');
+            } else {
+                btn.classList.remove('active');
+            }
+        });
+    }
+
+    // 为了兼容原有的 setDpi 调用 (如果还有遗漏的旧代码调用它)
+    window.setDpi = window.updateDpiUI;
+    
+    // 2. 处理铜层数变更
+    window.handleLayerCountChange = (val) => {
+        console.log("当前铜层数设置为:", val);
+        
+        // 关键：层数改变后，重新渲染表格，触发 renderLayerTable 中的过滤逻辑
+        renderLayerTable();
+
+        // [新增] 同步更新属性面板显示的层数
+        if(document.getElementById('prop-layers')) {
+            document.getElementById('prop-layers').textContent = val;
+        }
+    };
+
+    // 1. 设置板子类型并更新 UI (FPC/PCB)
+    window.setBoardType = (type) => {
+        // 更新隐藏输入框的值
+        const input = document.getElementById('cfg-board-type');
+        if (input) input.value = type;
+
+        // 更新按钮的高亮激活状态
+        const group = document.getElementById('ui-board-type');
+        if (group) {
+            group.querySelectorAll('.seg-btn').forEach(btn => {
+                if (btn.dataset.val === type) {
+                    btn.classList.add('active'); // 激活目标按钮
+                } else {
+                    btn.classList.remove('active'); // 取消其他按钮
+                }
+            });
+        }
+        console.log(`Board Type switched to: ${type}`);
+    };
+
