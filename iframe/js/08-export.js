@@ -371,6 +371,29 @@
         }
     }
 
+    /**
+     * 按当前「处理模式」把导出请求路由到对应后端。
+     * 处理模式只决定「怎么解析输入 Gerber、怎么定层」，输出统一走
+     * 嘉立创专业版的源码 / 图元生成流程（exportTarget === 'jlc'）。
+     * 选中的模式尚未实现时给出明确提示，而不是静默什么都不做。
+     *
+     * @param config - 导出配置
+     */
+    async function routeExport(config) {
+        const processor = processorRegistry.current();
+        if (!processor.ready) {
+            const msg = `处理模式「${processor.label}」尚未实现，暂时无法导出。\n请在「处理模式」下拉中改用已实现的模式（嘉立创专业版 / RS-274X）。`;
+            appLog(msg.replace(/\n/g, ' '));
+            alert(msg);
+            return;
+        }
+        if (processor.exportTarget === 'other') {
+            await exportForOther_Pro(config);
+            return;
+        }
+        await exportForEasyEDA_Pro(config);
+    }
+
     window.handleExportToCanvas = async (method) => {
         const env = getEnvInfo();
         const sourceType = document.getElementById('cfg-source-type').value;
@@ -399,11 +422,8 @@
             return;
         }
 
-        if (sourceType === 'easyedapro'){
-            await exportForEasyEDA_Pro(config);
-        } else {
-            await exportForOther_Pro(config); 
-        }
+        // 按当前处理模式路由到对应导出后端
+        await routeExport(config);
     };
 
     // --- 1.2 按钮：导出标准版文件 (下载逻辑) ---
@@ -429,11 +449,8 @@
             tryNetlist: document.getElementById('cfg-netlist').checked // 尝试生成网络
         };
 
-        if (sourceType === 'easyedapro'){
-            await exportForEasyEDA_Pro(config);
-        }else{
-            await exportForOther_Pro(config); 
-        }
+        // 按当前处理模式路由到对应导出后端
+        await routeExport(config);
     };
 
     // --- 1.4 按钮：导出专业版 V3 文件 (下载逻辑) ---
@@ -446,11 +463,8 @@
             tryNetlist: document.getElementById('cfg-netlist').checked // 尝试生成网络
         };
 
-        if (sourceType === 'easyedapro'){
-            await exportForEasyEDA_Pro(config);
-        }else{
-            await exportForOther_Pro(config); 
-        }
+        // 按当前处理模式路由到对应导出后端
+        await routeExport(config);
     };
 
     // --- [修改] 动态配置头文件函数 ---
@@ -955,11 +969,17 @@
             FullSource += separator + primitivesArr.join(separator);
         }
 
-        // 逐行处理
-        const lines = FullSource.trim().split('\n').map(line => JSON.parse(line));
+        // 逐行处理：单行 JSON 解析失败不能中断整批导入（否则一个坏图元就全批失败）
+        const rawLines = FullSource.trim().split('\n').filter(line => line.trim());
+        const lines = [];
+        let skippedLines = 0;
+        for (const raw of rawLines) {
+            try { lines.push(JSON.parse(raw)); } catch (e) { skippedLines++; }
+        }
+        if (skippedLines > 0) appLog(`图元模式：${skippedLines} 行无法解析，已跳过`);
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
-            const command = line[0];
+            const command = Array.isArray(line) ? line[0] : (line && line.type);
             switch (command) {
                 case 'PAD': // 焊盘
                     try {

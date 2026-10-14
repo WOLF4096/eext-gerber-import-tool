@@ -266,11 +266,15 @@
             
             // ... (原有的绘制 Loop 保持不变，包含 commands 遍历) ...
             const { commands, apertures } = file.data;
+            // 光圈参数仍是「文件单位」，本图层内统一按这个倍率换算成 mm
+            // （坐标在解析阶段已换算，只有光圈/宏尺寸没有）。
+            // 注意：钻孔文件的刀具直径在解析时已经换算成 mm，不能再乘一次。
+            const unitScale = (!file.data.isDrill && file.data.units === 'in') ? 25.4 : 1;
             let currX=0, currY=0;
             bufCtx.lineCap = 'round'; bufCtx.lineJoin = 'round'; 
             bufCtx.beginPath();
 
-            // --- [性能优化] 裁剪余量：取本图层光圈的最大尺寸，
+            // --- [性能优化] 裁剪余量：取本图层光圈的最大尺寸（换算成 mm），
             //     保证被裁掉的一定是完全落在视口之外的图元 ---
             let maxApMM = 0;
             for (const k in apertures) {
@@ -281,7 +285,7 @@
                     if (v > maxApMM) maxApMM = v;
                 }
             }
-            const cullPadAp = maxApMM + cullPadMM;
+            const cullPadAp = maxApMM * unitScale + cullPadMM;
             let curPolarity = null;   // 当前生效的极性：仅在真正变化时才提交路径
             let pathBroken = false;   // 路径是否已与上一条画出的图元断开，需要重新 moveTo
 
@@ -309,7 +313,8 @@
                     pathBroken = false;   // [性能优化] 路径已在新位置重新起笔
                 } else if (cmd.type === 1) { // Line / Arc
                     const ap = apertures[cmd.ap];
-                    const width = (ap && ap.params && ap.params[0]) ? ap.params[0] : (0.05);
+                    // 线宽取自光圈参数，需按文件单位换算成 mm（英寸文件曾按英寸当 mm 画，线宽细 25.4 倍）
+                    const width = (ap && ap.params && ap.params[0]) ? (ap.params[0] * unitScale) : (0.05);
                     
                     if (bufCtx.lineWidth !== width) {
                         bufCtx.stroke(); bufCtx.beginPath();
@@ -366,7 +371,13 @@
                     // 【修改注意】: 这里不要直接转大写，因为宏名称是区分大小写的
                     const rawType = safeAp.type; 
                     const type = rawType.toUpperCase(); 
-                    const p = safeAp.params || [];
+                    // 光圈参数仍是「文件单位」，必须换算成 mm。
+                    // 坐标在解析阶段已经换算过，只有光圈尺寸没有 —— 英寸文件以前
+                    // 会按英寸当 mm 画，走线/焊盘细 25.4 倍，看起来就是"渲染错误"。
+                    const rawParams = safeAp.params || [];
+                    // 钻孔刀具直径在解析时已换算成 mm，图形光圈参数还是文件单位
+                    const up = (!file.data.isDrill && file.data.units === 'in') ? 25.4 : 1;
+                    const p = rawParams.map(v => (typeof v === 'number' && isFinite(v)) ? v * up : v);
 
                     // 获取宏定义 (注意 file.data.macros 是第一步 parse 返回的)
                     const macros = file.data.macros || {}; 
@@ -374,23 +385,45 @@
                     bufCtx.save();
                     bufCtx.translate(cmd.x, cmd.y);
                     
-                    // 【新增】优先检查宏
-                    if (macros[rawType]) {
-                        const macro = macros[rawType];
-                        if (macro.type === 'POLYGON' && macro.points.length > 0) {
-                            bufCtx.beginPath();
-                            bufCtx.moveTo(macro.points[0].x, macro.points[0].y);
-                            for (let k = 1; k < macro.points.length; k++) {
-                                bufCtx.lineTo(macro.points[k].x, macro.points[k].y);
+                    // 【新增】优先检查宏：支持 P-CAD / 嘉立创 / EasyEDA Pro 的参数化宏（含 $n 变量）
+                    let macroDrew = false;
+                    // 宏求值要用「文件单位」的参数，宏基元随后再统一乘 up
+                    const macroShape = macros[rawType] ? resolveApertureMacro(macros[rawType], rawParams) : null;
+                    if (macroShape) {
+                        const uScale = up;
+                        bufCtx.beginPath();
+                        if (macroShape.type === 'POLYGON' && macroShape.points && macroShape.points.length) {
+                            bufCtx.moveTo(macroShape.points[0].x * uScale, macroShape.points[0].y * uScale);
+                            for (let k = 1; k < macroShape.points.length; k++) {
+                                bufCtx.lineTo(macroShape.points[k].x * uScale, macroShape.points[k].y * uScale);
                             }
                             bufCtx.closePath();
-                            bufCtx.fill();
+                            macroDrew = true;
+                        } else {
+                            const ops = macroPrimsToPath(macroShape, 0, 0, uScale);
+                            ops.forEach(op => {
+                                if (op.cmd === 'M') bufCtx.moveTo(op.x, op.y);
+                                else if (op.cmd === 'L') bufCtx.lineTo(op.x, op.y);
+                                else if (op.cmd === 'A') {
+                                    const mcX = op.startX + op.i, mcY = op.startY + op.j;
+                                    const mr = Math.sqrt(op.i * op.i + op.j * op.j);
+                                    bufCtx.arc(mcX, mcY, mr,
+                                        Math.atan2(op.startY - mcY, op.startX - mcX),
+                                        Math.atan2(op.y - mcY, op.x - mcX), op.mode === 2);
+                                }
+                            });
+                            macroDrew = ops.length > 0;
                         }
+                        // evenodd：宏里的「清除基元」正好形成孔洞
+                        if (macroDrew) bufCtx.fill('evenodd');
                     }
                     
                     // --- 形状绘制逻辑 (包含对 EasyEDA Pro 宏形状的支持) ---
                     
-                    if (type === 'RECT' || (type === 'R' && p.length >= 2)) {
+                    if (macroDrew) {
+                        // 已经按宏画过，跳过标准形状分支，避免二次叠加错误图形
+                    }
+                    else if (type === 'RECT' || (type === 'R' && p.length >= 2)) {
                         // 标准矩形
                         if (p.length >= 3 && p[2]) bufCtx.rotate(p[2] * Math.PI / 180); // 仅在有旋转参数时旋转
                         bufCtx.fillRect(-p[0]/2, -p[1]/2, p[0], p[1]);
@@ -493,6 +526,9 @@
 
                 } else if (cmd.type === 4) { // Region
                     bufCtx.stroke(); bufCtx.beginPath(); 
+                    // 防御：G37 区域必须带 path。历史缺陷里 D04~D09 会生成无 path 的 type:4，
+                    // 直接读 cmd.path.length 会抛异常并让整个导入中断。
+                    if (!Array.isArray(cmd.path) || cmd.path.length === 0) { continue; }
                     // --- [性能优化] 视口外裁剪：先求该区域的包围盒 ---
                     let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
                     for (let q = 0; q < cmd.path.length; q++) {
@@ -616,6 +652,8 @@
 
     // --- UI 控件适配逻辑 (适配新界面) ---
     function setUnitUI(val, type) {
+        // 用户手动点选单位时置位：只有手动改过，解析器才会忽略文件自带的单位声明
+        if (!window.__autoDetecting) window.manualUnitOverride = true;
         // 视觉切换
         const group = document.getElementById(`ui-units-group-${type}`);
         if (group) {
@@ -711,22 +749,86 @@
     // 自动适配视图
     function autoFitView() {
         if (loadedFiles.length === 0) return;
-        let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
-        loadedFiles.forEach(f => {
-            const b = f.data.bounds;
-            if(b.minX !== Infinity) {
-                minX = Math.min(minX, b.minX); maxX = Math.max(maxX, b.maxX);
-                minY = Math.min(minY, b.minY); maxY = Math.max(maxY, b.maxY);
+
+        // 收集全部可视坐标（含区域路径点），用于按分位数做「抗离群」适配
+        const collectPts = (files) => {
+            const xs = []; const ys = [];
+            files.forEach(f => {
+                if (!f.data || !Array.isArray(f.data.commands)) return;
+                f.data.commands.forEach(c => {
+                    if (typeof c.x === 'number' && isFinite(c.x)) xs.push(c.x);
+                    if (typeof c.y === 'number' && isFinite(c.y)) ys.push(c.y);
+                    if (Array.isArray(c.path)) {
+                        c.path.forEach(o => {
+                            if (typeof o.x === 'number' && isFinite(o.x)) xs.push(o.x);
+                            if (typeof o.y === 'number' && isFinite(o.y)) ys.push(o.y);
+                        });
+                    }
+                });
+            });
+            return { xs, ys };
+        };
+        const quantile = (arr, p) => {
+            if (!arr.length) return NaN;
+            const a = arr.slice().sort((m, n) => m - n);
+            const idx = Math.min(a.length - 1, Math.max(0, Math.round((a.length - 1) * p)));
+            return a[idx];
+        };
+
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+
+        // 1) 有板框层（ID 11）时以板框为主 —— 最贴近"板子的真实尺寸"
+        const outline = loadedFiles.find(f => f.layerId === 11 && f.data && f.data.bounds && isFinite(f.data.bounds.minX));
+        if (outline) {
+            const b = outline.data.bounds;
+            if ((b.maxX - b.minX) > 0.1 && (b.maxY - b.minY) > 0.1) {
+                minX = b.minX; maxX = b.maxX; minY = b.minY; maxY = b.maxY;
             }
-        });
-        if(minX === Infinity) return;
+        }
+        const hasBox = minX !== Infinity;
+        const boxW = hasBox ? (maxX - minX) : 0;
+        const boxH = hasBox ? (maxY - minY) : 0;
+
+        // 2) 用「坐标分位数」算一个抗离群的包围盒。
+        //    历史缺陷：直接对所有图层取绝对坐标并集，只要有一个离群坐标
+        //    （钻孔文件从 0 开始、Gerber 里几条假 (0,0) 指令）就能把范围撑大
+        //    好几倍，整块板被缩成角落里一个小点 —— 看起来就像"渲染错误"。
+        const { xs, ys } = collectPts(loadedFiles);
+        if (xs.length && ys.length) {
+            const rx0 = quantile(xs, 0.002), rx1 = quantile(xs, 0.998);
+            const ry0 = quantile(ys, 0.002), ry1 = quantile(ys, 0.998);
+            if (!hasBox) {
+                minX = rx0; maxX = rx1; minY = ry0; maxY = ry1;
+            } else {
+                // 有板框时以板框为准，但若其它图层明显超出板框（典型：丝印文字伸出板外），
+                // 就扩展到能容纳它们，避免内容被裁掉。5% 容差用来过滤零散离群点。
+                const tolW = boxW * 0.05, tolH = boxH * 0.05;
+                if (isFinite(rx0) && rx0 < minX - tolW) minX = rx0;
+                if (isFinite(rx1) && rx1 > maxX + tolW) maxX = rx1;
+                if (isFinite(ry0) && ry0 < minY - tolH) minY = ry0;
+                if (isFinite(ry1) && ry1 > maxY + tolH) maxY = ry1;
+            }
+        }
+
+        // 3) 退化保护：分位数失效（点数太少 / 全部同位）时退回真实极值
+        if (!isFinite(minX) || !isFinite(maxX) || !((maxX - minX) > 0)) {
+            if (!xs.length) return;
+            minX = xs.reduce((m, v) => Math.min(m, v), Infinity);
+            maxX = xs.reduce((m, v) => Math.max(m, v), -Infinity);
+        }
+        if (!isFinite(minY) || !isFinite(maxY) || !((maxY - minY) > 0)) {
+            if (!ys.length) return;
+            minY = ys.reduce((m, v) => Math.min(m, v), Infinity);
+            maxY = ys.reduce((m, v) => Math.max(m, v), -Infinity);
+        }
+        if (!isFinite(minX) || !isFinite(maxX) || !isFinite(minY) || !isFinite(maxY)) return;
         const w = maxX - minX; const h = maxY - minY;
         const cx = (minX + maxX) / 2; const cy = (minY + maxY) / 2;
         const cw = document.getElementById('canvas-container').clientWidth;
         const ch = document.getElementById('canvas-container').clientHeight;
         const scaleX = cw / (w * 1.2 || 100); const scaleY = ch / (h * 1.2 || 100);
         viewState.scale = Math.min(scaleX, scaleY);
-        if(!isFinite(viewState.scale)) viewState.scale = 10;
+        if(!isFinite(viewState.scale) || viewState.scale <= 0) viewState.scale = 10;
         viewState.offsetX = cw / 2 - cx * viewState.scale; 
         viewState.offsetY = ch / 2 + cy * viewState.scale;
     }
@@ -1086,6 +1188,9 @@
     window.stepVal = (targetId, delta) => {
         const input = document.getElementById(targetId);
         if (!input) return;
+
+        // 用户手动调精度时置位：只有手动改过，解析器才会忽略文件自带的精度声明
+        if (!window.__autoDetecting) window.manualFormatOverride = true;
 
         let val = parseInt(input.value) + delta;
         // 限制范围 1 ~ 8

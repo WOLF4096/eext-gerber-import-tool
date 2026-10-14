@@ -4,8 +4,10 @@
 /node_modules/
 /.eslintcache
 /.edaignore
-/npm run build.cmd
 debug.log
+
+# 临时文件目录（测试脚本与产物），不参与格式化
+/Temp/
 
 # iframe 下的前端资源不参与格式化：
 #  1. js/*.min.js 是第三方已压缩库，prettier 会把它们整体展开 —— 实测

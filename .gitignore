@@ -6,5 +6,9 @@
 /node_modules/
 /.eslintcache
 /.edaignore
-/npm run build.cmd
 debug.log
+
+# 临时文件目录：测试脚本、测试样本、调试与截图产物，均不进版本库
+/Temp/
+# .workbuddy 下的测试脚手架（memory 记忆文件仍跟踪）
+/.workbuddy/tmp/

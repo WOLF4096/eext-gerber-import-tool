@@ -51,29 +51,26 @@
                 return f ? f.content : "";
             };
 
-            // 1. 宏解析函数
+            // 1. 宏解析函数（兜底：正常情况下直接用 file.data.macros）
+            //    只拆成基元块，不求值 —— $n 要等 %ADDnn 的光圈参数才知道
             const parseGerberMacros = (content) => {
                 const macros = {};
                 if (!content) return macros;
-                const regex = /%AM(\w+)\*(.*?)%/g;
+                const regex = /%AM(\w+)\*([^%]+)%/g;
                 let match;
                 while ((match = regex.exec(content)) !== null) {
-                    const name = match[1];
-                    const body = match[2];
-                    const primParts = body.split(',').map(Number);
-                    // 仅简单支持 Primitive 4 (Polygon) 
-                    // 格式: 4, Exposure, PointCount, x1, y1, ...
-                    if (primParts[0] === 4) { 
-                        const count = primParts[2];
-                        const points = [];
-                        for (let i = 0; i < count; i++) {
-                            const idx = 3 + (i * 2);
-                            if (idx + 1 < primParts.length) {
-                                points.push({ x: primParts[idx], y: primParts[idx+1] });
-                            }
-                        }
-                        macros[name] = { type: 'POLYGON', points: points };
+                    const blocks = String(match[2]).split('*').map(s => s.trim()).filter(Boolean);
+                    const out = [];
+                    for (const block of blocks) {
+                        if (/^G0?4/.test(block)) continue;
+                        const m = block.match(/^(\d+)\s*,\s*(.*)$/s);
+                        if (!m) continue;
+                        const code = parseInt(m[1], 10);
+                        if (!isFinite(code)) continue;
+                        const args = m[2].split(',').map(s => s.trim()).filter(s => s !== '');
+                        if (args.length) out.push({ code: code, args: args });
                     }
+                    if (out.length) macros[match[1]] = { type: 'MACRO_DEF', blocks: out };
                 }
                 return macros;
             };
@@ -81,22 +78,24 @@
             // 2. 辅助：将光圈(宏或标准形状)转换为路径数据
             const getAperturePath = (ap, cx, cy, toMM, macroDefs) => {
                 const pathData = [];
-                // A. 优先检查是否为宏定义 (IconRect, IconStar, etc.)
-                if (macroDefs[ap.type]) {
-                    const macro = macroDefs[ap.type];
-                    if (macro.type === 'POLYGON' && macro.points.length > 0) {
-                        const start = macro.points[0];
+                // A. 优先检查是否为宏定义 (IconRect / IconStar / 参数化宏 …)
+                const macroShape = macroDefs[ap.type] ? resolveApertureMacro(macroDefs[ap.type], ap.params || []) : null;
+                if (macroShape) {
+                    if (macroShape.type === 'POLYGON' && macroShape.points && macroShape.points.length) {
+                        const start = macroShape.points[0];
                         pathData.push({ cmd: 'M', x: cx + toMM(start.x), y: cy + toMM(start.y) });
-                        for (let i = 1; i < macro.points.length; i++) {
-                            const pt = macro.points[i];
+                        for (let i = 1; i < macroShape.points.length; i++) {
+                            const pt = macroShape.points[i];
                             pathData.push({ cmd: 'L', x: cx + toMM(pt.x), y: cy + toMM(pt.y) });
                         }
                         pathData.push({ cmd: 'L', x: cx + toMM(start.x), y: cy + toMM(start.y) }); // Close
                         return pathData;
                     }
+                    const primPath = macroPrimsToPath(macroShape, cx, cy, toMM(1));
+                    if (primPath.length > 0) return primPath;
                 }
 
-                // B. 标准形状处理 (C, R, RECT)
+                // B. 标准形状处理 (C, R, RECT, O)
                 const p = ap.params || [];
                 const type = ap.type.toUpperCase();
                 
@@ -118,6 +117,24 @@
                     pathData.push({ cmd: 'L', x: cx + hw, y: cy + hh });
                     pathData.push({ cmd: 'L', x: cx - hw, y: cy + hh });
                     pathData.push({ cmd: 'L', x: cx - hw, y: cy - hh });
+                }
+                else if (type === 'O' || type.includes('OBROUND') || type.includes('OVAL')) {
+                    // 长圆（跑道形）：按圆角矩形近似，避免 obround 焊盘整块丢失
+                    const w = toMM(p[0]);
+                    const h = toMM(p[1] !== undefined ? p[1] : p[0]);
+                    const hw = w / 2, hh = h / 2;
+                    const r = Math.min(hw, hh);
+                    const rot = (p.length >= 3 && p[2]) ? parseFloat(p[2]) * Math.PI / 180 : 0;
+                    const cos = Math.cos(rot), sin = Math.sin(rot);
+                    const corners = [
+                        [-hw + r, -hh], [hw - r, -hh], [hw, -hh + r], [hw, hh - r],
+                        [hw - r, hh], [-hw + r, hh], [-hw, hh - r], [-hw, -hh + r]
+                    ];
+                    corners.forEach(([x, y], i) => {
+                        const X = cx + x * cos - y * sin, Y = cy + x * sin + y * cos;
+                        pathData.push(i === 0 ? { cmd: 'M', x: X, y: Y } : { cmd: 'L', x: X, y: Y });
+                    });
+                    pathData.push({ cmd: 'L', x: pathData[0].x, y: pathData[0].y });
                 }
                 
                 return pathData.length > 0 ? pathData : null;
@@ -188,10 +205,27 @@
             files.forEach(file => {
                 const layerId = file.layerId;
                 const fileUnit = file.data.units; 
+                // toMM：把「仍是文件单位」的量换算成 mm —— 光圈参数、宏参数、钻孔原文数值都用它。
+                // 注意：cmd.x / cmd.y / cmd.i / cmd.j / cmd.path 里的坐标在解析阶段**已经**换算成 mm，
+                // 这里绝不能再乘一次 25.4。历史上就是这么错的：英寸单位文件的焊盘/导线/过孔
+                // 位置整体偏大 25.4 倍，导进 EDA 后全部飞出板外，看起来就像"导入失败"。
                 const toMM = (val) => (val === null || val === undefined) ? 0 : (fileUnit === 'in' ? val * 25.4 : val);
+                // mmOf：读取「解析后已是 mm」的坐标，只做有限性保护
+                const mmOf = (val) => (typeof val === 'number' && isFinite(val)) ? val : 0;
                 
                 const rawContent = getRawContent(file.name);
-                const macroDefs = parseGerberMacros(rawContent);
+                // 优先使用解析器已经解析好的宏（含 $n 参数化宏），退化时才自行扫一遍原文
+                const macroDefs = (file.data.macros && Object.keys(file.data.macros).length)
+                    ? file.data.macros : parseGerberMacros(rawContent);
+
+                // 数据来源是否为「嘉立创专业版」：它会在 G04 里用 Pad/Via/Track/PolygonModel…
+                // Start/End 这类私有段标记说明每一段图形的用途。KiCad / Altium / P-CAD /
+                // 嘉立创**标准版**导出的 Gerber 没有这些标记，必须按图层与指令类型自行推断，
+                // 否则焊盘与导线会被整体丢弃（这正是"只有钻孔导入成功"的原因）。
+                const hasSectionMarkers = /G04[^\r\n*]*(?:Pad|Via|Track|PolygonModel|Copper|Image|Text|Rect|Circle|Drill Drawing)[^\r\n*]*(?:Start|End)/.test(rawContent || '');
+                
+                // 铜层：用于判断 Flash 该做焊盘、Drawing 该做导线
+                const isCopperLayer = (layerId === 1 || layerId === 2 || (layerId >= 15 && layerId <= 46));
 
                 // A. 钻孔文件处理
                 // [修复] 增加 layerId === 502 (埋盲孔)，确保该图层被作为钻孔数据提取
@@ -200,17 +234,27 @@
                         const fileLines = rawContent.split(/\r?\n/);
                         const tools = {}; let currentTool = null;
                         const regexToolDef = /T(\d+)[^C]*C([\d.]+)/; const regexToolSel = /T(\d+)(?!C)/; 
-                        let drillUnitMult = rawContent.includes("INCH") ? 25.4 : 1;
-                        const manualToMM = (val) => val * drillUnitMult;
+                        // 钻孔原文里的坐标是「无小数点的整数」，必须按文件声明的格式除以 10^dec
+                        // 才能得到文件单位。历史上漏了这一步：只有 2.4 英寸（div=1e4）碰巧接近，
+                        // 其它精度（例如嘉立创专业版 METRIC,LZ,000.00000 的 1e5）就整体差 10 倍。
+                        const fdiv = (file.data.format && file.data.format.divX) ? file.data.format.divX : 10000;
+                        const drillUnitMult = (fileUnit === 'in') ? 25.4 : 1;
+                        const manualToMM = (raw) => {
+                            const v = parseFloat(raw);
+                            if (!isFinite(v)) return 0;
+                            // 已经带小数点的是绝对值，不再除格式因子
+                            const scaled = String(raw).indexOf('.') !== -1 ? v : v / fdiv;
+                            return scaled * drillUnitMult;
+                        };
                         for (let line of fileLines) {
                             line = line.trim();
-                            const matchDef = line.match(regexToolDef); if (matchDef) { tools[matchDef[1]] = parseFloat(matchDef[2]); continue; }
+                            const matchDef = line.match(regexToolDef); if (matchDef) { tools[matchDef[1]] = matchDef[2]; continue; }
                             const matchSel = line.match(regexToolSel); if (matchSel) { currentTool = matchSel[1]; continue; }
                             if (line.includes('G85') && currentTool) {
                                 const coords = line.match(/X([\d.-]+)Y([\d.-]+).*?X([\d.-]+)Y([\d.-]+)/);
                                 if (coords) {
-                                    const x1 = manualToMM(parseFloat(coords[1])); const y1 = manualToMM(parseFloat(coords[2]));
-                                    const x2 = manualToMM(parseFloat(coords[3])); const y2 = manualToMM(parseFloat(coords[4]));
+                                    const x1 = manualToMM(coords[1]); const y1 = manualToMM(coords[2]);
+                                    const x2 = manualToMM(coords[3]); const y2 = manualToMM(coords[4]);
                                     const dia = manualToMM(tools[currentTool]);
                                     const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
                                     const dx = x2 - x1; const dy = y2 - y1;
@@ -232,12 +276,14 @@
                     }
                     file.data.commands.forEach(cmd => {
                         if (cmd.type === 3) { 
-                            const cx = toMM(cmd.x); const cy = toMM(cmd.y);
+                            // 坐标已由解析器换算成 mm
+                            const cx = mmOf(cmd.x); const cy = mmOf(cmd.y);
                             if (slotOccupiedPoints.some(p => Math.abs(p.x - cx) < 0.05 && Math.abs(p.y - cy) < 0.05)) return;
                             const ap = file.data.apertures[cmd.ap];
                             if (ap) {
                                 let w = 0, h = 0; const p = ap.params;
-                                if (ap.type === 'C') { w = toMM(p[0]); h = w; } else if (ap.type === 'O' || ap.type === 'R') { w = toMM(p[0]); h = toMM(p[1]); }
+                                // 钻孔刀具的直径在解析阶段也已换算成 mm
+                                if (ap.type === 'C') { w = mmOf(p[0]); h = w; } else if (ap.type === 'O' || ap.type === 'R') { w = mmOf(p[0]); h = mmOf(p[1]); }
                                 // [修改 2] 在 push 时增加 pairStart 和 pairEnd
                                 if (w > 0) drills.push({ 
                                     x: cx, y: cy, w: w, h: h, 
@@ -281,6 +327,15 @@
 
                 for (let i = 0; i < cmds.length; i++) {
                     const cmd = cmds[i];
+
+                    // 无段标记的来源（KiCad / Altium / P-CAD / 嘉立创标准版）：
+                    // 按「图层 + 指令类型」推断本段的用途 —— 铜层 Flash 是焊盘、
+                    // 铜层 Drawing 是导线、其它层的 Drawing 是折线。不做这层推断，
+                    // 焊盘与导线会被整体丢弃（用户看到的就是"只有钻孔导入成功"）。
+                    const effMode = hasSectionMarkers ? mode
+                        : (cmd.type === 3) ? 'PAD'
+                        : (cmd.type === 1 || cmd.type === 2) ? (isCopperLayer ? 'TRACK' : 'POLY')
+                        : mode;
                     
                     // 1. G04 状态切换
                     if (cmd.type === 5) { 
@@ -310,12 +365,13 @@
 
                     // 2. 区域填充 (G36/G37)
                     if (cmd.type === 4) { 
-                        const pathData = cmd.path.map(op => {
-                            if (op.cmd === 'M' || op.cmd === 'L') return { cmd: op.cmd, x: toMM(op.x), y: toMM(op.y) };
+                        const regionOps = Array.isArray(cmd.path) ? cmd.path : [];
+                        const pathData = regionOps.map(op => {
+                            if (op.cmd === 'M' || op.cmd === 'L') return { cmd: op.cmd, x: mmOf(op.x), y: mmOf(op.y) };
                             if (op.cmd === 'A') {
-                                const sX = toMM(op.startX); const sY = toMM(op.startY);
-                                const eX = toMM(op.x); const eY = toMM(op.y);
-                                const cX = sX + toMM(op.i); const cY = sY + toMM(op.j);
+                                const sX = mmOf(op.startX); const sY = mmOf(op.startY);
+                                const eX = mmOf(op.x); const eY = mmOf(op.y);
+                                const cX = sX + mmOf(op.i); const cY = sY + mmOf(op.j);
                                 const startAngle = Math.atan2(sY - cY, sX - cX);
                                 const endAngle = Math.atan2(eY - cY, eX - cX);
                                 let sweep = endAngle - startAngle;
@@ -326,7 +382,7 @@
                             }
                         });
 
-                        if (mode === "PAD") {
+                        if (effMode === "PAD") {
                             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
                             pathData.forEach(pt => {
                                 if (pt.x !== undefined && pt.y !== undefined) {
@@ -339,9 +395,9 @@
                             continue;
                         }
 
-                        if (mode === "IMAGE" || mode === "TEXT") {
+                        if (effMode === "IMAGE" || effMode === "TEXT") {
                             rawImages.push({ layerId, path: pathData, isRegion: true });
-                        } else if (mode === "COPPER") {
+                        } else if (effMode === "COPPER") {
                             rawFills.push({ layerId, path: pathData });
                         } else {
                             let targetLayer = layerId;
@@ -353,19 +409,19 @@
 
                     // 3. 线性绘图 (G01/02/03)
                     if (cmd.type === 1 || cmd.type === 2) {
-                        const targetX = toMM(cmd.x); const targetY = toMM(cmd.y);
+                        // 坐标已是 mm
+                        const targetX = mmOf(cmd.x); const targetY = mmOf(cmd.y);
                         
                         if (cmd.type === 1) {
                             const ap = file.data.apertures[cmd.ap];
-                            if (ap) currentWidth = toMM(ap.params[0]);
+                            if (ap) currentWidth = toMM(ap.params[0]);   // 光圈参数仍是文件单位
                         }
 
-                        if (mode === "TRACK" || mode === "COPPER") {
-                            const isCopperLayer = (layerId === 1 || layerId === 2 || (layerId >= 15 && layerId <= 46));
+                        if (effMode === "TRACK" || effMode === "COPPER") {
                             if (isCopperLayer && cmd.type === 1) {
                                 if (cmd.mode === 1) { rawTracks.push({ type: "LINE", layerId, x1: currX, y1: currY, x2: targetX, y2: targetY, width: currentWidth }); } 
                                 else { 
-                                    const centerX = currX + toMM(cmd.i); const centerY = currY + toMM(cmd.j);
+                                    const centerX = currX + mmOf(cmd.i); const centerY = currY + mmOf(cmd.j);
                                     const startAngle = Math.atan2(currY - centerY, currX - centerX);
                                     const endAngle = Math.atan2(targetY - centerY, targetX - centerX);
                                     let sweep = endAngle - startAngle;
@@ -374,14 +430,14 @@
                                 }
                             }
                         }
-                        else if (mode === "POLY" || mode === "IMAGE" || mode === "TEXT" || mode === "DRILL_SYM") { 
+                        else if (effMode === "POLY" || effMode === "IMAGE" || effMode === "TEXT" || effMode === "DRILL_SYM") { 
                             // 注意：DRILL_SYM 的线段也作为 POLY 处理
                             if (cmd.type !== 2) {
                                 let seg = { x1: currX, y1: currY, x2: targetX, y2: targetY, width: currentWidth };
                                 if (cmd.mode === 1) { seg.type = 'LINE'; } 
                                 else {
                                     seg.type = 'ARC';
-                                    const centerX = currX + toMM(cmd.i); const centerY = currY + toMM(cmd.j);
+                                    const centerX = currX + mmOf(cmd.i); const centerY = currY + mmOf(cmd.j);
                                     const startAngle = Math.atan2(currY - centerY, currX - centerX);
                                     const endAngle = Math.atan2(targetY - centerY, targetX - centerX);
                                     let sweep = endAngle - startAngle;
@@ -401,11 +457,12 @@
                         const ap = file.data.apertures[cmd.ap];
                         if (!ap) continue;
                         
-                        currX = toMM(cmd.x); 
-                        currY = toMM(cmd.y);
+                        // 坐标已是 mm
+                        currX = mmOf(cmd.x); 
+                        currY = mmOf(cmd.y);
 
                         // [新增] 处理 Drill Drawing 的图标 Flash
-                        if (mode === "DRILL_SYM") {
+                        if (effMode === "DRILL_SYM") {
                             const pathData = getAperturePath(ap, currX, currY, toMM, macroDefs);
                             if (pathData) {
                                 // [修改] 钻孔图层不支持 Polygon，改为存入 rawImages 作为图片处理
@@ -414,24 +471,28 @@
                             continue;
                         }
 
-                        if (mode === "PAD") {
-                            // 检查宏定义
-                            if (macroDefs[ap.type]) {
-                                const macro = macroDefs[ap.type];
-                                if (macro.type === 'POLYGON') {
-                                    // 转换为绝对路径
-                                    const pathData = [];
-                                    const start = macro.points[0];
+                        if (effMode === "PAD") {
+                            // 检查宏定义（支持 P-CAD / 嘉立创 / EasyEDA Pro 的参数化宏）
+                            const macroShape = macroDefs[ap.type]
+                                ? resolveApertureMacro(macroDefs[ap.type], ap.params || []) : null;
+                            if (macroShape) {
+                                let pathData = [];
+                                if (macroShape.type === 'POLYGON' && macroShape.points && macroShape.points.length) {
+                                    const start = macroShape.points[0];
                                     pathData.push({ cmd: 'M', x: currX + toMM(start.x), y: currY + toMM(start.y) });
-                                    for (let k = 1; k < macro.points.length; k++) {
-                                        const pt = macro.points[k];
+                                    for (let k = 1; k < macroShape.points.length; k++) {
+                                        const pt = macroShape.points[k];
                                         pathData.push({ cmd: 'L', x: currX + toMM(pt.x), y: currY + toMM(pt.y) });
                                     }
                                     pathData.push({ cmd: 'L', x: currX + toMM(start.x), y: currY + toMM(start.y) });
-
-                                    rawPads.push({ layerId, x: currX, y: currY, shape: 'POLYGON', path: pathData, w: 0, h: 0, rotation: 0 });
-                                    continue;
+                                } else {
+                                    // toMM(1) 即「文件单位 -> mm」的倍率
+                                    pathData = macroPrimsToPath(macroShape, currX, currY, toMM(1));
                                 }
+                                if (pathData.length >= 3) {
+                                    rawPads.push({ layerId, x: currX, y: currY, shape: 'POLYGON', path: pathData, w: 0, h: 0, rotation: 0 });
+                                }
+                                continue;
                             }
 
                             // 检查重叠
@@ -466,12 +527,12 @@
                                 if (p.length >= 4 && p[3] > 0) radiusRatio = PadTool.calcRadiusRatio(toMM(p[3]), w, h);
                                 if (type === 'C' || type === 'CIRCLE') { shape = 'ELLIPSE'; h = w; } else { shape = 'RECT'; }
                             }
-                            if (w > 0 && h > 0) rawPads.push({ layerId, x: toMM(cmd.x), y: toMM(cmd.y), shape, w, h, rotation, radiusRatio });
+                            if (w > 0 && h > 0) rawPads.push({ layerId, x: currX, y: currY, shape, w, h, rotation, radiusRatio });
                         }
-                        else if (mode === "VIA") {
+                        else if (effMode === "VIA") {
                             const p = ap.params || [];
                             let dia = toMM(p[0]||0.1);
-                            rawVias.push({ layerId, x: toMM(cmd.x), y: toMM(cmd.y), dia });
+                            rawVias.push({ layerId, x: currX, y: currY, dia });
                         }
                     }
                 }

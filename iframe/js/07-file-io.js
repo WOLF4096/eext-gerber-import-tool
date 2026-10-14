@@ -23,6 +23,10 @@
         // 重置状态
         currentZipName = null; 
         flyingProbeData = null; // --- [新增] 重置网络数据 ---
+        // 重新导入一批文件时，放弃上一批遗留的「手动覆盖单位/精度」选择，
+        // 让本批文件重新按各自声明自动识别。
+        window.manualUnitOverride = false;
+        window.manualFormatOverride = false;
 
         try {
             // --- 阶段一：读取所有文件内容 ---
@@ -53,8 +57,10 @@
                         }
 
                         // 常规 Gerber 处理
+                        // 只放进真正像 Gerber/钻孔的文件：说明文件、报告(.ERR)、
+                        // 嵌套压缩包、二进制文件都会被拦掉，避免垃圾图层与解析崩溃。
                         const content = await zip.files[name].async("string");
-                        if (isGerberText(name)) rawFilesCache.push({ name, content });
+                        if (isGerberText(name, content)) rawFilesCache.push({ name, content });
                     }
                 } 
                 
@@ -72,63 +78,53 @@
                         continue; // 拦截成功，不存入 rawFilesCache
                     }
 
-                    // 常规 Gerber 处理
+                    // 常规 Gerber 处理（同样做内容探测）
                     const content = await file.text();
-                    rawFilesCache.push({ name: file.name, content });
+                    if (isGerberText(file.name, content)) {
+                        rawFilesCache.push({ name: file.name, content });
+                    } else {
+                        appLog(`已跳过非 Gerber 文件：${file.name}`);
+                    }
                 }
             }
 
-            // --- 阶段二：全量自动检测 (保持原样) ---
+            // --- 阶段二：全量自动检测 ---
+            // 单位与精度优先取「文件自己的声明」：%FS 扩展指令、G04 注释
+            // （"3 integer and 6 decimal" / "Dimensions in inches" / P-CAD 的
+            //  "Numeric Format: 4.4"）、钻孔文件头（";FILE_FORMAT=2:4" /
+            //  "METRIC,LZ,000.00000"）。旧实现只认复数形式的 %FS，大量文件
+            // 只能退回默认精度，坐标整体差 10 倍。
             let detectedG = { int: null, dec: null }; 
             let detectedD = { int: null, dec: null }; 
-            let detectedSource = 'other';
-            let detectedGraphicUnit = 'mm'; 
-            let detectedDrillUnit = 'mm'; 
+            let detectedGraphicUnit = null; 
+            let detectedDrillUnit = null; 
 
             for (const file of rawFilesCache) {
                  const content = file.content;
-                 if (content.includes("EasyEDA Pro")) detectedSource = 'easyedapro';
-                 
-                 if (content.match(/(?:^|\n)(?:%MOIN|G70)/) || content.includes("Units: Imperial")) detectedGraphicUnit = 'in';
+                 const decl = detectGerberDeclarations(content);
+                 const looksDrill = content.indexOf('M48') !== -1 || /\.(drl|txt|xln|ncd|nc)$/i.test(file.name);
 
-                 if (content.indexOf('M48') !== -1 || file.name.match(/\.(drl|txt|xln)$/i)) {
-                    if (content.match(/INCH|M72/i)) detectedDrillUnit = 'in';
-                    else if (content.match(/METRIC|M71/i)) detectedDrillUnit = 'mm';
-                }
-
-                const g04Match = content.match(/(\d+)\s*integers\s+(?:and\s+)?(\d+)\s+decimals/i);
-                if (g04Match && !detectedG.int) {
-                    detectedG.int = parseInt(g04Match[1]);
-                    detectedG.dec = parseInt(g04Match[2]);
-                }
-                if (!detectedG.int) {
-                    const fsMatch = content.match(/%FS[LTAI]*[XY](\d)(\d)/i);
-                    if (fsMatch) {
-                        detectedG.int = parseInt(fsMatch[1]);
-                        detectedG.dec = parseInt(fsMatch[2]);
-                    }
-                }
-
-                if (!detectedD.int && (content.indexOf('M48') !== -1 || file.name.match(/\.(drl|txt|xln)$/i))) {
-                    const drillMatch = content.match(/(?:METRIC|INCH).*?,([0-9\.]+)/i);
-                    if (drillMatch) {
-                        const fmtStr = drillMatch[1]; 
-                        if (fmtStr.includes('.')) {
-                            const parts = fmtStr.split('.');
-                            detectedD.int = parts[0].length;
-                            detectedD.dec = parts[1].length;
-                        }
-                    }
-                }
+                 if (looksDrill) {
+                    if (!detectedD.int && decl.dDeclared) { detectedD.int = decl.dInt; detectedD.dec = decl.dDec; }
+                    if (!detectedDrillUnit && decl.dUnits) detectedDrillUnit = decl.dUnits;
+                 } else {
+                    if (!detectedG.int && decl.gDeclared) { detectedG.int = decl.gInt; detectedG.dec = decl.gDec; }
+                    if (!detectedGraphicUnit && decl.gUnits) detectedGraphicUnit = decl.gUnits;
+                 }
             }
+
+            if (!detectedGraphicUnit) detectedGraphicUnit = 'mm';
+            if (!detectedDrillUnit) detectedDrillUnit = (detectedGraphicUnit === 'in') ? 'in' : 'mm';
             
             // ... (UI 同步与 processRawFiles 调用，保持不变) ...
-            const sourceSelect = document.getElementById('cfg-source-type');
-            if (sourceSelect) sourceSelect.value = detectedSource;
+            // 自动识别 Gerber 代际并切换处理模式（注册表驱动，见 processors/registry.js）
+            applyDetectedProcessMode(rawFilesCache);
 
             document.getElementById('cfg-units').value = detectedGraphicUnit;
             document.getElementById('cfg-d-units').value = detectedDrillUnit;
             
+            // 自动检测期间不能把「程序写入」误记为「用户手动覆盖」
+            window.__autoDetecting = true;
             if (window.setUnitUI) {
                 setUnitUI(detectedGraphicUnit, 'graphic');
                 setUnitUI(detectedDrillUnit, 'drill');
@@ -143,14 +139,19 @@
                 document.getElementById('cfg-d-dec').value = detectedD.dec;
             }
             if (window.syncUiFromState) window.syncUiFromState();
+            window.__autoDetecting = false;
 
+            // 解析器默认以「文件自带声明」为准（%FS / G04 / 钻孔头）。
+            // 只有用户手动改过单位或精度（UI 会置 manual*Override）才强制覆盖。
             const finalConfig = {
                 units: document.getElementById('cfg-units').value,
                 drillUnits: document.getElementById('cfg-d-units').value,
                 gInt: parseInt(document.getElementById('cfg-g-int').value) || 2,
                 gDec: parseInt(document.getElementById('cfg-dec').value) || 5,
                 dInt: parseInt(document.getElementById('cfg-d-int').value) || 2,
-                dDec: parseInt(document.getElementById('cfg-d-dec').value) || 4
+                dDec: parseInt(document.getElementById('cfg-d-dec').value) || 4,
+                forceUnits: window.manualUnitOverride === true,
+                forceFormat: window.manualFormatOverride === true
             };
             processRawFiles(finalConfig);
 
@@ -169,12 +170,28 @@
         loadedFiles = [];
         document.getElementById('layer-list-content').innerHTML = '';
 
+        // 当前处理模式决定「怎么解析」与「怎么定层」：特性开关与图层归属都取自处理器
+        const processor = processorRegistry.current();
+        const parserFeatures = processor.parserFeatures || {};
+        if (processor.ready === false) {
+            appLog(`处理模式「${processor.label}」尚未实现，暂按通用方式解析`);
+        }
+
         rawFilesCache.forEach((fileObj) => {
-            const parseResult = parser.parse(fileObj.content, configOverride);
+            const parseResult = parser.parse(fileObj.content, configOverride, parserFeatures);
             if (parseResult.commands.length === 0) return; 
 
             let matchedId = 57; 
             for (let rule of fileNameRules) { if (rule.regex.test(fileObj.name)) { matchedId = rule.layerId; break; } }
+            // 处理器可覆盖「按文件名猜」的结果（例如 Gerber X2 用 %TF.FileFunction 直接定层）。
+            // 取「更具体」的那个：处理器给不出意见(57)时沿用内置规则的结果，
+            // 以免 *_silkscreen_bottom.gbr 这类命名被泛化规则回退成顶层。
+            if (typeof processor.resolveLayerId === 'function') {
+                const overrideId = processor.resolveLayerId(fileObj, parseResult, matchedId);
+                if (typeof overrideId === 'number' && (overrideId !== 57 || matchedId === 57)) {
+                    matchedId = overrideId;
+                }
+            }
             
             // --- [新增/修改] 针对埋盲孔 (ID 502) 的自动识别逻辑 ---
             let detectedStart = null;

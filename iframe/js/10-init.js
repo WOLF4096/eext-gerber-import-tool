@@ -74,7 +74,6 @@
         // --- 2. 有文件时的智能检测重置 ---
         let detectedG = { int: null, dec: null }; // 图形精度
         let detectedD = { int: null, dec: null }; // 钻孔精度
-        let detectedSource = 'easyedapro';
         let detectedGraphicUnit = 'mm'; 
         let detectedDrillUnit = 'mm'; // <--- 新增：钻孔单位检测变量
 
@@ -82,9 +81,9 @@
         for (const file of rawFilesCache) {
             const content = file.content;
             
-            // A. 检测来源
-            // if (content.includes("EasyEDA Pro")) detectedSource = 'easyedapro';
-            // else if (content.includes("Altium") && detectedSource !== 'easyedapro') detectedSource = 'ad';
+            // A. 处理模式的识别改由注册表统一负责
+            //    （见 processors/registry.js 的 applyDetectedProcessMode，
+            //      它会综合内容特征与文件名约定判断 Gerber 代际）
 
 
             // B. 检测图形单位 (G70/MOIN)
@@ -143,9 +142,8 @@
             setUnitUI(detectedDrillUnit, 'drill'); 
         }
 
-        // 设置来源
-        const sourceSelect = document.getElementById('cfg-source-type');
-        if (sourceSelect) sourceSelect.value = detectedSource;
+        // 设置来源：自动识别 Gerber 代际并切换处理模式
+        applyDetectedProcessMode(rawFilesCache);
 
         // 设置精度参数 (若未检测到，使用默认值)
         document.getElementById('cfg-g-int').value = detectedG.int || 2;

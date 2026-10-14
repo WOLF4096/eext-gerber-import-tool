@@ -103,14 +103,41 @@ iframe/
     ├── 01-templates.js      工程文件头模板常量（STD / V2 / V3）
     ├── 02-config.js         调试开关、全局变量、图层定义与文件名识别规则
     ├── 03-state.js          运行时状态、画布上下文、免责声明弹窗
-    ├── 04-gerber-parser.js  RS-274X 解析器
+    ├── 04-gerber-parser.js  Gerber 解析器（指令层，按处理模式启用特性）
     ├── 05-pad-tool.js       逆向还原引擎（提取 / 聚合 / 生成图元）
     ├── 06-utils.js          通用工具函数
-    ├── 07-file-io.js        文件导入与解析调度
+    ├── 07-file-io.js        文件导入与解析调度（含自动识别处理模式）
     ├── 08-export.js         导出控制器（画布注入 / 工程文件 / PDF）
     ├── 09-ui.js             UI 渲染与交互
-    └── 10-init.js           初始化与全局事件
+    ├── 10-init.js           初始化与全局事件
+    └── processors/          处理模式模块：一个模式一个文件，由注册表路由
+        ├── registry.js          注册表 + 路由 + 自动识别引擎
+        ├── industry-common.js   行业标准公用（图层识别规则 / FileFunction 解析）
+        ├── industry-rs274x.js   RS-274X（已实现）
+        ├── industry-x2.js       Gerber X2（骨架，未实现）
+        ├── industry-x3.js       Gerber X3（骨架，未实现）
+        ├── industry-rs274d.js   RS-274D（骨架，未实现）
+        └── jlc-internal.js      嘉立创EDA专业版内部标准（已实现）
 ```
+
+## 处理模式
+
+「处理模式」下拉决定**怎么解析输入 Gerber、怎么判断每个文件属于哪一层**；
+输出统一走嘉立创专业版的源码 / 图元生成流程。
+
+| 下拉项 | 分组 | 状态 | 说明 |
+|---|---|---|---|
+| 嘉立创EDA专业版 V2.2 / V3 专用 | 内部标准 | ✅ | 沿用内部命名约定（`Gerber_TopLayer`、`Drill_PNH_Through`、埋盲孔层对） |
+| RS-274X（通用扩展） | 行业标准 | ✅ | 通用 RS-274X；图层按 KiCad / Altium / Eagle / Protel 等通用命名识别 |
+| Gerber X2（含属性） | 行业标准 | 骨架 | 计划用 `%TF.FileFunction` 定层、`%TA.AperFunction` 区分焊盘/过孔/导线 |
+| Gerber X3（含元件网络） | 行业标准 | 骨架 | 计划在 X2 基础上解析 `TO.C`/`TO.N`/`TO.P` 并接入网络生成 |
+| RS-274D（老式格式） | 行业标准 | 骨架 | 计划支持 `G70/G71`、`G90/G91`、`G54Dnn`，并从压缩包或内置表加载孔径表 |
+
+- **自动识别**：导入文件后会按内容特征（`%TF`/`%TO`/`%ADD`/`G70`/`G54D` 等）与文件名约定打分，
+  自动切换到匹配的模式并写入运行日志；识别不出或最高分并列时保持当前选择。
+- 尚未实现的模式**不会**被自动选中；手动选中时导出会明确提示「尚未实现」，不会静默无响应。
+- 新增一个模式：在 `iframe/js/processors/` 下加一个文件，调用 `registerProcessor({...})` 自注册，
+  再在 `ImportGerber.html` 的 `processors` 脚本区与下拉 `optgroup` 中各加一项即可。
 
 **脚本加载顺序不可调整**：文件名数字前缀即加载顺序，脚本按经典 `<script>` 方式共享同一全局作用域，后置模块依赖前置模块的全局定义；`ImportGerber.html` 中的标签顺序与上表一致。
 
