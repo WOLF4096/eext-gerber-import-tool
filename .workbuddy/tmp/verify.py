@@ -53,15 +53,27 @@ for name, _ in MODULES:
 check(open(CSS, "rb").read(3) == b"\xef\xbb\xbf", "style.css 带 UTF-8 BOM")
 
 print("\n=== 2. 模块内容 = 纯注释头 + 原始代码切片（逐字节）===")
+# 这两处是「优化任务」里刻意修改的，不再与原码逐字节一致；
+# 其余 8 个模块必须仍然逐字节等于拆分时的原始切片。
+EXPECTED_MODIFIED = {'08-export.js', '09-ui.js'}
+modified = set()
 for name, ranges in MODULES:
     text = open(os.path.join(JS_DIR, name), encoding="utf-8-sig").read()
     expected = "".join(orig[a:b] for a, b in ranges)
+    if name in EXPECTED_MODIFIED:
+        same = text.endswith(expected)
+        if not same:
+            modified.add(name)
+        print("  [INFO] %-22s 属预期修改模块，与原码不再逐字节一致（跳过断言）" % name)
+        continue
     ok_tail = text.endswith(expected)
     check(ok_tail, "%-22s 结尾与原码切片逐字节一致 (%6d chars)" % (name, len(expected)))
     if ok_tail:
         prefix = text[:-len(expected)]
         bad = [l for l in prefix.split("\n") if l.strip() and not l.startswith("//")]
         check(not bad, "%-22s 前置内容仅含注释，无任何代码" % name)
+check(modified == EXPECTED_MODIFIED,
+      "被改动的文件恰为预期的 %s（实际 %s）" % (sorted(EXPECTED_MODIFIED), sorted(modified)))
 
 print("\n=== 3. 切片按原文顺序无缝覆盖原脚本（无丢失/重复）===")
 covered = []
@@ -118,4 +130,4 @@ if fails:
     for f in fails:
         print("   - " + f)
     raise SystemExit(1)
-print("全部校验通过：拆分后原代码零改动、零丢失、零重复。")
+print("全部校验通过：除 %s 两个按需修改的模块外，其余原代码零改动、零丢失、零重复。" % "/".join(sorted(EXPECTED_MODIFIED)))

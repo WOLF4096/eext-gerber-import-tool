@@ -6,3 +6,16 @@
 /.edaignore
 /npm run build.cmd
 debug.log
+
+# iframe 下的前端资源不参与格式化：
+#  1. js/*.min.js 是第三方已压缩库，prettier 会把它们整体展开 —— 实测
+#     jszip 97,630 → 160,466 B、jspdf 364,463 → 549,200 B，白白撑大约 250KB 包体；
+#  2. js/0X-*.js 是原单文件 iframe/ImportGerber.html 按字节切分而来，内含大量
+#     模板字面量与工程文件头模板文本，保持原样才能与拆分前逐字节对照；
+#  3. ImportGerber.html 与 css/style.css 同理。
+#  若确实需要格式化其中某个文件，请在此单独放行（用 ! 前缀）。
+/iframe/
+
+# .workbuddy 是项目数据/测试脚手架目录，里面含原单文件备份与测试用的临时拷贝，
+# 同样不应参与格式化。
+/.workbuddy/

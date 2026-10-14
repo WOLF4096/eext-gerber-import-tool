@@ -225,6 +225,22 @@
         // 排序
         const renderOrder = loadedFiles.slice().sort((a,b) => getZ(a.layerId) - getZ(b.layerId));
 
+        // --- [性能优化] 预先算出「世界坐标下的可视矩形」，供逐图元裁剪使用 ---
+        // 屏幕坐标与世界坐标的关系： sx = offsetX + scale*x ； sy = offsetY - scale*y
+        // 故可视范围： x ∈ [-offsetX/scale, (logicalW-offsetX)/scale]
+        //             y ∈ [(offsetY-logicalH)/scale, offsetY/scale]
+        const cullPadMM = 2 / (viewState.scale || 1); // 至少留 2 像素余量
+        const viewRect = {
+            minX: -viewState.offsetX / viewState.scale - cullPadMM,
+            maxX: (logicalW - viewState.offsetX) / viewState.scale + cullPadMM,
+            minY: (viewState.offsetY - logicalH) / viewState.scale - cullPadMM,
+            maxY: viewState.offsetY / viewState.scale + cullPadMM
+        };
+        // 包围盒与可视矩形是否相交（pad 为额外余量，单位 mm）
+        const rectVisible = (x0, y0, x1, y1, pad) =>
+            !(x1 < viewRect.minX - pad || x0 > viewRect.maxX + pad ||
+              y1 < viewRect.minY - pad || y0 > viewRect.maxY + pad);
+
 
         // 2. 循环绘制每个文件
         renderOrder.forEach(file => {
@@ -254,18 +270,35 @@
             bufCtx.lineCap = 'round'; bufCtx.lineJoin = 'round'; 
             bufCtx.beginPath();
 
+            // --- [性能优化] 裁剪余量：取本图层光圈的最大尺寸，
+            //     保证被裁掉的一定是完全落在视口之外的图元 ---
+            let maxApMM = 0;
+            for (const k in apertures) {
+                const pp = apertures[k] && apertures[k].params;
+                if (!pp) continue;
+                for (let q = 0; q < pp.length; q++) {
+                    const v = Math.abs(pp[q]);
+                    if (v > maxApMM) maxApMM = v;
+                }
+            }
+            const cullPadAp = maxApMM + cullPadMM;
+            let curPolarity = null;   // 当前生效的极性：仅在真正变化时才提交路径
+            let pathBroken = false;   // 路径是否已与上一条画出的图元断开，需要重新 moveTo
+
             for (let i = 0; i < commands.length; i++) {
                 const cmd = commands[i];
 
                 // 极性处理
-                if (cmd.polarity === 'C') {
+                // --- [性能优化] 原实现在每条命令上都无条件 stroke()+beginPath()，
+                //     这会打断「同图层内连续线段」的路径批处理：每段被单独提交，
+                //     而下一段又是从空路径开始 lineTo，结果每层只画出第一段。
+                //     改为仅在极性真正变化时才提交路径，其余情况让线段自然累积成一条路径。 ---
+                const polarity = (cmd.polarity === 'C') ? 'C' : 'D';
+                if (polarity !== curPolarity) {
                     bufCtx.stroke(); 
                     bufCtx.beginPath();
-                    bufCtx.globalCompositeOperation = 'destination-out'; 
-                } else {
-                    bufCtx.stroke(); 
-                    bufCtx.beginPath();
-                    bufCtx.globalCompositeOperation = 'source-over'; 
+                    bufCtx.globalCompositeOperation = polarity === 'C' ? 'destination-out' : 'source-over'; 
+                    curPolarity = polarity;
                 }
 
                 if (cmd.type === 2) { // Move
@@ -273,6 +306,7 @@
                     bufCtx.beginPath();
                     bufCtx.moveTo(cmd.x, cmd.y);
                     currX = cmd.x; currY = cmd.y;
+                    pathBroken = false;   // [性能优化] 路径已在新位置重新起笔
                 } else if (cmd.type === 1) { // Line / Arc
                     const ap = apertures[cmd.ap];
                     const width = (ap && ap.params && ap.params[0]) ? ap.params[0] : (0.05);
@@ -281,9 +315,34 @@
                         bufCtx.stroke(); bufCtx.beginPath();
                         bufCtx.lineWidth = width;
                         bufCtx.moveTo(currX, currY); 
+                        pathBroken = false;
                     }
-                    
-                    if (cmd.mode === 2 || cmd.mode === 3) { 
+
+                    // 本段的起点：圆弧用指令里记录的上一点，直线用路径当前点
+                    const isArc = (cmd.mode === 2 || cmd.mode === 3);
+                    const segX0 = isArc ? cmd.prevX : currX;
+                    const segY0 = isArc ? cmd.prevY : currY;
+
+                    // --- [性能优化] 视口外裁剪：整段都在可视矩形之外就跳过绘制 ---
+                    let segVisible;
+                    if (isArc) {
+                        // 圆弧可能向外鼓出，用「圆心 ± 半径」的包围盒判断，偏保守但安全
+                        const acx = segX0 + cmd.i, acy = segY0 + cmd.j;
+                        const ar = Math.sqrt(cmd.i*cmd.i + cmd.j*cmd.j);
+                        segVisible = rectVisible(acx - ar, acy - ar, acx + ar, acy + ar, cullPadAp);
+                    } else {
+                        segVisible = rectVisible(Math.min(segX0, cmd.x), Math.min(segY0, cmd.y),
+                                                 Math.max(segX0, cmd.x), Math.max(segY0, cmd.y), cullPadAp);
+                    }
+                    if (!segVisible) {
+                        currX = cmd.x; currY = cmd.y;
+                        pathBroken = true;   // 路径在这里断开，下一段要先 moveTo 重新起笔
+                        continue;
+                    }
+                    // 上一段被裁掉过，本段必须重新起笔，否则会被 Canvas 连出一条长直线
+                    if (pathBroken) { bufCtx.moveTo(segX0, segY0); pathBroken = false; }
+
+                    if (isArc) { 
                         const cx = cmd.prevX + cmd.i; const cy = cmd.prevY + cmd.j;
                         const radius = Math.sqrt(cmd.i*cmd.i + cmd.j*cmd.j);
                         const sa = Math.atan2(cmd.prevY - cy, cmd.prevX - cx);
@@ -296,6 +355,12 @@
                 } else if (cmd.type === 3) { // Flash (D03)
                     bufCtx.stroke(); bufCtx.beginPath();
                     const ap = apertures[cmd.ap];
+                    // --- [性能优化] 视口外裁剪（用本图层最大光圈尺寸作余量，偏保守） ---
+                    if (!rectVisible(cmd.x - cullPadAp, cmd.y - cullPadAp,
+                                     cmd.x + cullPadAp, cmd.y + cullPadAp, 0)) {
+                        pathBroken = true;
+                        continue;
+                    }
                     const safeAp = ap || { type:'C', params:[0.2] }; 
                     
                     // 【修改注意】: 这里不要直接转大写，因为宏名称是区分大小写的
@@ -428,6 +493,21 @@
 
                 } else if (cmd.type === 4) { // Region
                     bufCtx.stroke(); bufCtx.beginPath(); 
+                    // --- [性能优化] 视口外裁剪：先求该区域的包围盒 ---
+                    let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
+                    for (let q = 0; q < cmd.path.length; q++) {
+                        const oq = cmd.path[q];
+                        if (oq.x < rMinX) rMinX = oq.x;
+                        if (oq.x > rMaxX) rMaxX = oq.x;
+                        if (oq.y < rMinY) rMinY = oq.y;
+                        if (oq.y > rMaxY) rMaxY = oq.y;
+                    }
+                    if (cmd.path.length > 0 && !rectVisible(rMinX, rMinY, rMaxX, rMaxY, cullPadAp)) {
+                        const lastOp = cmd.path[cmd.path.length - 1];
+                        currX = lastOp.x; currY = lastOp.y;
+                        pathBroken = true;
+                        continue;
+                    }
                     cmd.path.forEach(op => {
                         if (op.cmd === 'M') bufCtx.moveTo(op.x, op.y);
                         else if (op.cmd === 'L') bufCtx.lineTo(op.x, op.y);

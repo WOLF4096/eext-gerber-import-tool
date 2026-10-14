@@ -1,0 +1,49 @@
+{
+  "label": "before_test",
+  "fixture": "test.GTL",
+  "errors": [
+    "console: Failed to load resource: the server responded with a status of 404 (Not Found)"
+  ],
+  "info": {
+    "layerNames": [
+      "test.GTL"
+    ],
+    "layerIds": [
+      1
+    ],
+    "visible": [
+      true
+    ],
+    "scale": 266.6666666666667,
+    "offsetX": 80,
+    "offsetY": 666.6666666666667
+  },
+  "afterLoad": {
+    "count": 108708,
+    "orange": 106323,
+    "minX": 0,
+    "minY": 67,
+    "maxX": 412,
+    "maxY": 732,
+    "w": 960,
+    "h": 800,
+    "urlHash": -437280200,
+    "urlLen": 29814,
+    "layers": 1,
+    "commands": 6
+  },
+  "afterPanStats": {
+    "count": 123180,
+    "orange": 120474,
+    "minX": 7,
+    "minY": 107,
+    "maxX": 472,
+    "maxY": 772,
+    "w": 960,
+    "h": 800,
+    "urlHash": -463317076,
+    "urlLen": 29882,
+    "layers": 1,
+    "commands": 6
+  }
+}

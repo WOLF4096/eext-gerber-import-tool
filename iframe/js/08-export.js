@@ -264,6 +264,113 @@
 
 
     // --- 1.1 按钮：导出至当前 PCB 画布 (修改版) ---
+    // ====================================================================================
+    // 写入画布前的安全检查：确认当前文档是空白 PCB
+    // ------------------------------------------------------------------------------------
+    // 本工具通过 eda.sys_FileManager.setDocumentSource() 整体替换当前文档源码，
+    // 若文档中已有设计数据，这些数据会被覆盖且难以恢复。
+    // 免责声明里写了「务必在空白 PCB 文档中使用」，但那只能靠用户自觉；
+    // 这里补一道程序化校验：读取当前文档源码，统计其中的图元记录数，非空则强提示。
+    // 任何一步失败都放行（不拦路）—— 免责声明已经提示过，这里只是多一层保险，
+    // 不能因为它自身异常而让本来可用的功能失效。
+    // ====================================================================================
+
+    // 文档源码中「图元」记录的类型白名单（DOCHEAD / LAYER / RULE 等属于元信息，不计入）
+    const PRIMITIVE_SOURCE_TYPES = new Set([
+        'PAD', 'VIA', 'TRACK', 'ARC', 'LINE', 'POLY', 'POLYLINE', 'FILL', 'REGION',
+        'POUR', 'POURED', 'STRING', 'TEXT', 'HOLE', 'IMAGE', 'DIMENSION', 'COMPONENT', 'OBJECT'
+    ]);
+
+    /**
+     * 统计文档源码里已有多少个图元记录。
+     * 兼容 V3（每行 {"type":"XXX",...}||{...}）与 V2（每行 ["XXX",...]）两种行格式。
+     * 采用「白名单」而非「黑名单」：识别不出的类型一律不算图元，
+     * 最坏情况只是少提示一次，不会误报。
+     *
+     * @param source - 文档源码
+     * @returns 图元记录数量
+     */
+    function countPrimitivesInDocumentSource(source) {
+        if (!source) return 0;
+        let count = 0;
+        const lines = source.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            let type = null;
+            if (line.charAt(0) === '{') {
+                const end = line.indexOf('}');
+                if (end > 0) {
+                    const m = /"type"\s*:\s*"([A-Za-z_]+)"/.exec(line.slice(0, end + 1));
+                    if (m) type = m[1].toUpperCase();
+                }
+            } else if (line.charAt(0) === '[') {
+                const m = /^\[\s*"([A-Za-z_]+)"/.exec(line);
+                if (m) type = m[1].toUpperCase();
+            }
+            if (type && PRIMITIVE_SOURCE_TYPES.has(type)) count++;
+        }
+        return count;
+    }
+
+    /**
+     * 弹出「当前文档非空」的确认框。
+     * 优先使用 EDA 原生确认框 SYS_Dialog.showConfirmationMessage，退回浏览器 confirm。
+     *
+     * @param count - 检测到的图元数量
+     * @returns 用户是否选择继续
+     */
+    function askOverwriteConfirm(count) {
+        const content =
+            '⚠️ 当前 PCB 文档中已存在 ' + count + ' 个图元。\n\n' +
+            '继续导入会替换当前文档的源码，原有图元可能丢失，且无法撤销。\n\n' +
+            '强烈建议：先新建一个空白 PCB 文档，或先备份并关闭当前文档，再重新导入。\n\n' +
+            '确定要继续吗？';
+
+        if (typeof eda !== 'undefined' && eda.sys_Dialog &&
+            typeof eda.sys_Dialog.showConfirmationMessage === 'function') {
+            return new Promise((resolve) => {
+                let settled = false;
+                const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+                try {
+                    eda.sys_Dialog.showConfirmationMessage(
+                        content, '数据覆盖警告', '仍然继续', '取消', (ok) => done(!!ok)
+                    );
+                    // 兜底：万一对话框被关闭而回调未触发，避免流程永久挂起
+                    setTimeout(() => done(false), 5 * 60 * 1000);
+                } catch (e) {
+                    done(false);
+                }
+            });
+        }
+        return Promise.resolve(window.confirm(content));
+    }
+
+    /**
+     * 写入画布前的守卫：当前文档为空（或无法判断）时返回 true 放行。
+     *
+     * @returns 是否可以继续写入
+     */
+    async function confirmIfDocumentNotEmpty() {
+        try {
+            if (typeof eda === 'undefined' || !eda.sys_FileManager ||
+                typeof eda.sys_FileManager.getDocumentSource !== 'function') {
+                return true; // 非 EDA 环境（例如直接用浏览器打开）无法检查
+            }
+            const source = await eda.sys_FileManager.getDocumentSource();
+            if (!source) return true; // 当前未打开文档，或读取失败
+
+            const n = countPrimitivesInDocumentSource(source);
+            if (n <= 0) return true;  // 文档是空的，直接放行
+
+            appLog('检测到当前文档已有 ' + n + ' 个图元，已弹出覆盖确认');
+            return await askOverwriteConfirm(n);
+        } catch (e) {
+            appLog('空文档校验已跳过：' + (e && e.message ? e.message : e));
+            return true;
+        }
+    }
+
     window.handleExportToCanvas = async (method) => {
         const env = getEnvInfo();
         const sourceType = document.getElementById('cfg-source-type').value;
@@ -285,6 +392,12 @@
             tryNetlist: document.getElementById('cfg-netlist').checked, // 尝试生成网络
             importMethod: method      // [新增] 导入方式: 'source' 或 'api'
         };
+
+        // --- [数据安全] 写入画布前，校验当前文档是否已有设计数据 ---
+        if (!(await confirmIfDocumentNotEmpty())) {
+            appLog('已取消导入：当前文档非空，用户选择不覆盖。');
+            return;
+        }
 
         if (sourceType === 'easyedapro'){
             await exportForEasyEDA_Pro(config);
