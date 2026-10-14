@@ -438,6 +438,18 @@
                         continue;
                     }
 
+                    // 1.5 极性：LPC（清除）是「挖空」而不是实体铜 —— 必须跳过。
+                    // Gerber 常见写法：先用 LPC 以较粗的光圈画一遍隔离带（例如 0.85mm），
+                    // 再用 LPD 以真实线宽画走线（例如 0.25mm）。若把 LPC 也当实体生成图元，
+                    // 就会凭空多出一批粗线（用户看到的「10mil 变成 33.5mil」就是这个原因）。
+                    // 注意：仍要推进当前点，否则后续 LPD 段的起点会错。
+                    if (cmd.polarity === 'C') {
+                        if (cmd.type === 1 || cmd.type === 2 || cmd.type === 3) {
+                            currX = mmOf(cmd.x); currY = mmOf(cmd.y);
+                        }
+                        continue;
+                    }
+
                     // 2. 区域填充 (G36/G37)
                     if (cmd.type === 4) { 
                         const regionOps = Array.isArray(cmd.path) ? cmd.path : [];
@@ -475,7 +487,8 @@
                         } else if (effMode === "POUR" || effMode === "COPPER") {
                             // 覆铜：按需求用「折线闭合轮廓」承载。
                             // createPolygon 会把首尾不重合的路径自动闭合成区域轮廓。
-                            rawPolys.push({ layerId, width: currentWidth, path: pathData, isPour: true });
+                            // 覆铜只导入「闭合轮廓」，用细线描边即可；不能用上一个走线的光圈（最大 1.6mm）
+                            rawPolys.push({ layerId, width: 0.1, path: pathData, isPour: true });
                         } else {
                             let targetLayer = layerId;
                             if (targetLayer === 56) targetLayer = 56; // 显式保留
