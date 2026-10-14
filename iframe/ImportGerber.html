@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Gerber 查看 / 导入PCB画布 / 生成PCB文件 / 导出PDF文件（预览版）</title>
     <!-- 浏览器环境 -->
-    <script src="js/jszip.min.js"></script>
-    <script src="js/jspdf.umd.min.js"></script>
+    <!-- <script src="js/jszip.min.js"></script>
+    <script src="js/jspdf.umd.min.js"></script> -->
     <!-- EDA环境 -->
     <script src="/iframe/js/jszip.min.js"></script>
     <script src="/iframe/js/jspdf.umd.min.js"></script>
@@ -118,6 +118,36 @@
     ::-webkit-scrollbar-track { background: var(--bg-color); }
     ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
     ::-webkit-scrollbar-thumb:hover { background: #555; }
+
+    /* --- 免责声明弹窗样式 --- */
+    .modal-overlay {
+        position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+        background: rgba(0, 0, 0, 0.7); z-index: 10000;
+        display: none; justify-content: center; align-items: center;
+        backdrop-filter: blur(2px);
+    }
+    .modal-box {
+        background-color: var(--panel-bg); width: 470px; max-height: 320px;
+        border: 1px solid var(--border-color); border-radius: 8px;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: flex; flex-direction: column;
+    }
+    .modal-header {
+        padding: 15px 20px; border-bottom: 1px solid var(--border-color);
+        font-size: 16px; font-weight: bold; color: #eee;
+    }
+    .modal-content {
+        padding: 20px; overflow-y: auto; font-size: 13px; line-height: 1.6; color: #ccc;
+        background-color: #1e1e1e;
+    }
+    .modal-content h3 { color: var(--accent-color); margin-top: 15px; margin-bottom: 10px; font-size: 14px; }
+    .modal-content strong { color: #fff; font-weight: bold; }
+    .modal-content ul { padding-left: 20px; margin: 5px 0; }
+    .modal-content li { margin-bottom: 4px; }
+    .modal-footer {
+        padding: 15px 20px; border-top: 1px solid var(--border-color);
+        display: flex; justify-content: flex-end; gap: 10px; background-color: var(--panel-header-bg);
+        border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
+    }
 
     </style>
 </head>
@@ -311,10 +341,10 @@
 
             <div style="padding: 0 15px;" id="ui-export-canvas-btn-wrapper">
                 <div style="display: flex; gap: 10px; margin-top: 5px;">
-                    <button class="btn-block btn-success" onclick="handleExportToCanvas('source')" style="flex: 1;">
+                    <button class="btn-block btn-success" onclick="confirmAction(() => handleExportToCanvas('source'))" style="flex: 1;">
                         通过源码导入
                     </button>
-                    <button class="btn-block btn-primary" onclick="handleExportToCanvas('api')" style="flex: 1; background-color: #007acc;">
+                    <button class="btn-block btn-primary" onclick="confirmAction(() => handleExportToCanvas('api'))" style="flex: 1; background-color: #007acc;">
                         通过图元导入
                     </button>
                 </div>
@@ -322,9 +352,9 @@
             
             <div class="section-title">导出嘉立创 EDA</div>
             <div class="btn-group-grid">
-                <div class="btn-small" onclick="handleExportStandard()">标准版</div>
-                <div class="btn-small" onclick="handleExportProV2()">专业版 V2</div>
-                <div class="btn-small" onclick="handleExportProV3()">专业版 V3</div>
+                <div class="btn-small" onclick="confirmAction(() => handleExportStandard())">标准版</div>
+                <div class="btn-small" onclick="confirmAction(() => handleExportProV2())">专业版 V2</div>
+                <div class="btn-small" onclick="confirmAction(() => handleExportProV3())">专业版 V3</div>
             </div>
 
             <div class="section-title" style="margin-top: 20px;">导出位图 PDF</div>
@@ -367,6 +397,60 @@
             </div>
         </div>
     </div>
+
+    <div id="disclaimer-modal" class="modal-overlay">
+        <div class="modal-box">
+            <div class="modal-header">用户协议与免责声明</div>
+            <div class="modal-content">
+                <p><strong>版本日期：2026年2月9日</strong></p>
+                <p>欢迎使用本 Gerber 文件查看及格式转换工具（以下简称“本工具”）。<strong>任何访问、加载或使用本工具的行为，即视为您已阅读并完全同意本协议的所有条款。</strong></p>
+
+                <h3>一、 工具性质与授权范围</h3>
+                <ol>
+                    <li><strong>工具定义</strong>：本工具为开源辅助软件，旨在提供 Gerber 制造文件的可视化查看及格式转换的功能。</li>
+                    <li><strong>合法用途</strong>：仅授权用于以下符合法律法规及道德规范的场景：
+                        <ul>
+                            <li>个人学习、电路设计研究与教学演示</li>
+                            <li>针对已停产、无原厂支持设备的维修与兼容性分析</li>
+                            <li>用户自有设计文件的格式互转、数据迁移与技术审查</li>
+                        </ul>
+                    </li>
+                </ol>
+
+                <h3>二、 高风险操作与数据安全（重要）</h3>
+                <p>本工具涉及对 EDA 编辑器画布的直接读写操作，具有一定的技术风险。为保障您的数据安全，请务必遵守以下操作规范：</p>
+                <ol>
+                    <li><strong>务必在空白文档中使用</strong>：<strong style="color: #ff5555;">严禁在包含现有设计数据的 PCB 文档中运行本工具的导入功能。</strong> 请务必新建一个独立的空白 PCB 文档进行操作。</li>
+                    <li><strong>数据覆盖风险</strong>：在非空白文档中操作可能导致原有图元被覆盖、参数被篡改或整个文档结构损坏。</li>
+                    <li><strong>责任自负</strong>：<strong style="color: #ff5555;">因用户未在空白文档操作、未提前备份数据或操作不当而导致的任何数据丢失、文件损坏或不可逆的修改，由此产生的损失均由用户自行承担，开发者概不负责。</strong></li>
+                    <li><strong>隐私保护</strong>：本工具采用纯前端技术，文件解析与渲染均在浏览器本地完成，不会将您的设计文件上传至任何服务器。</li>
+                </ol>
+
+                <h3>三、 严禁侵权与法律合规</h3>
+                <ol>
+                    <li><strong>禁止侵权</strong>：<strong>严禁利用本工具从事侵犯知识产权的行为</strong>，包括但不限于：未经授权复制、仿制他人产品；窃取他人的商业秘密或专利设计。</li>
+                    <li><strong>逆向工程风险</strong>：用户需知悉“逆向工程”在不同司法管辖区的法律风险。利用本工具进行分析所产生的一切法律后果由用户自行承担。若因用户行为导致第三方提起侵权诉讼，用户应独立承担所有法律责任及赔偿费用。</li>
+                </ol>
+
+                <h3>四、 技术局限与免责条款</h3>
+                <ol>
+                    <li><strong>“按现状”提供</strong>：本工具不保证功能的绝对准确性、完整性或特定用途的适用性。</li>
+                    <li><strong>转换误差</strong>：由于 Gerber 格式的复杂性及 EDA 版本差异，转换结果可能存在图形丢失、网络连接错误、孔径误判或层属性识别偏差。</li>
+                    <li><strong>非生产级工具</strong>：<strong>本工具生成的工程文件仅供参考，严禁未经验证直接用于 PCB 生产制造。</strong> 因直接使用转换数据导致的产品报废、经济损失或设备损坏，开发者不承担任何责任。</li>
+                </ol>
+
+                <h3>五、 其他</h3>
+                <p>开发者保留在任何时候修改本协议的权利。如果您不同意本协议的任何条款，请立即停止使用本工具。</p>
+                <hr style="border:0; border-top:1px solid #444; margin: 15px 0;">
+                <p><strong>请确认：您已充分理解上述条款，并承诺仅在法律允许的范围内使用本工具。</strong></p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-secondary" style="padding: 6px 15px; border-radius: 4px;" onclick="handleDisclaimer(false)">不同意</button>
+                <button class="btn-primary" style="padding: 6px 15px; border-radius: 4px;" onclick="handleDisclaimer(true)">我已知晓并继续</button>
+            </div>
+        </div>
+    </div>
+
 <script>
 
 // ====================================================================================
@@ -951,6 +1035,38 @@
     const bufCtx = bufferCanvas.getContext('2d', { willReadFrequently: true });
 
     let isRenderPending = false; // RAF 锁
+
+
+
+    // --- 弹窗逻辑控制 ---
+    let pendingAction = null; // 存储待执行的操作
+
+    function confirmAction(actionCallback) {
+        // 如果是 DEBUG 模式，直接执行，不弹窗
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+            actionCallback();
+            return;
+        }
+        
+        // 存储回调并在弹窗中显示
+        pendingAction = actionCallback;
+        document.getElementById('disclaimer-modal').style.display = 'flex';
+    }
+
+    function handleDisclaimer(isAgreed) {
+        // 隐藏弹窗
+        document.getElementById('disclaimer-modal').style.display = 'none';
+        
+        if (isAgreed) {
+            // 用户同意，执行存储的操作
+            if (pendingAction) pendingAction();
+        } else {
+            // 用户不同意，清空操作（也可以选择关闭窗口或提示）
+            console.log("用户拒绝了协议，操作取消。");
+        }
+        // 重置
+        pendingAction = null;
+    }
 
 // ====================================================================================
 // 3. 核心解析器 (Parser)
@@ -3496,9 +3612,9 @@
                 format: [final_pdfW_in, final_pdfH_in]
             });
 
-            // 辅助：黑底绘图函数
-            const drawWithBlackBg = () => {
-                drawCanvas(true); 
+            // 辅助：黑底绘图函数 (接收 forceSolid 参数并透传)
+            const drawWithBlackBg = (forceSolid = false) => {
+                drawCanvas(true, forceSolid); 
                 ctx.save();
                 ctx.setTransform(1, 0, 0, 1, 0, 0); 
                 ctx.globalCompositeOperation = 'destination-over'; 
@@ -3515,7 +3631,7 @@
                 overlay.textContent = "正在渲染视图...";
                 await new Promise(r => setTimeout(r, 10));
 
-                drawWithBlackBg();
+                drawWithBlackBg(false);
                 appLog(`-----------------------`);
                 overlay.textContent = "正在生成 PDF...";
                 await new Promise(r => setTimeout(r, 10));
@@ -3538,8 +3654,8 @@
                     loadedFiles.forEach(f => f.visible = false);
                     file.visible = true;
 
-                    // 2. 绘制
-                    drawWithBlackBg();
+                    // 2. 绘制：强制 100% 不透明 (传 true)
+                    drawWithBlackBg(true);
 
                     // 3. 绘制水印标签 (黄色文字)
                     ctx.setTransform(1, 0, 0, 1, 0, 0); 
@@ -4546,8 +4662,8 @@
         activeGroups.forEach(gid => updateGroupCheckboxState(gid));
     }
 
-    // drawCanvas, resizeCanvas (绘图)。
-    function drawCanvas(forceNoDpr = false) {
+    // 新增 forceSolid 参数，用于独立控制是否强制 100% 不透明
+    function drawCanvas(forceNoDpr = false, forceSolid = false) {
         // --- [核心修复] ---
         // 如果是导出模式 (forceNoDpr=true)，强制 dpr=1，忽略屏幕缩放
         // 否则使用屏幕的 devicePixelRatio
@@ -4887,7 +5003,9 @@
             // 而 bufferCanvas 本身是 dpr 倍大的，所以绘制尺寸要除以 dpr 或者调整 drawImage 参数)
             
             ctx.save();
-            ctx.globalAlpha = def.alpha;
+            // ctx.globalAlpha = def.alpha;
+			// ctx.globalAlpha = forceNoDpr ? 1.0 : def.alpha;
+			ctx.globalAlpha = forceSolid ? 1.0 : def.alpha;
             // 关键：因为 ctx 已经 scale(dpr, dpr)，这里绘制逻辑尺寸即可
             // bufferCanvas 是物理像素尺寸，drawImage 会自动映射
             ctx.drawImage(bufferCanvas, 0, 0, logicalW, logicalH);
