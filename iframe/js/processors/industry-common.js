@@ -1,10 +1,11 @@
 ﻿// ====================================================================================
 // processors/industry-common.js  —  行业标准处理器的公共部分
 // ------------------------------------------------------------------------------------
-// 职责：被 industry-rs274x / industry-x2 / industry-x3 / industry-rs274d 复用。
+// 职责：被 industry-rs274x 复用（原 industry-x2 / x3 / rs274d 模块已移除）。
 //   · LAYER_ID                内部图层 ID 常量（与 02-config.js 的 rawLayerData 一致）
 //   · mapCopperLayerNo        Gerber X2 的铜层序号 → 内部图层 ID
 //   · parseGerberFileFunction 解析 %TF.FileFunction 属性值 → 图层 ID
+//                            （保留：通用模式若日后接入 X2 属性可直接复用）
 //   · INDUSTRY_LAYER_RULES    面向「任何软件导出的 Gerber」的图层识别规则
 //   · resolveIndustryLayerId  按规则解析文件名对应的图层 ID
 // 说明：纯数据 + 纯函数，加载期不访问 DOM。
