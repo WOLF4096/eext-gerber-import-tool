@@ -210,9 +210,14 @@
         return { type: 'MACRO', prims };
     }
 
-    // 把宏基元转成「中心在 (cx,cy)、已换算到 mm」的路径。
-    // 清除基元（exposure === 'C'）也要放进路径：配合 fill('evenodd') 正好形成孔洞。
-    function macroPrimsToPath(shape, cx, cy, scale) {
+    // 把宏基元转成「中心在 (cx,cy)、已换算到 mm」的路径（**朴素版，不做布尔运算**）。
+    // 背景：Gerber 宏里多个「暗基元」在几何上是**并集**关系，但朴素实现把它们当成
+    // 同一条路径的子路径交给 fill('evenodd')，重叠部分会被 XOR 成孔洞 ——
+    // EasyEDA 专业版的 RoundRect 宏（4 个圆角 + 4 条边线 + 1 个外框矩形）就会渲染成
+    // 「中间被挖掉楔形缺口」的破孔焊盘。所以这里只作为 Clipper 不可用时的兜底保留，
+    // 正常路径走 macroPrimsToPath()（先并集后差集）。清基元（exposure === 'C'）在兜底
+    // 模式下仍放进路径，靠 fill('evenodd') 形成孔洞。
+    function macroPrimsToPathNaive(shape, cx, cy, scale) {
         const out = [];
         if (!shape || !Array.isArray(shape.prims)) return out;
         const sc = (typeof scale === 'number' && isFinite(scale)) ? scale : 1;
@@ -260,6 +265,153 @@
             }
         });
         return out;
+    }
+
+    // --- 宏基元的布尔运算（暗基元并集、清基元差集）---
+    // 缓存：同一光圈（类型 + 参数 + 倍率）会被闪绘成百上千次，环只需算一次。
+    const _macroRingCache = new Map();
+
+    /** 圆 → 折线环（相对坐标，mm） */
+    function macroCircleRing(cx, cy, r) {
+        const tol = Math.max(r * 0.01, 0.0005);
+        const step = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - tol / r)));
+        const n = Math.max(12, Math.min(72, Math.ceil(2 * Math.PI / Math.max(step, 0.05))));
+        const pts = [];
+        for (let i = 0; i < n; i++) {
+            const a = 2 * Math.PI * i / n;
+            pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+        }
+        return pts;
+    }
+
+    /** 单个宏基元 → 折线环（相对坐标，已乘 scale），无法构成面时返回 null */
+    function macroPrimRing(p, sc) {
+        if (!p) return null;
+        if (p.kind === 'circle') {
+            const r = Math.abs(p.dia) * sc / 2;
+            if (!(r > 0)) return null;
+            return macroCircleRing(p.cx * sc, p.cy * sc, r);
+        }
+        if (p.kind === 'poly') {
+            if (!Array.isArray(p.points) || p.points.length < 3) return null;
+            return p.points.map(pt => [pt.x * sc, pt.y * sc]);
+        }
+        if (p.kind === 'rect') {
+            const hw = p.w * sc / 2, hh = p.h * sc / 2;
+            const rad = (p.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+            const bx = p.cx * sc, by = p.cy * sc;
+            return [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([x, y]) =>
+                [bx + x * cos - y * sin, by + x * sin + y * cos]);
+        }
+        if (p.kind === 'line') {
+            const rad = (p.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+            const rot = (x, y) => [x * cos - y * sin, x * sin + y * cos];
+            const [ax, ay] = rot(p.x1, p.y1), [bx2, by2] = rot(p.x2, p.y2);
+            const dx = bx2 - ax, dy = by2 - ay, len = Math.sqrt(dx * dx + dy * dy);
+            if (!(len > 0)) return null;
+            const hw = Math.abs(p.w) * sc / 2;
+            const nx = -dy / len * hw, ny = dx / len * hw;
+            return [[ax + nx, ay + ny], [bx2 + nx, by2 + ny], [bx2 - nx, by2 - ny], [ax - nx, ay - ny]]
+                .map(([x, y]) => [x * sc, y * sc]);
+        }
+        return null;
+    }
+
+    /**
+     * 宏基元 → 轮廓环数组（**已按 Gerber 语义做布尔运算**：暗基元并集 − 清基元）。
+     * @returns {Array<Array<[number,number]>>|null} 相对中心、已乘 sc 的 mm 环；无法计算返回 null
+     */
+    function macroBuildRings(shape, sc) {
+        const dark = [], clear = [];
+        // Clipper 约定：同一批 subject 里**方向相反**的多边形会被当成孔洞做减法。
+        // 而宏基元的方向是随机的（圆/矩形按逆时针给点，线段生成的四边形是顺时针），
+        // 所以必须先统一成同一方向（这里统一为逆时针），否则圆角会被整块挖掉。
+        const add = (arr, pts) => {
+            if (!pts) return;
+            const p = fillDropDupes(pts);
+            if (p.length < 3 || Math.abs(fillRingArea(p)) <= FILL_AREA_EPS) return;
+            if (fillRingArea(p) < 0) fillReverseRing(p);
+            arr.push(p);
+        };
+        shape.prims.forEach(p => add((p.exposure === 'C') ? clear : dark, macroPrimRing(p, sc)));
+        if (!dark.length) return clear.length ? [] : null;
+
+        let rings = dark;
+        try {
+            const cpr = new ClipperLib.Clipper();
+            cpr.AddPaths(dark.map(fillToIntPath), ClipperLib.PolyType.ptSubject, true);
+            const tree = new ClipperLib.PolyTree();
+            if (!cpr.Execute(ClipperLib.ClipType.ctUnion, tree,
+                ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero)) return null;
+            rings = macroTreeToRings(tree);
+
+            if (clear.length) {
+                const cpr2 = new ClipperLib.Clipper();
+                cpr2.AddPaths(rings.map(fillToIntPath), ClipperLib.PolyType.ptSubject, true);
+                cpr2.AddPaths(clear.map(fillToIntPath), ClipperLib.PolyType.ptClip, true);
+                const tree2 = new ClipperLib.PolyTree();
+                if (cpr2.Execute(ClipperLib.ClipType.ctDifference, tree2,
+                    ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero)) {
+                    rings = macroTreeToRings(tree2);
+                }
+            }
+        } catch (e) {
+            console.warn('宏基元布尔运算异常，回退为朴素路径:', e);
+            return null;
+        }
+        return rings;
+    }
+
+    /** Clipper PolyTree → 环数组（外环在前，孔洞在后） */
+    function macroTreeToRings(tree) {
+        const outers = [], holes = [];
+        const walk = (node) => {
+            const kids = node.Childs();
+            for (let i = 0; i < kids.length; i++) {
+                const c = kids[i];
+                const contour = c.Contour();
+                if (contour && contour.length >= 3) {
+                    const pts = fillDropDupes(fillFromIntPath(contour));
+                    if (pts.length >= 3 && Math.abs(fillRingArea(pts)) > FILL_AREA_EPS) {
+                        if (c.IsHole()) holes.push(pts); else outers.push(pts);
+                    }
+                }
+                walk(c);
+            }
+        };
+        walk(tree);
+        return outers.concat(holes);
+    }
+
+    /**
+     * 把宏基元转成「中心在 (cx,cy)、已换算到 mm」的路径（**对外统一入口**）。
+     * 优先用 Clipper 求「暗并集 − 清差集」的正确轮廓；Clipper 不可用时回退朴素路径。
+     * @param {string} [cacheKey] 光圈标识（类型+参数），用于缓存布尔结果
+     */
+    function macroPrimsToPath(shape, cx, cy, scale, cacheKey) {
+        if (!shape || !Array.isArray(shape.prims) || !shape.prims.length) return [];
+        const sc = (typeof scale === 'number' && isFinite(scale)) ? scale : 1;
+        if (typeof fillClipperReady === 'function' && fillClipperReady()) {
+            const key = cacheKey ? (cacheKey + '|' + sc) : null;
+            let rings;
+            if (key && _macroRingCache.has(key)) {
+                rings = _macroRingCache.get(key);
+            } else {
+                try { rings = macroBuildRings(shape, sc); } catch (e) { rings = null; }
+                if (key && rings) _macroRingCache.set(key, rings);
+            }
+            if (rings && rings.length) {
+                const out = [];
+                rings.forEach(ring => {
+                    if (!ring || ring.length < 3) return;
+                    out.push({ cmd: 'M', x: cx + ring[0][0], y: cy + ring[0][1] });
+                    for (let i = 1; i < ring.length; i++) out.push({ cmd: 'L', x: cx + ring[i][0], y: cy + ring[i][1] });
+                    out.push({ cmd: 'L', x: cx + ring[0][0], y: cy + ring[0][1] });
+                });
+                if (out.length) return out;
+            }
+        }
+        return macroPrimsToPathNaive(shape, cx, cy, scale);
     }
 
     // ----------------------------------------------------------------------------------
@@ -1009,30 +1161,68 @@
     }
 
     // --- 辅助：从 Gerber 头部注释识别「导出来源软件」与「导出时间」---
+    /** 两位补零 */
+    function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+    /**
+     * Date → 'YYYY-MM-DD HH:MM:SS'。
+     * useUTC=true 用 UTC 字段读取：JSZip 的 entry.date 是按「DOS 时间 → Date.UTC」构造的，
+     * 只有用 UTC 字段读出来才是压缩包里记录的本地时间（用本地字段会整体偏移一个时区）。
+     */
+    function formatStamp(d, useUTC) {
+        if (!d || !(d instanceof Date) || isNaN(d.getTime())) return null;
+        const g = useUTC
+            ? [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
+            : [d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds()];
+        return `${g[0]}-${pad2(g[1] + 1)}-${pad2(g[2])} ${pad2(g[3])}:${pad2(g[4])}:${pad2(g[5])}`;
+    }
+
+    /** 压缩包条目 → 时间串（按 UTC 字段还原，见 formatStamp 说明） */
+    function zipEntryStamp(entry) {
+        return entry && entry.date ? formatStamp(entry.date, true) : null;
+    }
+
+    /** File.lastModified（真实时间戳，ms）→ 本地时间串 */
+    function fileTimeStamp(ms) {
+        return (typeof ms === 'number' && isFinite(ms)) ? formatStamp(new Date(ms), false) : null;
+    }
+
     /**
      * 扫描已导入文件的原文，识别产生该 Gerber 的软件与导出时间。
      * 实测两种写法：
      *   G04 EasyEDA Pro v2.2.32.3, 2024-11-18 13:44:47*
      *   ;EasyEDA Pro Client v2.1.40.832e02bb.70b181, 2023-12-06 22:07:52
      * 约定：EasyEDA = 标准版；EasyEDA Pro（含 Pro Client）= 专业版。
-     * @returns {{software:string, time:string, raw:string}|null} 未识别到返回 null
+     * 兜底：注释里读不到导出时间时，用「压缩包内各 Gerber 文件时间的最小值」；
+     *       软件名称读不到就保持 null（由 UI 隐藏该行，不做臆测）。
+     * @returns {{software:string|null, time:string|null, raw:string}|null} 两者都没有时返回 null
      */
     function detectEasyEdaSource() {
         // 允许 G04 / ; 前缀，名称里可有 Pro / Client，版本号后可跟哈希段
         const re = /(?:G04|;)\s*(EasyEDA(?:\s+Pro)?(?:\s+Client)?)\s+v([0-9][^\s,]*)\s*,\s*(\d{4}-\d{2}-\d{2}[ T][\d:]+)/i;
         const files = (typeof rawFilesCache !== 'undefined' && Array.isArray(rawFilesCache)) ? rawFilesCache : [];
+        let software = null, time = null, raw = '';
         for (const f of files) {
             if (!f || !f.content) continue;
             const m = re.exec(f.content);
             if (!m) continue;
             const isPro = /pro/i.test(m[1]);
-            return {
-                software: `${isPro ? '嘉立创EDA专业版' : '嘉立创EDA标准版'} v${trimVersionTail(m[2])}`,
-                time: m[3],
-                raw: m[0].trim()
-            };
+            software = `${isPro ? '嘉立创EDA专业版' : '嘉立创EDA标准版'} v${trimVersionTail(m[2])}`;
+            time = m[3];
+            raw = m[0].trim();
+            break;
         }
-        return null;
+        // 标记里没有导出时间 → 取压缩包内 Gerber 文件时间的最小值
+        if (!time) {
+            let min = null;
+            for (const f of files) {
+                if (!f || !f.mtime) continue;
+                if (min === null || f.mtime < min) min = f.mtime;
+            }
+            time = min;
+        }
+        if (!software && !time) return null;
+        return { software, time, raw };
     }
 
     /** 版本号去掉尾部的哈希段：2.1.40.832e02bb.70b181 → 2.1.40；纯数字段全部保留 */

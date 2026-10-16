@@ -100,8 +100,11 @@
     const FLYING_LAYER_IDS = [FLYING_LAYER.PAD_NUMBER, FLYING_LAYER.NET_NAME, FLYING_LAYER.REFDES];
     const isFlyingLayer = (id) => FLYING_LAYER_IDS.indexOf(id) >= 0;
 
-    // 元件位号字高（默认 24 mil）：画布按世界尺寸随缩放显示，导出装配层文字也用同一字高
+    // 元件位号字高：
+    //   · 导出（装配层文字）—— 24 mil
+    //   · 画布显示        —— 16 mil（画布按世界尺寸随缩放变化，字高比导出的略小些更好看）
     const FLYING_REFDES_HEIGHT_MIL = 24;
+    const FLYING_REFDES_CANVAS_MIL = 16;
 
     // 引脚编号 / 网络名称的文字上限（px）；低于下限说明焊盘实在装不下，直接隐藏
     const FLYING_LABEL_MAX_FONT = 12;

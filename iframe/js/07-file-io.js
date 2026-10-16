@@ -60,7 +60,10 @@
                         // 只放进真正像 Gerber/钻孔的文件：说明文件、报告(.ERR)、
                         // 嵌套压缩包、二进制文件都会被拦掉，避免垃圾图层与解析崩溃。
                         const content = await zip.files[name].async("string");
-                        if (isGerberText(name, content)) rawFilesCache.push({ name, content });
+                        if (isGerberText(name, content)) {
+                            // 记录压缩包内该文件的时间（注释里读不到导出时间时用它兜底）
+                            rawFilesCache.push({ name, content, mtime: zipEntryStamp(zip.files[name]) });
+                        }
                     }
                 } 
                 
@@ -81,7 +84,8 @@
                     // 常规 Gerber 处理（同样做内容探测）
                     const content = await file.text();
                     if (isGerberText(file.name, content)) {
-                        rawFilesCache.push({ name: file.name, content });
+                        // 散文件用文件系统时间兜底
+                        rawFilesCache.push({ name: file.name, content, mtime: fileTimeStamp(file.lastModified) });
                     } else {
                         appLog(`已跳过非 Gerber 文件：${file.name}`);
                     }

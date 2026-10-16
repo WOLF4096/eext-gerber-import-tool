@@ -464,7 +464,9 @@
                             bufCtx.closePath();
                             macroDrew = true;
                         } else {
-                            const ops = macroPrimsToPath(macroShape, 0, 0, uScale);
+                            // 缓存键：同一光圈（类型 + 参数）的布尔轮廓只需算一次
+                            const ops = macroPrimsToPath(macroShape, 0, 0, uScale,
+                                rawType + '|' + (rawParams || []).join(','));
                             ops.forEach(op => {
                                 if (op.cmd === 'M') bufCtx.moveTo(op.x, op.y);
                                 else if (op.cmd === 'L') bufCtx.lineTo(op.x, op.y);
@@ -478,7 +480,8 @@
                             });
                             macroDrew = ops.length > 0;
                         }
-                        // evenodd：宏里的「清除基元」正好形成孔洞
+                        // 轮廓已由 macroPrimsToPath 做过布尔运算（暗并集 − 清差集），
+                        // 各环互不重叠，evenodd 与 nonzero 等价；这里保留 evenodd。
                         if (macroDrew) bufCtx.fill('evenodd');
                     }
                     
@@ -729,7 +732,7 @@
      * 字号规则：
      *   · 引脚编号 / 网络名称 —— 文字必须完整落在**焊盘包围盒**内：两行排布（编号在上、网络名在下）
      *     各占半高；只要有一行放不下就退化为「单行只显示编号」；编号也放不下则整块隐藏。
-     *   · 元件位号 —— 固定字高 FLYING_REFDES_HEIGHT_MIL（默认 24 mil），按世界尺寸随缩放变化。
+     *   · 元件位号 —— 固定字高 FLYING_REFDES_CANVAS_MIL（16 mil），按世界尺寸随缩放变化。
      * 所有文字都不描边（先前为了压住底层图形加了黑色描边，视觉发糊且不符合要求）。
      */
     function drawFlyingOverlays(dpr) {
@@ -813,7 +816,7 @@
         }
 
         if (wantRef) {
-            const fpx = Math.max(6, FLYING_REFDES_HEIGHT_MIL * 0.0254 * s);   // 24 mil 字高，随缩放
+            const fpx = Math.max(6, FLYING_REFDES_CANVAS_MIL * 0.0254 * s);   // 16 mil 字高，随缩放
             setFont(fpx);
             ctx.fillStyle = refCol;
             labels.comps.forEach(c => {
@@ -965,7 +968,8 @@
             bbRow.style.display = 'none';
         }
 
-        // 4. 来源软件与导出时间（从导入文件的头部注释解析；识别不到则隐藏）
+        // 4. 软件名称 / 导出时间（从导入文件的头部注释解析）
+        //    软件名称读不到 → 隐藏该行；导出时间读不到 → 回退用文件时间的最小值。
         const src = (typeof detectEasyEdaSource === 'function') ? detectEasyEdaSource() : null;
         const softRow = document.getElementById('row-prop-soft');
         const timeRow = document.getElementById('row-prop-time');

@@ -24,9 +24,61 @@
 	"entry": "./dist/index",
 	"dependentExtensions": {},
 	"headerMenus": {
+		"home": [
+			{
+				"id": "IGerberhome",
+				"title": "Gerber工具",
+				"menuItems": [
+					{
+						"id": "ImportGerber",
+						"title": "导入Gerber",
+						"registerFn": "ImportGerber"
+					}
+				]
+			}
+		],
+		"blank": [
+			{
+				"id": "IGerberblank",
+				"title": "Gerber工具",
+				"menuItems": [
+					{
+						"id": "ImportGerber",
+						"title": "导入Gerber",
+						"registerFn": "ImportGerber"
+					}
+				]
+			}
+		],
+		"symbol": [
+			{
+				"id": "IGerbersymbol",
+				"title": "Gerber工具",
+				"menuItems": [
+					{
+						"id": "ImportGerber",
+						"title": "导入Gerber",
+						"registerFn": "ImportGerber"
+					}
+				]
+			}
+		],
+		"sch": [
+			{
+				"id": "IGerbersch",
+				"title": "Gerber工具",
+				"menuItems": [
+					{
+						"id": "ImportGerber",
+						"title": "导入Gerber",
+						"registerFn": "ImportGerber"
+					}
+				]
+			}
+		],
 		"pcb": [
 			{
-				"id": "IGerber",
+				"id": "IGerberpcb",
 				"title": "Gerber工具",
 				"menuItems": [
 					{

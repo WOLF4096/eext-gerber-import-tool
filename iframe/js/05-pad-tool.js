@@ -94,7 +94,8 @@
                         pathData.push({ cmd: 'L', x: cx + toMM(start.x), y: cy + toMM(start.y) }); // Close
                         return pathData;
                     }
-                    const primPath = macroPrimsToPath(macroShape, cx, cy, toMM(1));
+                    const primPath = macroPrimsToPath(macroShape, cx, cy, toMM(1),
+                        ap.type + '|' + (ap.params || []).join(','));
                     if (primPath.length > 0) return primPath;
                 }
 
@@ -709,7 +710,8 @@
                                     pathData.push({ cmd: 'L', x: currX + toMM(start.x), y: currY + toMM(start.y) });
                                 } else {
                                     // toMM(1) 即「文件单位 -> mm」的倍率
-                                    pathData = macroPrimsToPath(macroShape, currX, currY, toMM(1));
+                                    pathData = macroPrimsToPath(macroShape, currX, currY, toMM(1),
+                                        ap.type + '|' + (ap.params || []).join(','));
                                 }
                                 if (pathData.length >= 3) {
                                     rawPads.push({ layerId, x: currX, y: currY, shape: 'POLYGON', path: pathData, w: 0, h: 0, rotation: 0 });

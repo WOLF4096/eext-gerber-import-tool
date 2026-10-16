@@ -119,5 +119,23 @@ PCB1_2026-10-15 实测：GND 2645 图元、DP 35 图元，覆铜 22 块归 GND�
   `row-prop-soft` / `row-prop-time`）：由 `06-utils.js detectEasyEdaSource()` 从
   `rawFilesCache` 头部注释解析 `G04|; EasyEDA[ Pro][ Client] v<ver>, YYYY-MM-DD HH:MM:SS`；
   EasyEDA = 标准版、EasyEDA Pro = 专业版；版本尾部哈希段（`.832e02bb.70b181`）由
-  `trimVersionTail()` 去掉；识别不到则隐藏两行。刷新点在 `09-ui.js updateBoardStats()`。
+  `trimVersionTail()` 去掉。**返回 `{software|null, time|null, raw}`**：
+  注释里读不到时间 → 回退取「压缩包内 Gerber 文件时间的最小值」（`07-file-io.js` 入队时
+  记录 `mtime`；压缩包条目用 `zipEntryStamp()`，**必须按 Date 的 UTC 字段读**，
+  JSZip 的 entry.date 是 `Date.UTC` 由 DOS 时间构造的，用本地字段读会偏一个时区）；
+  软件名称读不到保持 null → UI 隐藏该行。刷新点在 `09-ui.js updateBoardStats()`。
+- 元件位号字高拆成两个常量（`02-config.js`）：`FLYING_REFDES_HEIGHT_MIL = 24`
+  （导出装配层文字）、`FLYING_REFDES_CANVAS_MIL = 16`（画布显示）。
 - `.modal-box` max-height = 72vh（协议 7 节，太矮要频繁滚动）。
+
+## 宏基元绘制必须做布尔运算（2026-10-17 修复）
+EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外框矩形，**全部是暗基元**，
+语义是**并集**。旧实现把 9 个子路径塞进同一条路径 + `fill('evenodd')` → 重叠区域被 XOR 成
+孔洞，**每个焊盘都带楔形/圆角缺口**（阻焊层最明显）。修复见 `06-utils.js`：
+`macroBuildRings()`（Clipper「暗并集 − 清差集」）+ `macroPrimRing()` + `macroCircleRing()` +
+`macroTreeToRings()`，`macroPrimsToPath()` 为对外统一入口（Clipper 不可用回退
+`macroPrimsToPathNaive()`），结果按光圈缓存 `_macroRingCache`。
+- ⚠️ **Clipper 方向坑**：同一批 subject 里方向相反的多边形会被当成孔洞做减法；宏基元方向
+  随机（圆/矩形逆时针、线段四边形顺时针）→ 必须先统一方向（`fillRingArea(p) < 0` 就
+  `fillReverseRing`），否则圆角被整块挖掉。
+- 缓存键 = 光圈类型 + 参数 + 倍率；实测 48~61 条，整板 3473 flash 全量重绘 ≈ 40ms。
