@@ -41,6 +41,9 @@
             const rawTracks = []; 
             const rawPolys = [];    
             const rawFills = []; 
+            // LPC（清除极性）区域/闪绘/线段：覆铜的"挖空"。收集起来在提取结束后挂到包含它的暗区上。
+            const rawClearRegions = [];
+            const rawClearRings = [];
             const rawImages = []; 
             const rawTextLines = []; 
             const drills = []; 
@@ -231,17 +234,33 @@
                 grid.set(cx + '_' + cy, idx);
                 return idx;
             };
-            const _hasDrillNear = (x, y) => {
+            const _nearestDrill = (x, y) => {
                 const cx = Math.floor(x / CLUSTER_TOL), cy = Math.floor(y / CLUSTER_TOL);
                 for (let gx = cx - 1; gx <= cx + 1; gx++) {
                     for (let gy = cy - 1; gy <= cy + 1; gy++) {
                         const idx = drillGrid.get(gx + '_' + gy);
                         if (idx === undefined) continue;
                         const g = drillGroups[idx];
-                        if (Math.abs(g.x - x) <= CLUSTER_TOL && Math.abs(g.y - y) <= CLUSTER_TOL) return true;
+                        if (Math.abs(g.x - x) <= CLUSTER_TOL && Math.abs(g.y - y) <= CLUSTER_TOL) return g;
                     }
                 }
-                return false;
+                return null;
+            };
+            const _hasDrillNear = (x, y) => !!_nearestDrill(x, y);
+
+            // 过孔 vs 插件焊盘（THT）的补充判据 —— Gerber 里两者都是「圆形闪绘 + 钻孔」，
+            // 只靠「多层 + 有钻孔」会把插件脚（例如 1.5mm 孔 / 4.0mm 盘）也判成过孔，
+            // 导入 EDA 后器件脚就"变成过孔"了。真实板子的经验规律：
+            //   过孔：孔径小(常见 0.2~0.5mm)、铜环窄(0.15mm 左右)
+            //   插件焊盘：孔径大(≥0.6mm)、铜环宽(≥0.25mm)
+            // 两个条件**同时**满足才改判为焊盘（保守：宁可少改，不误伤大过孔/电源过孔）。
+            const THT_DRILL_MIN = 0.6;    // mm
+            const THT_RING_MIN = 0.25;    // mm
+            const _isThruHolePad = (flashDia, drill) => {
+                if (!drill) return false;
+                const drillDia = Number(drill.dia || Math.min(drill.w, drill.h) || 0);
+                const ring = (flashDia - drillDia) / 2;
+                return drillDia >= THT_DRILL_MIN && ring >= THT_RING_MIN;
             };
 
             files.forEach((_f) => {
@@ -256,7 +275,18 @@
                     if (_c.type !== 3) continue;
                     if (typeof _c.x !== 'number' || !isFinite(_c.x)) continue;
                     if (typeof _c.y !== 'number' || !isFinite(_c.y)) continue;
-                    if (_isDrill) { _findOrPush(drillGroups, drillGrid, _c.x, _c.y); continue; }
+                    if (_isDrill) {
+                        // 记录钻孔孔径（mm）：解析阶段已把钻孔刀具换算成 mm
+                        const _ap = _f.data.apertures ? _f.data.apertures[_c.ap] : null;
+                        let _dia = 0;
+                        if (_ap && Array.isArray(_ap.params)) {
+                            const _p = _ap.params.map(Number).filter(v => isFinite(v) && v > 0);
+                            if (_p.length) _dia = Math.min.apply(null, _p);
+                        }
+                        const _di = _findOrPush(drillGroups, drillGrid, _c.x, _c.y);
+                        if (_dia > 0) drillGroups[_di].dia = _dia;
+                        continue;
+                    }
                     const _idx = _findOrPush(flashGroups, flashGrid, _c.x, _c.y);
                     flashGroups[_idx].layers.add(_lid);
                     copperLayerIds.add(_lid);
@@ -271,7 +301,17 @@
                 if (!(_t === 'C' || _t === 'CIRCLE')) return false;     // 只有圆形才可能是过孔
                 const _idx = _findOrPush(flashGroups, flashGrid, _cmd.x, _cmd.y);
                 if (flashGroups[_idx].layers.size < 2) return false;    // 只出现在一个铜层 → 表贴焊盘
-                return _hasDrillNear(_cmd.x, _cmd.y);                   // 必须有对应钻孔
+                const _drill = _nearestDrill(_cmd.x, _cmd.y);
+                if (!_drill) return false;                              // 必须有对应钻孔
+                // 大孔 + 宽铜环 → 插件焊盘（不是过孔）
+                let _flashDia = 0;
+                if (_ap && Array.isArray(_ap.params) && isFinite(_ap.params[0])) {
+                    _flashDia = _ap.type === 'O' || _ap.type === 'R'
+                        ? Math.min(Number(_ap.params[0]) || 0, Number(_ap.params[1]) || Infinity)
+                        : Number(_ap.params[0]) || 0;
+                }
+                if (_isThruHolePad(_flashDia, _drill)) return false;
+                return true;
             };
 
             files.forEach(file => {
@@ -284,6 +324,71 @@
                 const toMM = (val) => (val === null || val === undefined) ? 0 : (fileUnit === 'in' ? val * 25.4 : val);
                 // mmOf：读取「解析后已是 mm」的坐标，只做有限性保护
                 const mmOf = (val) => (typeof val === 'number' && isFinite(val)) ? val : 0;
+
+                // G36/G37 区域 → 路径操作数组（坐标已是 mm）。暗区（实体）与清区（挖空）共用。
+                const regionPathOf = (cmd) => {
+                    const regionOps = Array.isArray(cmd.path) ? cmd.path : [];
+                    return regionOps.map(op => {
+                        if (op.cmd === 'M' || op.cmd === 'L') return { cmd: op.cmd, x: mmOf(op.x), y: mmOf(op.y) };
+                        if (op.cmd === 'A') {
+                            const sX = mmOf(op.startX); const sY = mmOf(op.startY);
+                            const eX = mmOf(op.x); const eY = mmOf(op.y);
+                            const cX = sX + mmOf(op.i); const cY = sY + mmOf(op.j);
+                            const startAngle = Math.atan2(sY - cY, sX - cX);
+                            const endAngle = Math.atan2(eY - cY, eX - cX);
+                            let sweep = endAngle - startAngle;
+                            if (op.mode === 3) { if (sweep <= 0) sweep += 2 * Math.PI; }
+                            else { if (sweep >= 0) sweep -= 2 * Math.PI; }
+                            return { cmd: 'ARC', x: eX, y: eY, sweep: sweep * 180 / Math.PI, cx: cX, cy: cY };
+                        }
+                        return null;
+                    }).filter(Boolean);
+                };
+
+                // 清区（LPC）闪绘 → 挖空内环。
+                // 负片覆铜（KiCad / Altium 的负片平面）会把「焊盘/过孔的间隙」画成 LPC 闪绘，
+                // 「走线隔离带」画成 LPC 线段。只丢区域、不管这两类的话，导出的覆铜就是
+                // 一整块实心铜（把该隔离的地方全连起来）—— 用户看到的「多块填充变成一整块矩形」。
+                const clearFlashRing = (ap, cx, cy) => {
+                    if (!ap) return null;
+                    const t = String(ap.type || 'C').toUpperCase();
+                    const p = ap.params || [];
+                    const dia = toMM(p[0] || 0);
+                    if (dia <= 0) return null;
+                    if (t === 'C' || t === 'CIRCLE') {
+                        const r = dia / 2;
+                        return [{ cmd: 'M', x: cx - r, y: cy },
+                            { cmd: 'ARC', x: cx + r, y: cy, sweep: 180, cx: cx, cy: cy },
+                            { cmd: 'ARC', x: cx - r, y: cy, sweep: 180, cx: cx, cy: cy }];
+                    }
+                    const w = dia, h = toMM(p.length > 1 ? p[1] : p[0]) || dia;
+                    if (t === 'O' || t.includes('OVAL') || t.includes('OBROUND')) {
+                        const off = Math.max(0, (Math.max(w, h) - Math.min(w, h)) / 2);
+                        return w >= h ? clearStrokeRing(cx - off, cy, cx + off, cy, Math.min(w, h))
+                            : clearStrokeRing(cx, cy - off, cx, cy + off, Math.min(w, h));
+                    }
+                    // R / 宏（退化）→ 矩形（宏的精确轮廓交给 PAD 分支处理，这里只用于挖空近似）
+                    return rectRing(cx, cy, w, h);
+                };
+                const rectRing = (cx, cy, w, h) => {
+                    const hw = w / 2, hh = h / 2;
+                    return [{ cmd: 'M', x: cx - hw, y: cy - hh },
+                        { cmd: 'L', x: cx + hw, y: cy - hh }, { cmd: 'L', x: cx + hw, y: cy + hh },
+                        { cmd: 'L', x: cx - hw, y: cy + hh }, { cmd: 'L', x: cx - hw, y: cy - hh }];
+                };
+                // 线段（宽 w）→ 圆头"胶囊"内环：两条边 + 两个 180° 端弧
+                const clearStrokeRing = (x1, y1, x2, y2, w) => {
+                    const dia = w > 0 ? w : 0.1;
+                    const dx = x2 - x1, dy = y2 - y1;
+                    const len = Math.sqrt(dx * dx + dy * dy);
+                    if (len < 1e-6) return clearFlashRing({ type: 'C', params: [dia] }, x1, y1);
+                    const nx = -dy / len * dia / 2, ny = dx / len * dia / 2;
+                    return [{ cmd: 'M', x: x1 + nx, y: y1 + ny },
+                        { cmd: 'L', x: x2 + nx, y: y2 + ny },
+                        { cmd: 'ARC', x: x2 - nx, y: y2 - ny, sweep: 180, cx: x2, cy: y2 },
+                        { cmd: 'L', x: x1 - nx, y: y1 - ny },
+                        { cmd: 'ARC', x: x1 + nx, y: y1 + ny, sweep: 180, cx: x1, cy: y1 }];
+                };
                 
                 const rawContent = getRawContent(file.name);
                 // 优先使用解析器已经解析好的宏（含 $n 参数化宏），退化时才自行扫一遍原文
@@ -438,13 +543,32 @@
                         continue;
                     }
 
-                    // 1.5 极性：LPC（清除）是「挖空」而不是实体铜 —— 必须跳过。
-                    // Gerber 常见写法：先用 LPC 以较粗的光圈画一遍隔离带（例如 0.85mm），
-                    // 再用 LPD 以真实线宽画走线（例如 0.25mm）。若把 LPC 也当实体生成图元，
-                    // 就会凭空多出一批粗线（用户看到的「10mil 变成 33.5mil」就是这个原因）。
+                    // 1.5 极性：LPC（清除）是「挖空」而不是实体铜。
+                    // 线：Gerber 常见写法是先用 LPC 以较粗的光圈画一遍隔离带（例如 0.85mm），
+                    //     再用 LPD 以真实线宽画走线（例如 0.25mm）。若把 LPC 也当实体生成图元，
+                    //     就会凭空多出一批粗线（「10mil 变成 33.5mil」就是这个原因）→ 直接跳过。
+                    // 区域：**不能跳过**。覆铜的常见表达就是「一整块暗区 + 若干清区挖空」，
+                    //     丢掉清区会只剩那块整板大小的暗区 —— 用户看到的就是
+                    //     「多块填充变成了一整块矩形填充」。这里先把清区收集起来，
+                    //     主循环结束后挂到包含它的暗区上作为内环（复合多边形的孔）。
                     // 注意：仍要推进当前点，否则后续 LPD 段的起点会错。
                     if (cmd.polarity === 'C') {
-                        if (cmd.type === 1 || cmd.type === 2 || cmd.type === 3) {
+                        if (cmd.type === 4) {
+                            rawClearRegions.push({ layerId, path: regionPathOf(cmd) });
+                        } else if (cmd.type === 3) {
+                            // 清区闪绘（焊盘/过孔的间隙）→ 挖空内环
+                            const ring = clearFlashRing(file.data.apertures[cmd.ap], mmOf(cmd.x), mmOf(cmd.y));
+                            if (ring) rawClearRings.push({ layerId, path: ring });
+                            currX = mmOf(cmd.x); currY = mmOf(cmd.y);
+                        } else if (cmd.type === 1) {
+                            // 清区线段（隔离带）→ 胶囊内环；圆弧按弦近似
+                            const ap = file.data.apertures[cmd.ap];
+                            const w = ap ? toMM((ap.params || [])[0] || 0.1) : 0.1;
+                            const tx = mmOf(cmd.x), ty = mmOf(cmd.y);
+                            const ring = clearStrokeRing(currX, currY, tx, ty, w);
+                            if (ring) rawClearRings.push({ layerId, path: ring });
+                            currX = tx; currY = ty;
+                        } else if (cmd.type === 2) {
                             currX = mmOf(cmd.x); currY = mmOf(cmd.y);
                         }
                         continue;
@@ -452,22 +576,7 @@
 
                     // 2. 区域填充 (G36/G37)
                     if (cmd.type === 4) { 
-                        const regionOps = Array.isArray(cmd.path) ? cmd.path : [];
-                        const pathData = regionOps.map(op => {
-                            if (op.cmd === 'M' || op.cmd === 'L') return { cmd: op.cmd, x: mmOf(op.x), y: mmOf(op.y) };
-                            if (op.cmd === 'A') {
-                                const sX = mmOf(op.startX); const sY = mmOf(op.startY);
-                                const eX = mmOf(op.x); const eY = mmOf(op.y);
-                                const cX = sX + mmOf(op.i); const cY = sY + mmOf(op.j);
-                                const startAngle = Math.atan2(sY - cY, sX - cX);
-                                const endAngle = Math.atan2(eY - cY, eX - cX);
-                                let sweep = endAngle - startAngle;
-                                if (op.mode === 3) { if (sweep <= 0) sweep += 2 * Math.PI; } 
-                                else { if (sweep >= 0) sweep -= 2 * Math.PI; }
-                                const sweepDeg = sweep * 180 / Math.PI;
-                                return { cmd: 'ARC', x: eX, y: eY, sweep: sweepDeg, cx: cX, cy: cY };
-                            }
-                        });
+                        const pathData = regionPathOf(cmd);
 
                         if (effMode === "PAD") {
                             let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -653,6 +762,68 @@
                 flushPoly();
             });
 
+            // ---- 清区（LPC）挂到暗区上作为内环 ----
+            // Gerber 常把一块覆铜写成「暗区(整块) + 清区(挖空)」。丢掉清区就只剩整块铜，
+            // 导入 EDA 后表现为「一大块矩形填充」。这里按「包含关系」把每个清区挂到
+            // 包含它的**最小**暗区上（同层），作为该填充的内环 → 交给 createComplexPolygon。
+            // 找不到宿主（例如清区来自线宽铺铜的隔离带）时保持原行为：丢弃。
+            if ((rawClearRegions.length || rawClearRings.length) && rawFills.length) {
+                const bboxOfPath = (path) => {
+                    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+                    (path || []).forEach(pt => {
+                        if (typeof pt.x !== 'number' || !isFinite(pt.x)) return;
+                        if (pt.x < x0) x0 = pt.x; if (pt.x > x1) x1 = pt.x;
+                        if (pt.y < y0) y0 = pt.y; if (pt.y > y1) y1 = pt.y;
+                    });
+                    return (isFinite(x0) && x1 > x0 && y1 > y0) ? { x0, x1, y0, y1 } : null;
+                };
+                const bboxCache = new Map();
+                rawFills.forEach(f => bboxCache.set(f, bboxOfPath(f.path)));
+                // 单块覆铜的内环数量保护：负片覆铜可能有上千个间隙，
+                // 全塞进一个复合多边形会拖慢 EDA，这里设一个上限并提示。
+                const MAX_HOLES_PER_FILL = 3000;
+                let droppedHoles = 0;
+                const attach = (hole, hb) => {
+                    let host = null, hostArea = Infinity;
+                    rawFills.forEach(f => {
+                        if (f.layerId !== hole.layerId) return;
+                        const fb = bboxCache.get(f);
+                        if (!fb) return;
+                        const inside = hb.x0 >= fb.x0 - 1e-6 && hb.x1 <= fb.x1 + 1e-6
+                            && hb.y0 >= fb.y0 - 1e-6 && hb.y1 <= fb.y1 + 1e-6;
+                        if (!inside) return;
+                        const area = (fb.x1 - fb.x0) * (fb.y1 - fb.y0);
+                        if (area < hostArea) { hostArea = area; host = f; }
+                    });
+                    if (!host) {
+                        let bestOverlap = 0;
+                        rawFills.forEach(f => {
+                            if (f.layerId !== hole.layerId) return;
+                            const fb = bboxCache.get(f);
+                            if (!fb) return;
+                            const ox = Math.min(hb.x1, fb.x1) - Math.max(hb.x0, fb.x0);
+                            const oy = Math.min(hb.y1, fb.y1) - Math.max(hb.y0, fb.y0);
+                            if (ox <= 0 || oy <= 0) return;
+                            const ov = ox * oy;
+                            if (ov > bestOverlap) { bestOverlap = ov; host = f; }
+                        });
+                    }
+                    if (!host) return;
+                    if (!Array.isArray(host.holes)) host.holes = [];
+                    if (host.holes.length >= MAX_HOLES_PER_FILL) { droppedHoles++; return; }
+                    host.holes.push(hole.path);
+                };
+                rawClearRegions.forEach(hole => {
+                    const hb = bboxOfPath(hole.path);
+                    if (hb) attach(hole, hb);
+                });
+                rawClearRings.forEach(hole => {
+                    const hb = bboxOfPath(hole.path);
+                    if (hb) attach(hole, hb);
+                });
+                if (droppedHoles > 0) console.warn(`覆铜挖空超过上限，丢弃 ${droppedHoles} 个内环`);
+            }
+
             return { rawPads, rawVias, rawTracks, rawPolys, rawFills, drills, rawImages, rawTextLines }; 
         },
 
@@ -669,15 +840,47 @@
                 if (p.layerId === 1) node.top = p; else if (p.layerId === 2) node.bottom = p; else if (p.layerId === 5) node.maskTop = p; else if (p.layerId === 6) node.maskBot = p; else if (p.layerId === 7) node.pasteTop = p; else if (p.layerId === 8) node.pasteBot = p; else if (p.layerId >= 15 && p.layerId <= 46) node.inners.push(p);
             });
             
-            const viaMap = new Map();
+            // 过孔铜盘 / 阻焊盘的聚合：**不能**用 toFixed(3) 的精确键。
+            // 实测同一个物理点在 Gerber 与钻孔文件之间常差 0.003~0.015mm（还有整块
+            // 板子的坐标被四舍五入到不同小数位的情况），精确键会让绝大多数过孔匹配失败，
+            // 结果就是 padDia 退化成钻孔直径（过孔没有铜环 → 「焊盘变过孔 / 圆形轮廓丢失」）
+            // 并且算不出阻焊扩展（「阻焊丢失」）。这里统一按 0.05mm 容差就近归并。
+            const VIA_CLUSTER_TOL = 0.05;
+            const viaNodes = [];
+            const viaGrid = new Map();
+            const _viaCell = (v) => Math.floor(v / VIA_CLUSTER_TOL);
+            const _searchViaNode = (x, y) => {
+                const gx = _viaCell(x), gy = _viaCell(y);
+                let best = null, bestDist = VIA_CLUSTER_TOL;
+                for (let i = gx - 1; i <= gx + 1; i++) {
+                    for (let j = gy - 1; j <= gy + 1; j++) {
+                        const arr = viaGrid.get(i + '_' + j);
+                        if (!arr) continue;
+                        for (let k = 0; k < arr.length; k++) {
+                            const n = arr[k];
+                            const dd = Math.sqrt((n.x - x) * (n.x - x) + (n.y - y) * (n.y - y));
+                            if (dd <= bestDist) { bestDist = dd; best = n; }
+                        }
+                    }
+                }
+                return best;
+            };
+            const findViaNode = (x, y) => _searchViaNode(x, y);
+            const viaNodeAt = (x, y) => {
+                const hit = _searchViaNode(x, y);
+                if (hit) return hit;
+                const node = { x: x, y: y, top: null, maskTop: null, maskBot: null, layers: {} };
+                viaNodes.push(node);
+                const ck = _viaCell(x) + '_' + _viaCell(y);
+                const bucket = viaGrid.get(ck);
+                if (bucket) bucket.push(node); else viaGrid.set(ck, [node]);
+                return node;
+            };
             if (rawVias) {
                 rawVias.forEach(v => {
-                    const key = getKey(v.x, v.y);
-                    // [修改 1] 增加 layers 对象用于存储任意层的过孔数据
-                    if (!viaMap.has(key)) viaMap.set(key, { top: null, maskTop: null, maskBot: null, layers: {} });
-                    const node = viaMap.get(key);
-                    
-                    // [修改 2] 将该过孔数据存入对应的 layerId 中
+                    const node = viaNodeAt(v.x, v.y);
+
+                    // 将该过孔数据存入对应的 layerId 中
                     if (node.layers) node.layers[v.layerId] = v;
 
                     if (v.layerId === 1) node.top = v; 
@@ -815,8 +1018,8 @@
             });
             
             const remainingVias = drills.filter(d => !d.isConsumed).map(d => {
-                const key = getKey(d.x, d.y); 
-                const viaNode = viaMap.get(key); 
+                // 就近（0.05mm）找该钻孔对应的过孔铜盘 / 阻焊盘节点
+                const viaNode = findViaNode(d.x, d.y);
                 
                 // 默认外径 (如果没有找到对应的Gerber定义)
                 let padDia = d.dia; 
@@ -866,46 +1069,22 @@
             let idCounter = versionObj.id || 1;
             const nextIds = () => { ticket++; idCounter++; return { t: ticket, id: `e${idCounter}` }; };
 
-            // ... (A. Netlist Data 构建 - 保持不变) ...
-            // const netlistMap = new Map(); 
-            const netlistPoints = []; 
-            const compCounts = {}; 
-            let hasNetlist = false;
-
-            if (config && config.tryNetlist && typeof flyingProbeData !== 'undefined' && flyingProbeData) {
-                 try {
-                    const rows = flyingProbeData.pins.rows;
-                    const fields = flyingProbeData.pins.fields;
-                    const idxName = fields.indexOf("PIN_NAME");
-                    const idxX = fields.indexOf("PIN_X");
-                    const idxY = fields.indexOf("PIN_Y");
-                    const idxNet = fields.indexOf("NET_NAME");
-                    
-                    if (idxName >= 0 && idxX >= 0 && idxY >= 0 && idxNet >= 0) {
-                        rows.forEach(row => {
-                            const rawX = parseFloat(row[idxX]); 
-                            const rawY = parseFloat(row[idxY]);
-                            const netName = row[idxNet]; 
-                            const fullPinName = row[idxName]; 
-                            let compName = ""; 
-                            let pinNum = fullPinName;
-                            const lastUnder = fullPinName.lastIndexOf('_');
-                            if (lastUnder > 0) { 
-                                compName = fullPinName.substring(0, lastUnder); 
-                                pinNum = fullPinName.substring(lastUnder + 1); 
-                            } else { 
-                                compName = fullPinName; 
-                            }
-                            if (compName && !compName.toUpperCase().startsWith("PAD")) {
-                                if (!compCounts[compName]) compCounts[compName] = 0; 
-                                compCounts[compName]++;
-                            }
-                            netlistPoints.push({ x: rawX, y: rawY, net: netName, num: pinNum, comp: compName });
-                        });
-                        hasNetlist = true;
-                        console.log(`已加载 ${netlistPoints.length} 个网络节点用于匹配`);
-                    }
-                } catch (e) { console.error("解析飞针网络数据失败:", e); }
+            // ... (A. Netlist Data 构建) ...
+            // 飞针引脚索引：与「导出标准版」「画布标注」共用同一套两级匹配
+            // （① 引脚与焊盘中心 2.5mil 内含；② 否则取落在焊盘包围盒内、离中心最近的引脚）。
+            // ⚠️ 只用「中心 ±2.5mil」匹配时，异形/多边形焊盘的引脚锚点常偏在一侧
+            // （开关类焊盘实测偏 27mil），会整批匹配不上 → 焊盘编号退化成 "1"、
+            // 组合（groupId）丢失。这就是「异形焊盘在有飞针文件时丢失组合和编号」的原因。
+            const flyIndex = (config && config.tryNetlist && typeof flyingProbeData !== 'undefined' && flyingProbeData)
+                ? buildFlyingPinIndex(flyingProbeData) : { pins: [], comps: [] };
+            const compCounts = {};
+            const hasNetlist = flyIndex.pins.length > 0;
+            if (hasNetlist) {
+                flyIndex.pins.forEach(p => {
+                    if (p.isPadOnly || !p.comp) return;   // 孤立焊盘占位（PAD/PAD1…）不算元件引脚
+                    compCounts[p.comp] = (compCounts[p.comp] || 0) + 1;
+                });
+                console.log(`已加载 ${flyIndex.pins.length} 个飞针引脚用于匹配`);
             }
 
             const getCornerObj = (prim) => {
@@ -972,14 +1151,15 @@
                 let netName = ""; let pinNumber = "1"; let groupId = 0; 
 
                 if (hasNetlist) {
-                    const tolerance = 2.5; 
-                    const match = netlistPoints.find(p => Math.abs(p.x - padXMil) < tolerance && Math.abs(p.y - padYMil) < tolerance);
-                    if (match) { 
-                        // netName = match.net || ""; 
+                    // 两级匹配（见上）：中心 → 焊盘包围盒。异形焊盘靠包围盒才匹配得上，
+                    // 否则编号会退化成 "1"、组合丢失。
+                    const prim0 = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
+                    const match = flyingPinAt(flyIndex, pad.x, pad.y, padMatchBoxMM(prim0));
+                    if (match && !match.isPadOnly) {
                         netName = ""; //当前版本暂不生成网络
-                        pinNumber = match.num || "1"; 
-                        const cName = match.comp; 
-                        if (cName && compCounts[cName] > 1) groupId = cName; 
+                        pinNumber = match.num || "1";
+                        const cName = match.comp;
+                        if (cName && compCounts[cName] > 1) groupId = cName;
                     }
                 }
 
@@ -1628,11 +1808,16 @@
                 console.log(`生成了 ${data.polys.length} 个折线`);
             }
 
-            // ... (G. Fills 生成 - 保持不变) ...
+            // ... (G. Fills 生成) ...
+            // 覆铜的「挖空」（LPC 清区）会作为额外分块一起交给 createComplexPolygon，
+            // 由 EDA 按复合多边形处理（与画布上的 destination-out 挖空一致）。
             if (data.fills) {
                 data.fills.forEach(f => {
                     const ids = nextIds();
                     const singlePath = generatePathStr(f.path);
+                    if (!singlePath.length) return;
+                    const holePaths = (f.holes || []).map(generatePathStr).filter(hp => hp.length >= 3);
+                    const rings = [singlePath].concat(holePaths);
                     if (isV3) {
                         // --- [修改] V3 格式处理 ---
                         const obj = { "type": "FILL", "ticket": ids.t, "id": ids.id };
@@ -1644,7 +1829,7 @@
                             "layerId": f.layerId,
                             "width": 0.2,           // 线宽 (保持与 V2 逻辑一致，或者设为 0)
                             "fillStyle": "SOLID",   // [新增] 填充模式：SOLID (实心填充)
-                            "path": [singlePath],   // [注意] 路径需要包裹在数组中 [[x, y, ...]]
+                            "path": rings,          // 首环为外框，其余为挖空内环
                             "locked": false,
                             "zIndex": null,
                             "isBridgingCopper": false, // 是否是桥接铜
@@ -1654,9 +1839,9 @@
                         
                         output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
                     } else {
-                        // --- V2 格式处理 (保持不变) ---
+                        // --- V2 格式处理 ---
                         // ["FILL", id, group, net, layer, type(0.2?? width?), type(0=solid), path, rot]
-                        const arr = ["FILL", ids.id, 0, "", f.layerId, 0.2, 0, [singlePath], 0];
+                        const arr = ["FILL", ids.id, 0, "", f.layerId, 0.2, 0, rings, 0];
                         output.push(JSON.stringify(arr));
                     }
                 });
