@@ -119,6 +119,35 @@
 无私有段标记来源（标准版 / KiCad / Altium）的铜层区域**不再**降级成 0.1mm 细线折线，
 改为实心填充 FILL —— 与画布渲染一致，导入 EDA 才是真铜。判定：`effMode === 'POUR'` 走 `rawFills`。
 
+## 飞针标注层（2026-10-16 新增）
+
+- 三个虚拟层（不对应任何 Gerber 文件）：id **2001 引脚编号 / 2002 网络名称 / 2003 元件位号**，
+  定义在 `02-config.js`（`rawLayerData` + `FLYING_LAYER`），状态在 `03-state.js`
+  （`flyingOverlayVisible`、`flyingLabelCache`）。有 `FlyingProbeTesting.json` 时图层表才出现。
+- 匹配逻辑统一在 `06-utils.js`：`buildFlyingPinIndex` / `padMatchBoxMM` / `flyingPinAt`，
+  **08-export.js 的焊盘编号与 09-ui.js 的画布标注共用同一套**（画布所见＝导出所写）。
+- 单位：`lengthUnit` 实测 `mil`。索引里 **pins 保持 mil**（配合 `PadTool.toMil`），
+  **comps 归一化成 mm**（画布直接用）。两处别搞混，否则位号画到板外。
+- 画布写字必须 `ctx.setTransform(dpr,0,0,dpr,0,0)` —— 世界坐标被 `scale(s,-s)` 翻转，否则文字镜像。
+- 「引脚编号 / 网络名称」**仅显示不导出**；「元件位号」勾选后 `05-pad-tool.js` 才写装配层文字。
+- **文字规则（2026-10-16 定稿）**：
+  ① 一律纯 `fillText`，**不描边**（描边会在密脚区发糊）；
+  ② 引脚编号/网络名称的**字号上限 = 所在焊盘包围盒**（`ensureFlyingLabels` 缓存焊盘 `bw/bh`；
+  两行各占半高 → 放不下退化为「单行只画编号」→ 连编号都放不下才隐藏；常量
+  `FLYING_LABEL_MAX_FONT=12` / `FLYING_LABEL_MIN_FONT=4`）；旧的「锚点过近整类跳过」门限已删，
+  与「优先显示编号」冲突；
+  ③ 元件位号字高 `FLYING_REFDES_HEIGHT_MIL=24`（画布 `24*0.0254*scale` px，下限 6px；
+  导出 `STRING` 的 fontSize 同为 24）；
+  ④ 飞针文件里形如 `PAD`/`PAD1`/`PAD23` 的**占位元件/引脚一律不显示**
+  （`isFlyingPadPlaceholder()`，画布三层与导出共用）。
+
+## 焊盘去重铁律（2026-10-16 修复的坑）
+
+`05-pad-tool.js` 里 `hasPolygonAlready` 这类去重**必须带 `layerId` 限定**：
+`rawPads` 是所有图层的公共数组，处理顺序是 顶铜(1)→顶丝印(3)→**顶阻焊(5)**→顶锡膏(7)→**底铜(2)**→内层，
+阻焊层的宏多边形焊盘先入队，会把同坐标的底层/内层铜焊盘整批吃掉
+（症状：矩形通孔焊盘只剩顶层 + 独立过孔，底层没焊盘）。
+
 ## 目录约定（重要）
 
 - **所有临时文件放根目录 `Temp/`**，它同时被 `.gitignore` 与 `.edaignore` 排除（不进 git、不进 `.eext`）：

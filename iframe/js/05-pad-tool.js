@@ -603,9 +603,15 @@
                                 continue;
                             }
 
-                            // 检查重叠
+                            // 检查重叠（**同一图层内**才算重复）
+                            // ⚠️ 这里必须按 layerId 限定范围：rawPads 是所有图层的公共数组，
+                            // 而「顶层阻焊(5) → 底层铜(2) → 内层(15..)」的处理顺序意味着
+                            // 阻焊层的宏多边形焊盘会先入队。旧实现不带 layerId 判断，于是
+                            // 同一坐标的底层铜焊盘被当成"已有多边形焊盘"直接跳过 —— 通孔矩形
+                            // 焊盘就只剩顶层，钻孔再被拆成独立过孔，底层彻底没焊盘。
                             const hasPolygonAlready = rawPads.some(existing => 
                                 existing.shape === 'POLYGON' &&
+                                existing.layerId === layerId &&
                                 Math.abs(existing.x - currX) < 0.005 &&
                                 Math.abs(existing.y - currY) < 0.005
                             );
@@ -1454,8 +1460,11 @@
                 }
             });
 
-            // ... (D. Text 生成 - 保持不变) ...
-            if (config && config.tryNetlist && typeof flyingProbeData !== 'undefined' && flyingProbeData) {
+            // ... (D. Text 生成：元件位号) ...
+            // 「元件位号」是新增的标注层：**勾选后**才用飞针文件的元件表把位号写成装配层文字，
+            // 未勾选时只做画布标注、不产生任何图元（该层的显隐/勾选状态见 03-state.js）。
+            if (config && config.tryNetlist && flyingOverlayVisible[FLYING_LAYER.REFDES]
+                && typeof flyingProbeData !== 'undefined' && flyingProbeData) {
                 try {
                     const rows = flyingProbeData.components.rows;
                     const fields = flyingProbeData.components.fields;
@@ -1469,7 +1478,9 @@
                         let textCount = 0;
                         rows.forEach(row => {
                             const name = row[idxName];
-                            if (!name || name.toUpperCase().startsWith("PAD")) {
+                            // 飞针文件会把孤立焊盘登记成 PAD / PAD1 / PAD23… 这类占位元件，
+                            // 它们不是真正的位号，与画布标注保持一致：一律跳过。
+                            if (!name || isFlyingPadPlaceholder(name)) {
                                 return; 
                             }
                             const layerStr = row[idxLayer]; 
@@ -1503,7 +1514,7 @@
                                     "y": y,                       // 位置 Y
                                     "text": name,                 // 内容 (元件位号)
                                     "fontFamily": "default2",     // 字体名称
-                                    "fontSize": 20,               // 字号 (mil)
+                                    "fontSize": FLYING_REFDES_HEIGHT_MIL,  // 字号 (mil)，与画布显示一致
                                     "strokeWidth": 4,             // 粗细 (mil)
                                     "bold": false,                // 是否加粗 (示例为0, 定义为boolean, 使用false)
                                     "italic": false,              // 是否斜体
@@ -1521,7 +1532,7 @@
                                 };
                                 output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
                             } else {
-                                const arr = ["STRING", ids.id, groupId, layerId, x, y, name, "default2", 20, 4, 0, 0, 5, angle, 0, 0, isMirror, 0];
+                                const arr = ["STRING", ids.id, groupId, layerId, x, y, name, "default2", FLYING_REFDES_HEIGHT_MIL, 4, 0, 0, 5, angle, 0, 0, isMirror, 0];
                                 output.push(JSON.stringify(arr));
                             }
                             textCount++;

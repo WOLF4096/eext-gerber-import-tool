@@ -262,6 +262,144 @@
         return out;
     }
 
+    // ----------------------------------------------------------------------------------
+    // 飞针测试文件（FlyingProbeTesting.json）→ 引脚 / 元件索引与焊盘匹配
+    // ----------------------------------------------------------------------------------
+    // 该文件由嘉立创EDA导出：lengthUnit 声明坐标单位（实测为 mil），字段名写在 fields 里。
+    // 经验（2026-10-16 实测）：引脚坐标 **不一定落在焊盘几何中心** —— 异形/多边形焊盘
+    // 的引入点常偏在一侧（开关类焊盘实测偏 27mil）。所以匹配分两级：
+    //   ① 引脚与焊盘中心重合（绝大多数规则焊盘）
+    //   ② 引脚落在焊盘包围盒内（异形/大焊盘），取离中心最近的引脚
+    // 画布标注（09-ui.js）与标准版导出（08-export.js）共用这套逻辑，保证「所见即所导」。
+
+    /**
+     * 飞针文件里的「占位焊盘」判定。
+     * 嘉立创导出的飞针文件会把「不属于任何元件的孤立焊盘」也当成一个元件登记，
+     * 名字形如 PAD / PAD1 / PAD23 —— 这类名字只表示焊盘本身，既不是元件位号、
+     * 也不是有意义的引脚号，画布与导出都一律不显示。
+     */
+    function isFlyingPadPlaceholder(text) {
+        return /^pad\d*$/i.test(String(text == null ? '' : text).trim());
+    }
+
+    /**
+     * 解析飞针数据，返回：
+     *   pins : [{ x, y, num, comp, name, net, isPadOnly }] —— 坐标单位 **mil**（匹配时用 PadTool.toMil 对齐）
+     *   comps: [{ x, y, ref, isPadOnly }]                  —— 坐标单位 **mm**（画布上直接当世界坐标用）
+     * 坐标单位由文件顶层的 lengthUnit 决定（实测为 mil），这里统一归一化，
+     * 免得调用方各自记一套换算式。
+     */
+    function buildFlyingPinIndex(fp) {
+        const out = { pins: [], comps: [] };
+        if (!fp) return out;
+        // 归一化倍率：文件单位 → mil / mm
+        const lu = String(fp.lengthUnit || 'mil').toLowerCase();
+        const kPin = (lu === 'mm' || lu === 'metric') ? (1 / 0.0254) : ((lu === 'inch' || lu === 'in') ? 1000 : 1);
+        const kComp = (lu === 'mm' || lu === 'metric') ? 1 : ((lu === 'inch' || lu === 'in') ? 25.4 : 0.0254);
+        try {
+            const pins = fp.pins;
+            if (pins && Array.isArray(pins.rows) && Array.isArray(pins.fields)) {
+                const f = pins.fields;
+                const iName = f.indexOf('PIN_NAME');
+                const iX = f.indexOf('PIN_X');
+                const iY = f.indexOf('PIN_Y');
+                const iNet = f.indexOf('NET_NAME');
+                if (iX >= 0 && iY >= 0) {
+                    pins.rows.forEach(row => {
+                        const rx = parseFloat(row[iX]);
+                        const ry = parseFloat(row[iY]);
+                        if (!isFinite(rx) || !isFinite(ry)) return;
+                        const full = String(iName >= 0 ? (row[iName] || '') : '');
+                        // PIN_NAME 形如 C1_1（元件名_引脚号），取最后一段作引脚号
+                        const cut = full.lastIndexOf('_');
+                        const comp = cut > 0 ? full.substring(0, cut) : '';
+                        const num = cut > 0 ? full.substring(cut + 1) : full;
+                        out.pins.push({
+                            x: rx * kPin, y: ry * kPin,
+                            num: num,
+                            comp: comp,
+                            name: full,
+                            net: iNet >= 0 ? String(row[iNet] || '') : '',
+                            // 孤立焊盘（PAD / PAD1 / PAD23…）：名字只是占位，不当作引脚号显示
+                            isPadOnly: isFlyingPadPlaceholder(comp) || isFlyingPadPlaceholder(num)
+                        });
+                    });
+                }
+            }
+            const comps = fp.components;
+            if (comps && Array.isArray(comps.rows) && Array.isArray(comps.fields)) {
+                const f = comps.fields;
+                const iName = f.indexOf('COMPONENT_NAME');
+                const iX = f.indexOf('X_COORDINATE');
+                const iY = f.indexOf('Y_COORDINATE');
+                if (iName >= 0 && iX >= 0 && iY >= 0) {
+                    comps.rows.forEach(row => {
+                        const rx = parseFloat(row[iX]);
+                        const ry = parseFloat(row[iY]);
+                        const ref = String(row[iName] || '');
+                        if (!isFinite(rx) || !isFinite(ry) || !ref) return;
+                        out.comps.push({
+                            x: rx * kComp, y: ry * kComp, ref: ref,
+                            isPadOnly: isFlyingPadPlaceholder(ref)
+                        });
+                    });
+                }
+            }
+        } catch (e) { console.error('飞针数据解析失败:', e); }
+        return out;
+    }
+
+    /**
+     * 焊盘用于匹配的包围盒（mm）。
+     * 多边形焊盘（宏光圈 / G36 区域）的 w/h 恒为 0，尺寸只在 path 包围盒里。
+     */
+    function padMatchBoxMM(prim) {
+        if (!prim) return null;
+        if (prim.shape === 'POLYGON' && Array.isArray(prim.path) && prim.path.length) {
+            let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+            prim.path.forEach(pt => {
+                if (typeof pt.x !== 'number' || !isFinite(pt.x)) return;
+                if (pt.x < x0) x0 = pt.x;
+                if (pt.x > x1) x1 = pt.x;
+                if (pt.y < y0) y0 = pt.y;
+                if (pt.y > y1) y1 = pt.y;
+            });
+            if (isFinite(x0) && x1 > x0 && y1 > y0) return { x0: x0, x1: x1, y0: y0, y1: y1 };
+        }
+        if (prim.w > 0 && prim.h > 0) {
+            const hw = prim.w / 2, hh = prim.h / 2;
+            return { x0: prim.x - hw, x1: prim.x + hw, y0: prim.y - hh, y1: prim.y + hh };
+        }
+        return null;
+    }
+
+    /**
+     * 按坐标给焊盘匹配飞针引脚。
+     * @param index  buildFlyingPinIndex() 的返回值
+     * @param xMM/yMM 焊盘中心（mm）
+     * @param boxMM  焊盘包围盒（mm，可空）
+     * @returns 命中的引脚对象，或 null
+     */
+    function flyingPinAt(index, xMM, yMM, boxMM) {
+        if (!index || !index.pins || !index.pins.length) return null;
+        const px = PadTool.toMil(xMM), py = PadTool.toMil(yMM);
+        const tol = 2.5;   // mil，与既有专业版图元生成保持一致
+        const near = index.pins.find(pt => Math.abs(pt.x - px) < tol && Math.abs(pt.y - py) < tol);
+        if (near) return near;
+        if (boxMM) {
+            const x0 = PadTool.toMil(boxMM.x0), x1 = PadTool.toMil(boxMM.x1);
+            const y0 = PadTool.toMil(boxMM.y0), y1 = PadTool.toMil(boxMM.y1);
+            let best = null;
+            index.pins.forEach(pt => {
+                if (pt.x < x0 - tol || pt.x > x1 + tol || pt.y < y0 - tol || pt.y > y1 + tol) return;
+                const dd = Math.hypot(pt.x - px, pt.y - py);
+                if (!best || dd < best.d) best = { d: dd, pin: pt };
+            });
+            if (best) return best.pin;
+        }
+        return null;
+    }
+
     // 判断是否为 Gerber 文件（name 必填，content 可选；给了 content 会做内容探测）
     function isGerberText(name, content) {
         const fileName = String(name || '');

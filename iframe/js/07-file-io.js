@@ -169,6 +169,8 @@
     function processRawFiles(configOverride) {
         loadedFiles = [];
         document.getElementById('layer-list-content').innerHTML = '';
+        // 解析结果变了，飞针标注（引脚编号/网络名称/元件位号）需要重建
+        flyingLabelCache = null;
 
         // 当前处理模式决定「怎么解析」与「怎么定层」：特性开关与图层归属都取自处理器
         const processor = processorRegistry.current();

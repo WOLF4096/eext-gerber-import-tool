@@ -87,8 +87,25 @@
         // --- [新增] 内部专用图元图层 (ID 500+) ---
         ["LAYER",500,"DRILL_PTH","PTH Through",3,"#222222",1,"#666666",0.5],          // 金属化通孔
         ["LAYER",501,"DRILL_NPTH","NPTH Through",3,"#222222",1,"#7f4c00",0.5],        // 非金属化通孔
-        ["LAYER",502,"DRILL_BLIND","Blind/Buried Via",3,"#cccccc",0.5,"#007f7f",0.5]  // 埋盲孔
+        ["LAYER",502,"DRILL_BLIND","Blind/Buried Via",3,"#cccccc",0.5,"#007f7f",0.5],  // 埋盲孔
+        // --- [新增] 飞针标注层（2001~2003）：数据来自 FlyingProbeTesting.json，**仅用于画布标注显示**，
+        //     不对应任何 Gerber 文件、也不参与导入。前两个只显示，元件位号勾选后才会导出。
+        ["LAYER",2001, "PAD_NUMBER", "引脚编号", 3, "#ff5555", 1, "#7f2a2a", 0.5],
+        ["LAYER",2002, "NET_NAME",   "网络名称", 3, "#33e0ff", 1, "#196f7f", 0.5],
+        ["LAYER",2003, "REFDES",     "元件位号", 3, "#ff44dd", 1, "#7f226f", 0.5]
     ];
+
+    // 飞针标注层 id 常量（与上面的 rawLayerData 一一对应）
+    const FLYING_LAYER = { PAD_NUMBER: 2001, NET_NAME: 2002, REFDES: 2003 };
+    const FLYING_LAYER_IDS = [FLYING_LAYER.PAD_NUMBER, FLYING_LAYER.NET_NAME, FLYING_LAYER.REFDES];
+    const isFlyingLayer = (id) => FLYING_LAYER_IDS.indexOf(id) >= 0;
+
+    // 元件位号字高（默认 24 mil）：画布按世界尺寸随缩放显示，导出装配层文字也用同一字高
+    const FLYING_REFDES_HEIGHT_MIL = 24;
+
+    // 引脚编号 / 网络名称的文字上限（px）；低于下限说明焊盘实在装不下，直接隐藏
+    const FLYING_LABEL_MAX_FONT = 12;
+    const FLYING_LABEL_MIN_FONT = 4;
 
     // 添加自定义层 (71-100)
     for(let i=71; i<=100; i++) {

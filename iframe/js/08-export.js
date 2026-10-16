@@ -1421,57 +1421,13 @@
         };
 
         // ---------- 飞针测试数据（FlyingProbeTesting.json）----------
-        // 压缩包里带飞针文件时，用它给焊盘补上「焊盘编号」(PAD 的第 9 个字段)：
-        // 坐标系与专业版图元生成保持一致 —— 飞针 PIN_X/PIN_Y 是 mil，按 2.5mil 就近匹配。
-        const netlistPoints = [];
-        (function buildNetlistPoints() {
-            if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return;
-            try {
-                const pins = flyingProbeData.pins;
-                if (!pins || !pins.rows || !pins.fields) return;
-                const idxName = pins.fields.indexOf('PIN_NAME');
-                const idxX = pins.fields.indexOf('PIN_X');
-                const idxY = pins.fields.indexOf('PIN_Y');
-                if (idxName < 0 || idxX < 0 || idxY < 0) return;
-                pins.rows.forEach(row => {
-                    const x = parseFloat(row[idxX]);
-                    const y = parseFloat(row[idxY]);
-                    if (!isFinite(x) || !isFinite(y)) return;
-                    const fullPinName = String(row[idxName] || '');
-                    // PIN_NAME 形如 C1_1（元件名_引脚号），取最后一段作引脚号
-                    const lastUnder = fullPinName.lastIndexOf('_');
-                    const pinNum = lastUnder > 0 ? fullPinName.substring(lastUnder + 1) : fullPinName;
-                    netlistPoints.push({ x: x, y: y, num: pinNum });
-                });
-                appLog(`标准版导出：已读取飞针文件，共 ${netlistPoints.length} 个引脚用于匹配焊盘编号`);
-            } catch (e) {
-                console.error('解析飞针数据失败:', e);
-            }
-        })();
-        // 按坐标匹配引脚号；匹配不到时返回 null（调用处回退为 '1'）
-        // 注意：飞针的 PIN_X/PIN_Y 不一定落在焊盘的几何中心上 —— 异形（多边形）焊盘
-        // 的引入点常常偏在一侧（实测开关类焊盘可偏 27mil）。所以两级匹配：
-        //   1) 引脚与焊盘中心重合（绝大多数规则焊盘）
-        //   2) 引脚落在该焊盘的包围盒内（异形焊盘），取离中心最近的那个引脚
-        const findPinNum = (xMM, yMM, boxMM) => {
-            if (!netlistPoints.length) return null;
-            const px = PadTool.toMil(xMM), py = PadTool.toMil(yMM);
-            const tol = 2.5;   // mil，与专业版图元生成保持一致
-            const near = netlistPoints.find(pt => Math.abs(pt.x - px) < tol && Math.abs(pt.y - py) < tol);
-            if (near) return near.num;
-            if (boxMM) {
-                const x0 = PadTool.toMil(boxMM.x0), x1 = PadTool.toMil(boxMM.x1);
-                const y0 = PadTool.toMil(boxMM.y0), y1 = PadTool.toMil(boxMM.y1);
-                let best = null;
-                netlistPoints.forEach(pt => {
-                    if (pt.x < x0 - tol || pt.x > x1 + tol || pt.y < y0 - tol || pt.y > y1 + tol) return;
-                    const dd = Math.hypot(pt.x - px, pt.y - py);
-                    if (!best || dd < best.d) best = { d: dd, num: pt.num };
-                });
-                if (best) return best.num;
-            }
-            return null;
-        };
+        // 压缩包里带飞针文件时，用它给焊盘补上「焊盘编号」(PAD 的第 9 个字段)。
+        // 索引与两级匹配算法与画布标注完全共用（06-utils.js 的 buildFlyingPinIndex /
+        // flyingPinAt / padMatchBoxMM），保证「画布上看到的编号」＝「导出写进去的编号」。
+        const flyingIndex = buildFlyingPinIndex(typeof flyingProbeData !== 'undefined' ? flyingProbeData : null);
+        if (flyingIndex.pins.length) {
+            appLog(`标准版导出：已读取飞针文件，共 ${flyingIndex.pins.length} 个引脚用于匹配焊盘编号`);
+        }
 
         // ---------- 1. 焊盘 ----------
         (uni.unifiedPads || []).forEach(pad => {
@@ -1483,14 +1439,13 @@
                 : (pad.top ? 1 : (pad.bottom ? 2 : STD_LAYER(prim.layerId)));
 
             let w = prim.w, h = prim.h;
-            let padBox = null;   // 多边形焊盘的世界包围盒（mm），供飞针匹配用
             if (prim.shape === 'POLYGON') {
+                // 多边形焊盘的 w/h 恒为 0，尺寸取自路径包围盒（匹配用的包围盒统一走 padMatchBoxMM）
                 const poly = stdFlattenPath(prim.path, 6);
                 if (poly.length < 3) return;
                 let lx0 = Infinity, lx1 = -Infinity, ly0 = Infinity, ly1 = -Infinity;
                 poly.forEach(p => { lx0 = Math.min(lx0, p.x); lx1 = Math.max(lx1, p.x); ly0 = Math.min(ly0, p.y); ly1 = Math.max(ly1, p.y); });
                 w = lx1 - lx0; h = ly1 - ly0;
-                padBox = { x0: lx0, x1: lx1, y0: ly0, y1: ly1 };
             }
             if (!(w > 0) || !(h > 0)) return;
 
@@ -1556,7 +1511,8 @@
             grow(hx, hy);
 
             // 焊盘编号：优先取飞针文件里匹配到的引脚号，否则回退 '1'
-            const padNum = findPinNum(pad.x, pad.y, padBox) || '1';
+            const pinHit = flyingPinAt(flyingIndex, pad.x, pad.y, padMatchBoxMM(prim));
+            const padNum = (pinHit && pinHit.num) || '1';
             const f = ['PAD', shapeName, hx, hy, stdU(w), stdU(h), layer, '', padNum,
                 holeR, points, stdNum(rot), nextGid(), holeLength, slotPts, plated, 0,
                 pstExp, solExp, hx + ',' + hy];

@@ -35,6 +35,8 @@
         let selectOptionsHtml = '';
         uiGroups.forEach(group => {
             const validIds = group.ids.filter(id => {
+                // 飞针标注层不是可分配的图层类型（它没有对应的输入文件），不进下拉框
+                if (isFlyingLayer(id)) return false;
                 if (group.id === "INNER") {
                     if (copperCount <= 2) return false;
                     return id <= maxInnerId;
@@ -133,7 +135,46 @@
 
         const activeGroups = [...new Set(loadedFiles.map(f => getGroupId(f.layerId)))];
         activeGroups.forEach(gid => updateGroupCheckboxState(gid));
+
+        // --- 4. 飞针标注层（来自 FlyingProbeTesting.json，不对应任何 Gerber 文件）---
+        renderFlyingLayerRows(container);
     }
+
+    /**
+     * 渲染飞针标注层行：引脚编号 / 网络名称 / 元件位号。
+     * 这三层没有对应的输入文件，数据全部来自飞针测试文件；没有飞针文件时不显示。
+     * 「引脚编号」「网络名称」只做画布标注，不参与导入；「元件位号」勾选后才随导出写入。
+     */
+    function renderFlyingLayerRows(container) {
+        if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return;
+        const head = document.createElement('div');
+        head.className = 'layer-header';
+        head.innerHTML = '<span>自定义/特殊 · 飞针标注（仅显示）</span>';
+        container.appendChild(head);
+
+        FLYING_LAYER_IDS.forEach(id => {
+            const def = layerDefs[id];
+            if (!def) return;
+            const row = document.createElement('div');
+            row.className = 'layer-row';
+            const tag = (id === FLYING_LAYER.REFDES)
+                ? `<span style="margin-left:6px;font-size:10px;color:#ffd633;">（${FLYING_REFDES_HEIGHT_MIL}mil · 勾选后导入）</span>`
+                : '<span style="margin-left:6px;font-size:10px;color:#888;">（仅显示）</span>';
+            row.innerHTML = `
+                <div class="col-color"><input type="color" value="${def.color}" onchange="updateColor(${id},this.value)"></div>
+                <div class="col-vis"><input type="checkbox" ${flyingOverlayVisible[id] ? 'checked' : ''} onchange="toggleOverlay(${id},this.checked)"></div>
+                <div class="col-layer">${def.name}${tag}</div>
+            `;
+            container.appendChild(row);
+        });
+    }
+
+    /** 切换飞针标注层的显示；元件位号同时决定是否随导出写入 */
+    window.toggleOverlay = (id, checked) => {
+        if (!isFlyingLayer(id)) return;
+        flyingOverlayVisible[id] = !!checked;
+        drawCanvas();
+    };
 
     // 新增 forceSolid 参数，用于独立控制是否强制 100% 不透明
     function drawCanvas(forceNoDpr = false, forceSolid = false) {
@@ -270,7 +311,7 @@
             // （坐标在解析阶段已换算，只有光圈/宏尺寸没有）。
             // 注意：钻孔文件的刀具直径在解析时已经换算成 mm，不能再乘一次。
             const unitScale = (!file.data.isDrill && file.data.units === 'in') ? 25.4 : 1;
-            let currX=0, currY=0;
+            let currX=0; let currY=0;
             bufCtx.lineCap = 'round'; bufCtx.lineJoin = 'round'; 
             bufCtx.beginPath();
 
@@ -332,7 +373,7 @@
                     let segVisible;
                     if (isArc) {
                         // 圆弧可能向外鼓出，用「圆心 ± 半径」的包围盒判断，偏保守但安全
-                        const acx = segX0 + cmd.i, acy = segY0 + cmd.j;
+                        const acx = segX0 + cmd.i; const acy = segY0 + cmd.j;
                         const ar = Math.sqrt(cmd.i*cmd.i + cmd.j*cmd.j);
                         segVisible = rectVisible(acx - ar, acy - ar, acx + ar, acy + ar, cullPadAp);
                     } else {
@@ -417,7 +458,7 @@
                                 if (op.cmd === 'M') bufCtx.moveTo(op.x, op.y);
                                 else if (op.cmd === 'L') bufCtx.lineTo(op.x, op.y);
                                 else if (op.cmd === 'A') {
-                                    const mcX = op.startX + op.i, mcY = op.startY + op.j;
+                                    const mcX = op.startX + op.i; const mcY = op.startY + op.j;
                                     const mr = Math.sqrt(op.i * op.i + op.j * op.j);
                                     bufCtx.arc(mcX, mcY, mr,
                                         Math.atan2(op.startY - mcY, op.startX - mcX),
@@ -491,8 +532,8 @@
                     }
                     // --- 标准形状 ---
                     else if (type === 'ROUNDRECT' && p.length >= 5) {
-                        const dia = p[0], rad = dia/2;
-                        const dx = p[3]-p[1], dy = p[4]-p[2];
+                        const dia = p[0]; const rad = dia/2;
+                        const dx = p[3]-p[1]; const dy = p[4]-p[2];
                         const side1 = Math.sqrt(dx*dx + dy*dy);
                         const side2 = Math.sqrt(Math.pow(-p[1]-p[3],2) + Math.pow(-p[2]-p[4],2));
                         const rot = Math.atan2(dy, dx);
@@ -522,7 +563,7 @@
                         }
                     } 
                     else if (type === 'O') { // Obround
-                        const w=p[0], h=p[1], r=Math.min(w,h)/2;
+                        const w=p[0]; const h=p[1]; const r=Math.min(w,h)/2;
                         bufCtx.beginPath();
                         if(bufCtx.roundRect) bufCtx.roundRect(-w/2, -h/2, w, h, r); else bufCtx.rect(-w/2, -h/2, w, h);
                         bufCtx.fill();
@@ -542,7 +583,7 @@
                     // 直接读 cmd.path.length 会抛异常并让整个导入中断。
                     if (!Array.isArray(cmd.path) || cmd.path.length === 0) { continue; }
                     // --- [性能优化] 视口外裁剪：先求该区域的包围盒 ---
-                    let rMinX = Infinity, rMinY = Infinity, rMaxX = -Infinity, rMaxY = -Infinity;
+                    let rMinX = Infinity; let rMinY = Infinity; let rMaxX = -Infinity; let rMaxY = -Infinity;
                     for (let q = 0; q < cmd.path.length; q++) {
                         const oq = cmd.path[q];
                         if (oq.x < rMinX) rMinX = oq.x;
@@ -560,7 +601,7 @@
                         if (op.cmd === 'M') bufCtx.moveTo(op.x, op.y);
                         else if (op.cmd === 'L') bufCtx.lineTo(op.x, op.y);
                         else if (op.cmd === 'A') {
-                            const cx = op.startX + op.i, cy = op.startY + op.j;
+                            const cx = op.startX + op.i; const cy = op.startY + op.j;
                             const r = Math.sqrt(op.i*op.i + op.j*op.j);
                             // 同 type 1 的整圆修复：区域内也可能出现「起点=终点」的整圆弧
                             const fullArc = r > 1e-9
@@ -583,7 +624,7 @@
                         currX = last.x; currY = last.y;
                         bufCtx.moveTo(currX, currY); 
                     }
-                } else if (cmd.type === 6) { //槽孔 (Slot) 绘制逻辑
+                } else if (cmd.type === 6) { // 槽孔 (Slot) 绘制逻辑
                     bufCtx.stroke(); bufCtx.beginPath();
                     
                     const ap = apertures[cmd.ap];
@@ -621,8 +662,155 @@
             ctx.drawImage(bufferCanvas, 0, 0, logicalW, logicalH);
             ctx.restore();
         });
+        // 飞针标注叠加（引脚编号 / 网络名称 / 元件位号）：只在交互画布上画，PDF 导出保持干净
+        if (!forceNoDpr) drawFlyingOverlays(dpr);
         // 仅在非导出模式下绘制标尺
         if (!forceNoDpr) drawRulers();
+    }
+
+    /**
+     * 构建飞针标注数据（引脚编号 / 网络名称 / 元件位号）。
+     * extractRawData + consolidate 开销不小，而 drawCanvas 会跟着平移缩放高频调用，
+     * 所以结果缓存到 flyingLabelCache：只有导入 / 重载参数（processRawFiles）时才置空重建。
+     */
+    function ensureFlyingLabels() {
+        if (flyingLabelCache !== null) return flyingLabelCache;
+        flyingLabelCache = { pads: [], comps: [] };
+        if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return flyingLabelCache;
+        if (!loadedFiles || loadedFiles.length === 0) return flyingLabelCache;
+
+        const index = buildFlyingPinIndex(flyingProbeData);
+        // 孤立焊盘的占位名（PAD / PAD1 / PAD23…）不作为位号显示
+        flyingLabelCache.comps = index.comps.filter(c => !c.isPadOnly).map(c => ({ x: c.x, y: c.y, ref: c.ref }));
+        if (!index.pins.length) return flyingLabelCache;
+
+        try {
+            // 用全部已加载文件（不按勾选过滤）：标注层的显隐应独立于铜层勾选状态
+            const rawData = PadTool.extractRawData(loadedFiles.slice());
+            const uni = PadTool.consolidate(
+                rawData.rawPads || [], rawData.rawVias || [], rawData.rawTracks || [],
+                rawData.rawPolys || [], rawData.rawFills || [], rawData.drills || [],
+                rawData.rawImages || [], rawData.rawTextLines || [], rawData.rawCoppers || []
+            );
+            (uni.unifiedPads || []).forEach(pad => {
+                const prim = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
+                const box = padMatchBoxMM(prim);
+                const pin = flyingPinAt(index, pad.x, pad.y, box);
+                if (!pin) return;
+                // 记录焊盘包围盒尺寸（mm）：文字大小要以它为上限，超出就换行/隐藏
+                let bw = box ? (box.x1 - box.x0) : ((prim && prim.w) || 0);
+                let bh = box ? (box.y1 - box.y0) : ((prim && prim.h) || 0);
+                flyingLabelCache.pads.push({
+                    x: pad.x, y: pad.y, num: pin.num, net: pin.net, comp: pin.comp,
+                    bw: isFinite(bw) ? bw : 0, bh: isFinite(bh) ? bh : 0,
+                    isPadOnly: !!pin.isPadOnly
+                });
+            });
+        } catch (e) { console.error('飞针标注构建失败:', e); }
+        return flyingLabelCache;
+    }
+
+    /**
+     * 在画布上叠加飞针标注文字。
+     * 注意：画布的世界坐标被 ctx.scale(s, -s) 上下翻转了，直接在世界坐标里 fillText 会镜像，
+     * 所以这里用 setTransform 回到「只有 HiDPI 缩放」的状态，用屏幕像素坐标写字。
+     *
+     * 字号规则：
+     *   · 引脚编号 / 网络名称 —— 文字必须完整落在**焊盘包围盒**内：两行排布（编号在上、网络名在下）
+     *     各占半高；只要有一行放不下就退化为「单行只显示编号」；编号也放不下则整块隐藏。
+     *   · 元件位号 —— 固定字高 FLYING_REFDES_HEIGHT_MIL（默认 24 mil），按世界尺寸随缩放变化。
+     * 所有文字都不描边（先前为了压住底层图形加了黑色描边，视觉发糊且不符合要求）。
+     */
+    function drawFlyingOverlays(dpr) {
+        const showNum = !!flyingOverlayVisible[FLYING_LAYER.PAD_NUMBER];
+        const showNet = !!flyingOverlayVisible[FLYING_LAYER.NET_NAME];
+        const showRef = !!flyingOverlayVisible[FLYING_LAYER.REFDES];
+        if (!showNum && !showNet && !showRef) return;
+
+        const labels = ensureFlyingLabels();
+        const wantPad = (showNum || showNet) && labels.pads.length > 0;
+        const wantRef = showRef && labels.comps.length > 0;
+        if (!wantPad && !wantRef) return;
+
+        const s = viewState.scale || 1;
+        const cssW = mainCanvas.width / dpr; const cssH = mainCanvas.height / dpr;
+        const numCol = (layerDefs[FLYING_LAYER.PAD_NUMBER] || {}).color || '#ff5555';
+        const netCol = (layerDefs[FLYING_LAYER.NET_NAME] || {}).color || '#33e0ff';
+        const refCol = (layerDefs[FLYING_LAYER.REFDES] || {}).color || '#ff44dd';
+
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // 只保留屏幕 DPR，坐标=CSS 像素
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // 世界坐标 → 屏幕像素；返回 null 表示在视口外
+        const project = (wx, wy, margin) => {
+            const px = viewState.offsetX + wx * s;
+            const py = viewState.offsetY - wy * s;
+            const m = margin || 40;
+            if (px < -m || py < -m || px > cssW + m || py > cssH + m) return null;
+            return { x: px, y: py };
+        };
+        const setFont = (px) => { ctx.font = px + 'px Consolas, "Courier New", monospace'; };
+        /** 在 maxW × maxH 的像素框内，text 能用的最大字号（0 = 放不下） */
+        const fitFont = (text, maxW, maxH) => {
+            if (maxW <= 1 || maxH <= 1) return 0;
+            const probe = 10;
+            setFont(probe);
+            const w = ctx.measureText(text).width;
+            if (!(w > 0)) return 0;
+            return Math.min(probe * maxW / w, maxH, FLYING_LABEL_MAX_FONT);
+        };
+
+        if (wantPad) {
+            labels.pads.forEach(p => {
+                const pt = project(p.x, p.y, 0);
+                if (!pt) return;
+                // 焊盘包围盒（屏幕像素），左右各留 1px 边距，避免文字压到焊盘边缘外
+                const boxW = (p.bw || 0) * s - 2;
+                const boxH = (p.bh || 0) * s - 2;
+                if (boxW <= 1 || boxH <= 1) return;   // 焊盘太小，连编号都放不下 → 隐藏
+                // 占用位焊盘的占位名（PAD / PAD1…）不作为引脚编号显示
+                const numTxt = (showNum && p.num && !p.isPadOnly && !isFlyingPadPlaceholder(p.num)) ? String(p.num) : '';
+                const netTxt = (showNet && p.net) ? String(p.net) : '';
+                // ① 两行：编号在上、网络名在下，各占半高
+                if (numTxt && netTxt) {
+                    const fNum = fitFont(numTxt, boxW, boxH / 2);
+                    const fNet = fitFont(netTxt, boxW, boxH / 2);
+                    if (fNum >= FLYING_LABEL_MIN_FONT && fNet >= FLYING_LABEL_MIN_FONT) {
+                        const half = boxH / 4;
+                        setFont(fNum); ctx.fillStyle = numCol; ctx.fillText(numTxt, pt.x, pt.y - half);
+                        setFont(fNet); ctx.fillStyle = netCol; ctx.fillText(netTxt, pt.x, pt.y + half);
+                        return;
+                    }
+                }
+                // ② 单行：优先编号，占满整个焊盘框；编号放不下才轮到网络名
+                if (numTxt) {
+                    const f = fitFont(numTxt, boxW, boxH);
+                    if (f >= FLYING_LABEL_MIN_FONT) {
+                        setFont(f); ctx.fillStyle = numCol; ctx.fillText(numTxt, pt.x, pt.y);
+                        return;
+                    }
+                }
+                if (netTxt) {
+                    const f = fitFont(netTxt, boxW, boxH);
+                    if (f >= FLYING_LABEL_MIN_FONT) {
+                        setFont(f); ctx.fillStyle = netCol; ctx.fillText(netTxt, pt.x, pt.y);
+                    }
+                }
+            });
+        }
+
+        if (wantRef) {
+            const fpx = Math.max(6, FLYING_REFDES_HEIGHT_MIL * 0.0254 * s);   // 24 mil 字高，随缩放
+            setFont(fpx);
+            ctx.fillStyle = refCol;
+            labels.comps.forEach(c => {
+                const pt = project(c.x, c.y, 60);
+                if (pt) ctx.fillText(String(c.ref), pt.x, pt.y);
+            });
+        }
+        ctx.restore();
     }
 
     function resizeCanvas() {
@@ -796,7 +984,7 @@
             return a[idx];
         };
 
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
 
         // 1) 有板框层（ID 11）时以板框为主 —— 最贴近"板子的真实尺寸"
         const outline = loadedFiles.find(f => f.layerId === 11 && f.data && f.data.bounds && isFinite(f.data.bounds.minX));
@@ -816,14 +1004,14 @@
         //    好几倍，整块板被缩成角落里一个小点 —— 看起来就像"渲染错误"。
         const { xs, ys } = collectPts(loadedFiles);
         if (xs.length && ys.length) {
-            const rx0 = quantile(xs, 0.002), rx1 = quantile(xs, 0.998);
-            const ry0 = quantile(ys, 0.002), ry1 = quantile(ys, 0.998);
+            const rx0 = quantile(xs, 0.002); const rx1 = quantile(xs, 0.998);
+            const ry0 = quantile(ys, 0.002); const ry1 = quantile(ys, 0.998);
             if (!hasBox) {
                 minX = rx0; maxX = rx1; minY = ry0; maxY = ry1;
             } else {
                 // 有板框时以板框为准，但若其它图层明显超出板框（典型：丝印文字伸出板外），
                 // 就扩展到能容纳它们，避免内容被裁掉。5% 容差用来过滤零散离群点。
-                const tolW = boxW * 0.05, tolH = boxH * 0.05;
+                const tolW = boxW * 0.05; const tolH = boxH * 0.05;
                 if (isFinite(rx0) && rx0 < minX - tolW) minX = rx0;
                 if (isFinite(rx1) && rx1 > maxX + tolW) maxX = rx1;
                 if (isFinite(ry0) && ry0 < minY - tolH) minY = ry0;
