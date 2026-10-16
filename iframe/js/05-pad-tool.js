@@ -376,7 +376,12 @@
                         { cmd: 'L', x: cx + hw, y: cy - hh }, { cmd: 'L', x: cx + hw, y: cy + hh },
                         { cmd: 'L', x: cx - hw, y: cy + hh }, { cmd: 'L', x: cx - hw, y: cy - hh }];
                 };
-                // 线段（宽 w）→ 圆头"胶囊"内环：两条边 + 两个 180° 端弧
+                // 线段（宽 w）→ 圆头"胶囊"内环：两条边 + 两个 180° 端弧。
+                // 【方向铁律】端弧必须**顺时针**(-180)：
+                //   路径顺序是 (p1+n) → (p2+n) → 端弧 → (p2-n) → (p1-n) → 端弧，其中 n 是线段方向的
+                //   左法线。在 p2 处要从 +n 转到 -n，只有沿「线段前进方向」绕过去（顺时针）才是圆头；
+                //   写成 +180（逆时针）会从内侧绕，端头被啃成一个内凹月牙 —— 形状与面积都错
+                //   （实测：10×2 的隔离带面积 16.86 而非 23.14，圆头丢失）。
                 const clearStrokeRing = (x1, y1, x2, y2, w) => {
                     const dia = w > 0 ? w : 0.1;
                     const dx = x2 - x1, dy = y2 - y1;
@@ -385,9 +390,9 @@
                     const nx = -dy / len * dia / 2, ny = dx / len * dia / 2;
                     return [{ cmd: 'M', x: x1 + nx, y: y1 + ny },
                         { cmd: 'L', x: x2 + nx, y: y2 + ny },
-                        { cmd: 'ARC', x: x2 - nx, y: y2 - ny, sweep: 180, cx: x2, cy: y2 },
+                        { cmd: 'ARC', x: x2 - nx, y: y2 - ny, sweep: -180, cx: x2, cy: y2 },
                         { cmd: 'L', x: x1 - nx, y: y1 - ny },
-                        { cmd: 'ARC', x: x1 + nx, y: y1 + ny, sweep: 180, cx: x1, cy: y1 }];
+                        { cmd: 'ARC', x: x1 + nx, y: y1 + ny, sweep: -180, cx: x1, cy: y1 }];
                 };
                 
                 const rawContent = getRawContent(file.name);
@@ -762,11 +767,14 @@
                 flushPoly();
             });
 
-            // ---- 清区（LPC）挂到暗区上作为内环 ----
+            // ---- 清区（LPC）挂到暗区上作为挖空 ----
             // Gerber 常把一块覆铜写成「暗区(整块) + 清区(挖空)」。丢掉清区就只剩整块铜，
-            // 导入 EDA 后表现为「一大块矩形填充」。这里按「包含关系」把每个清区挂到
-            // 包含它的**最小**暗区上（同层），作为该填充的内环 → 交给 createComplexPolygon。
-            // 找不到宿主（例如清区来自线宽铺铜的隔离带）时保持原行为：丢弃。
+            // 导入 EDA 后表现为「一大块矩形填充」。
+            // 【关键】清区要从**所有与它重叠的同层暗区**里挖掉：负片里的一个间隙常常横跨好几块
+            // 暗区（主板覆铜 + 补铜块 + 铺铜块），只挂给其中一块，其余块就会留下本该挖掉的铜
+            // —— 实测这是残余多铜的主因（0802-2 顶铜多出 1.7M 像素里的大部分）。
+            // 例外：整块暗区都落在清区内部时，它是「清区之后再补画的铜」（island），不能挖，
+            // 否则会被整块抹掉。
             if ((rawClearRegions.length || rawClearRings.length) && rawFills.length) {
                 const bboxOfPath = (path) => {
                     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -779,39 +787,25 @@
                 };
                 const bboxCache = new Map();
                 rawFills.forEach(f => bboxCache.set(f, bboxOfPath(f.path)));
-                // 单块覆铜的内环数量保护：负片覆铜可能有上千个间隙，
-                // 全塞进一个复合多边形会拖慢 EDA，这里设一个上限并提示。
+                // 单块覆铜的挖空数量保护（负片覆铜可能有上千个间隙）
                 const MAX_HOLES_PER_FILL = 3000;
-                let droppedHoles = 0;
+                let droppedHoles = 0, attachedTotal = 0, islandSkip = 0;
                 const attach = (hole, hb) => {
-                    let host = null, hostArea = Infinity;
                     rawFills.forEach(f => {
                         if (f.layerId !== hole.layerId) return;
                         const fb = bboxCache.get(f);
                         if (!fb) return;
-                        const inside = hb.x0 >= fb.x0 - 1e-6 && hb.x1 <= fb.x1 + 1e-6
-                            && hb.y0 >= fb.y0 - 1e-6 && hb.y1 <= fb.y1 + 1e-6;
-                        if (!inside) return;
-                        const area = (fb.x1 - fb.x0) * (fb.y1 - fb.y0);
-                        if (area < hostArea) { hostArea = area; host = f; }
+                        const ox = Math.min(hb.x1, fb.x1) - Math.max(hb.x0, fb.x0);
+                        const oy = Math.min(hb.y1, fb.y1) - Math.max(hb.y0, fb.y0);
+                        if (ox <= 1e-6 || oy <= 1e-6) return;            // 包围盒不重叠 → 无关
+                        const isIsland = fb.x0 >= hb.x0 - 1e-6 && fb.x1 <= hb.x1 + 1e-6
+                            && fb.y0 >= hb.y0 - 1e-6 && fb.y1 <= hb.y1 + 1e-6;
+                        if (isIsland) { islandSkip++; return; }          // 清区之后补画的铜 → 保留
+                        if (!Array.isArray(f.holes)) f.holes = [];
+                        if (f.holes.length >= MAX_HOLES_PER_FILL) { droppedHoles++; return; }
+                        f.holes.push(hole.path);
+                        attachedTotal++;
                     });
-                    if (!host) {
-                        let bestOverlap = 0;
-                        rawFills.forEach(f => {
-                            if (f.layerId !== hole.layerId) return;
-                            const fb = bboxCache.get(f);
-                            if (!fb) return;
-                            const ox = Math.min(hb.x1, fb.x1) - Math.max(hb.x0, fb.x0);
-                            const oy = Math.min(hb.y1, fb.y1) - Math.max(hb.y0, fb.y0);
-                            if (ox <= 0 || oy <= 0) return;
-                            const ov = ox * oy;
-                            if (ov > bestOverlap) { bestOverlap = ov; host = f; }
-                        });
-                    }
-                    if (!host) return;
-                    if (!Array.isArray(host.holes)) host.holes = [];
-                    if (host.holes.length >= MAX_HOLES_PER_FILL) { droppedHoles++; return; }
-                    host.holes.push(hole.path);
                 };
                 rawClearRegions.forEach(hole => {
                     const hb = bboxOfPath(hole.path);
@@ -821,7 +815,8 @@
                     const hb = bboxOfPath(hole.path);
                     if (hb) attach(hole, hb);
                 });
-                if (droppedHoles > 0) console.warn(`覆铜挖空超过上限，丢弃 ${droppedHoles} 个内环`);
+                if (droppedHoles > 0) console.warn(`覆铜挖空超过上限，丢弃 ${droppedHoles} 个挖空`);
+                if (islandSkip > 0) console.log(`清区挂载：跳过 ${islandSkip} 处「清区后补画的铜(island)」`);
             }
 
             return { rawPads, rawVias, rawTracks, rawPolys, rawFills, drills, rawImages, rawTextLines }; 
@@ -1051,10 +1046,45 @@
                 };
             });
 
+            // ---- 负片转正片：把「外环 + 挖空环」拆成多个**无孔洞**的填充区域 ----
+            // 嘉立创EDA专业版 pcb_MathPolygon.createComplexPolygon() 的语义是「多块互相独立
+            // 的多边形」（官方示例：矩形 + 圆形两块），**不做布尔差**。若把挖空环一起塞进去，
+            // 挖空区会被当成又一块实体铜 —— 导入后看到的就是「一整块矩形铜」（负片平面）。
+            // 所以这里先把每个带挖空的覆铜转成若干无孔洞的简单多边形，再逐个当普通填充导入。
+            const fillsOut = [];
+            let negFillCount = 0, negHoles = 0, negPieces = 0, splitFailed = false, fullyCleared = 0;
+            rawFills.forEach(f => {
+                if (f && Array.isArray(f.holes) && f.holes.length) {
+                    const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : 0;
+                    const pieces = (typeof fillSplitNegativeRegion === 'function')
+                        ? fillSplitNegativeRegion(f.path, f.holes) : null;
+                    // 注意 pieces 可能是**空数组**：整块铜被清区完全挖掉（合法结果）——
+                    // 此时必须整块丢弃，不能退回成「实心填充」（那会凭空多出一块铜）。
+                    if (Array.isArray(pieces)) {
+                        negFillCount++;
+                        negHoles += f.holes.length;
+                        negPieces += pieces.length;
+                        if (!pieces.length) fullyCleared++;
+                        pieces.forEach(p => fillsOut.push({ layerId: f.layerId, path: p }));
+                        if (t0) {
+                            const dt = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : 0) - t0;
+                            if (dt > 400) console.log(`负片拆分耗时 ${dt.toFixed(0)}ms（挖空 ${f.holes.length} 个 → ${pieces.length} 块）`);
+                        }
+                        return;
+                    }
+                    if (!splitFailed) { console.warn('负片拆分失败，该块退回整块填充'); splitFailed = true; }
+                }
+                fillsOut.push(f);
+            });
+            if (negFillCount) {
+                console.log(`负片转正片：${negFillCount} 块覆铜的 ${negHoles} 个挖空 → 拆分为 ${negPieces} 个无孔洞填充区域`
+                    + (fullyCleared ? `（其中 ${fullyCleared} 块被完全挖空，已丢弃）` : ''));
+            }
+
             // [修改] 返回对象增加 coppers
             return { 
                 unifiedPads, remainingVias, 
-                tracks: rawTracks, polys: rawPolys, fills: rawFills,
+                tracks: rawTracks, polys: rawPolys, fills: fillsOut,
                 images: rawImages, textLines: rawTextLines, coppers: rawCoppers 
             };
         },

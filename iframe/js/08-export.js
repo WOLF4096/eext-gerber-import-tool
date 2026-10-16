@@ -977,6 +977,25 @@
             try { lines.push(JSON.parse(raw)); } catch (e) { skippedLines++; }
         }
         if (skippedLines > 0) appLog(`图元模式：${skippedLines} 行无法解析，已跳过`);
+
+        // 图元创建失败统计：各 create() 返回 Promise 且本函数不 await（避免导入被拖慢），
+        // 失败会变成看不见的 unhandled rejection —— 用户只看到"图元没出来"，无从排查。
+        // 这里跟踪每个 Promise 的结果，最后把失败数写进运行日志。
+        const failStat = {};
+        let firstFailMsg = '';
+        const trackFail = (kind, arg) => {
+            const record = (msg) => {
+                failStat[kind] = (failStat[kind] || 0) + 1;
+                if (!firstFailMsg) firstFailMsg = kind + ': ' + msg;
+            };
+            if (arg instanceof Error || typeof arg === 'string') { record(String(arg && arg.message || arg)); return null; }
+            if (arg && typeof arg.then === 'function') {
+                arg.then(r => { if (r === undefined || r === null) record('API 返回空（数据被判定为不合法）'); })
+                    .catch(e => record(String(e && e.message ? e.message : e)));
+            }
+            return arg;
+        };
+
         for (let i = 0; i < lines.length; i++) {
             const line = lines[i];
             const command = Array.isArray(line) ? line[0] : (line && line.type);
@@ -1105,25 +1124,46 @@
                     break;
                 case 'FILL': // 填充
                     try {
-                        // 创建多边形对象，第7项是多边形数据数组
-                        // createPolygon 只接受「平铺」源数组；FILL 的 path 是 [[...]] 嵌套，
-                        // 直接喂给 createPolygon 会得到 undefined → 填充静默创建失败。
+                        // 第 7 项是多边形数据。**单环填充必须用「平铺源数组」创建**：
+                        //   createComplexPolygon 的入参语义是「一个复杂多边形 = 多块源数组」，
+                        //   官方示例里单块用的是平铺写法 createComplexPolygon(['R', ...])；
+                        //   而双层嵌套 [[ring]]（长度 1）会被当成平铺数组解析（首元素是数组→不合法）
+                        //   → 返回 undefined → 填充**静默消失**。
+                        //   实测：负片拆分后每块填充都只有一个环，于是所有填充都创建不出来
+                        //   （用户看到的就是"导入后完全没有填充区域"）。
+                        // 这里按「平铺优先、多重兜底」尝试，第一个返回对象即用。
                         const fillSrc = line[7];
-                        const polygon = (Array.isArray(fillSrc) && Array.isArray(fillSrc[0]))
-                            ? eda.pcb_MathPolygon.createComplexPolygon(fillSrc)
-                            : eda.pcb_MathPolygon.createPolygon(fillSrc);
-                        if (!polygon) throw new Error('填充多边形数据不合法');
-                        
-                        // 调用填充API创建填充图元
-                        eda.pcb_PrimitiveFill.create(
+                        const nested = Array.isArray(fillSrc) && Array.isArray(fillSrc[0]);
+                        const flat = nested ? fillSrc[0] : fillSrc;
+                        const MP = eda.pcb_MathPolygon;
+                        let polygon = null;
+                        const attempts = [
+                            () => (nested && fillSrc.length > 1 ? MP.createComplexPolygon(fillSrc)
+                                : (flat ? MP.createPolygon(flat) : null)),
+                            () => (flat ? MP.createComplexPolygon(flat) : null),
+                            () => (nested ? MP.createComplexPolygon(fillSrc) : null),
+                            () => (flat ? MP.createPolygon(flat) : null)
+                        ];
+                        for (let k = 0; k < attempts.length && !polygon; k++) {
+                            try { polygon = attempts[k](); } catch (e) { /* 继续尝试下一种 */ }
+                        }
+                        if (!polygon) {
+                            trackFail('FILL', '多边形数据不合法 ' + JSON.stringify(fillSrc).slice(0, 200));
+                            break;
+                        }
+
+                        // 调用填充API创建填充图元（create 是 Promise，失败会变成静默的
+                        // unhandled rejection，这里跟踪结果，让失败能在运行日志里看到）
+                        trackFail('FILL', eda.pcb_PrimitiveFill.create(
                             line[4],                          // layer: 层编号
                             polygon,                          // complexPolygon: 多边形对象
                             line[3] || "",                    // net: 网络名称
                             line[6] || 0,                     // fillMode: 填充模式
                             line[5] || 0.2,                   // lineWidth: 线宽（网格填充时有效）
                             !!line[8]                         // primitiveLock: 是否锁定
-                        );
+                        ));
                     } catch (error) {
+                        trackFail('FILL', error);
                         console.error('创建FILL失败:', error);
                     }
                     break;
@@ -1175,6 +1215,14 @@
                     break;
             }
         }
+
+        // 汇总创建失败的图元（Promise 稍后才结算，故延迟输出）
+        setTimeout(() => {
+            const kinds = Object.keys(failStat);
+            if (!kinds.length) return;
+            const detail = kinds.map(k => `${k} ${failStat[k]} 个`).join('，');
+            appLog(`⚠ 图元创建失败：${detail}` + (firstFailMsg ? `；首个错误：${firstFailMsg}` : ''));
+        }, 1500);
     }
 
     // ==================================================================================

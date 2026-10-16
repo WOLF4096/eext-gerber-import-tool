@@ -596,6 +596,344 @@
     }
 
 
+    // ====================================================================================
+    // 负片 → 正片：把「外环 − 挖空环」拆成多个**无孔洞**的填充区域
+    // ------------------------------------------------------------------------------------
+    // 为什么需要：嘉立创EDA专业版 pcb_MathPolygon.createComplexPolygon() 的语义是「多块互相
+    //   独立的多边形」（官方示例：矩形 + 圆形两块），**并不做布尔差**。把覆铜的挖空环一起塞
+    //   进去，等于把该挖掉的地方也变成实体铜 —— 导入后看到的就是「一整块矩形铜」（负片平面）。
+    // 做法：
+    //   ① 真正的布尔差：region = 外环 −（所有挖空环的**并集**）。
+    //      这里必须用「并集」而不是奇偶规则：负片里的间隙本来就互相重叠（实测 0802-2 顶层有
+    //      5912 对重叠挖空、重叠面积 2568 mm²），奇偶规则会把重叠处又变回铜 → 短路。
+    //      同一个 reason 也要求能处理「挖空环越出外环」的情况（越出的部分自然被裁掉）。
+    //   ② 差集结果里可能仍有闭合孔洞（被铜环整圈围出来的洞）。对每个残留孔洞开一条
+    //      0.01mm 宽的窄缝把它连到区域外部（keyhole 开缝）—— 孔洞于是变成开口凹槽，
+    //      得到的每块填充都是「无孔洞的简单多边形」，可以逐个 createPolygon 导入。
+    //   ③ 输出所有外边界路径，每个作为一块独立填充。
+    // 依赖：ClipperLib（js/clipper.js，Boost Software License，整数坐标布尔运算，与 CAD/CAM
+    //       工具同源）；未加载时退化为「不拆分」并在日志里告警。
+    // ====================================================================================
+
+    const FILL_ARC_TOL = 0.01;        // 圆弧离散化弦高容差 (mm)
+    const FILL_SCALE = 1e5;           // mm → 整数（分辨率 0.00001 mm）
+    const FILL_SLIT_HALF = 0.005;     // 开缝半宽 (mm)，即缝宽 0.01mm
+    const FILL_AREA_EPS = 1e-9;       // 环面积有效阈值 (mm²)
+
+    /** 环的有向面积（>0 = 逆时针），结果缓存在环对象上（reverse 时必须调 fillReverseRing 作废） */
+    function fillRingArea(ring) {
+        if (typeof ring._fa === 'number') return ring._fa;
+        let s = 0;
+        for (let i = 0; i < ring.length; i++) {
+            const a = ring[i], b = ring[(i + 1) % ring.length];
+            s += a[0] * b[1] - b[0] * a[1];
+        }
+        ring._fa = s / 2;
+        return ring._fa;
+    }
+
+    /** 原地翻转环方向；必须同时作废面积缓存（否则「孔洞」会被当成外环） */
+    function fillReverseRing(ring) {
+        ring.reverse();
+        delete ring._fa;
+        return ring;
+    }
+
+    /** 去掉末点与首点重合（闭合环在算法里不重复存首点） */
+    function fillDropClosingDup(pts) {
+        while (pts.length > 1) {
+            const a = pts[0], b = pts[pts.length - 1];
+            if (Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9) pts.pop();
+            else break;
+        }
+    }
+
+    /** 去掉连续重复点 + 首尾重复点 */
+    function fillDropDupes(pts) {
+        const out = [];
+        for (let i = 0; i < pts.length; i++) {
+            const p = pts[i], q = out.length ? out[out.length - 1] : null;
+            if (q && Math.abs(q[0] - p[0]) < 1e-9 && Math.abs(q[1] - p[1]) < 1e-9) continue;
+            out.push(p);
+        }
+        fillDropClosingDup(out);
+        return out;
+    }
+
+    /** 圆弧 → 折线采样点（不含起点，也**不含末点**；末点由调用方用弧的声明端点补精确值）。
+     *  这样能避免「采样末点 ≠ 声明末点」造成的 0.xµm 退化短边（EDA 会判多边形不合法）。 */
+    function fillArcPoints(cx, cy, r, a0, sweep, tol) {
+        const out = [];
+        const safeR = Math.max(r, 1e-6);
+        // 弦高容差取「绝对容差」与「半径的 1%」中的小者，保证小圆孔也够圆
+        const tolUse = Math.min(tol, Math.max(safeR * 0.01, 0.0008));
+        const step = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - tolUse / safeR)));
+        const n = Math.max(3, Math.ceil(Math.abs(sweep) / Math.max(step, 0.02)));
+        for (let i = 1; i < n; i++) {
+            const a = a0 + sweep * (i / n);
+            out.push([cx + safeR * Math.cos(a), cy + safeR * Math.sin(a)]);
+        }
+        return out;
+    }
+
+    /**
+     * 路径操作数组 → 折线点列（mm）。
+     * 操作形状与 05-pad-tool.js 的 regionPathOf / clearFlashRing / clearStrokeRing 一致：
+     *   { cmd: 'M'|'L', x, y } 与 { cmd: 'ARC', x, y, sweep(度), cx, cy }
+     */
+    function fillRingPoints(ops) {
+        const pts = [];
+        let cur = null;
+        (ops || []).forEach(op => {
+            if (!op || typeof op.x !== 'number' || typeof op.y !== 'number') return;
+            if (op.cmd === 'A' || op.cmd === 'ARC') {
+                const sweepDeg = (typeof op.sweep === 'number') ? op.sweep
+                    : (typeof op.angle === 'number' ? op.angle : 0);
+                const cx = (typeof op.cx === 'number') ? op.cx : (cur ? cur[0] : op.x);
+                const cy = (typeof op.cy === 'number') ? op.cy : (cur ? cur[1] : op.y);
+                const r = cur ? Math.hypot(cur[0] - cx, cur[1] - cy) : 0;
+                if (r > 1e-9 && Math.abs(sweepDeg) > 1e-6) {
+                    const a0 = Math.atan2(cur[1] - cy, cur[0] - cx);
+                    fillArcPoints(cx, cy, r, a0, sweepDeg * Math.PI / 180, FILL_ARC_TOL)
+                        .forEach(p => pts.push(p));
+                } else {
+                    pts.push([op.x, op.y]);
+                }
+                cur = [op.x, op.y];
+                return;
+            }
+            const p = [op.x, op.y];
+            if (!cur || Math.abs(cur[0] - p[0]) > 1e-9 || Math.abs(cur[1] - p[1]) > 1e-9) pts.push(p);
+            cur = p;
+        });
+        fillDropClosingDup(pts);
+        return pts;
+    }
+
+    /** 点列 → 路径操作数组（只含 M / L，圆弧在离散化时已展平）。
+     *  closeIt !== false 时**显式补回首点**：与源 Gerber 区域路径 / 标准版 SOLIDREGION 一致，
+     *  避免「路径未闭合」被 EDA 端的多边形校验判为不合法。 */
+    function fillPointsToOps(pts, closeIt) {
+        const ops = [{ cmd: 'M', x: pts[0][0], y: pts[0][1] }];
+        for (let i = 1; i < pts.length; i++) ops.push({ cmd: 'L', x: pts[i][0], y: pts[i][1] });
+        if (closeIt !== false) ops.push({ cmd: 'L', x: pts[0][0], y: pts[0][1] });
+        return ops;
+    }
+
+    /**
+     * 输出前的多边形清理：合并过近顶点 + 去掉共线点。
+     * 目的：消除退化短边（< 0.5µm）、并把切割线/圆弧离散化产生的大量冗余顶点压掉，
+     * 让交给 EDA 的多边形「干净」（退化短边会让 EDA 的多边形校验/归一化出问题）。
+     */
+    function fillCleanRing(pts, minDist) {
+        const md = (typeof minDist === 'number') ? minDist : 5e-4;   // 0.5µm
+        const out = [];
+        for (let i = 0; i < pts.length; i++) {
+            const p = [Math.round(pts[i][0] * 1e4) / 1e4, Math.round(pts[i][1] * 1e4) / 1e4];
+            const q = out.length ? out[out.length - 1] : null;
+            if (q && Math.hypot(p[0] - q[0], p[1] - q[1]) < md) continue;
+            out.push(p);
+        }
+        fillDropClosingDup(out);
+        if (out.length < 3) return out;
+        // 共线点消除（点到相邻两点连线的距离 < md 视为共线）
+        const res = [];
+        const n = out.length;
+        for (let i = 0; i < n; i++) {
+            const a = out[(i - 1 + n) % n], b = out[i], c = out[(i + 1) % n];
+            const cross = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
+            const base = Math.hypot(c[0] - a[0], c[1] - a[1]) || 1;
+            if (cross / base < md) continue;
+            res.push(b);
+        }
+        return res.length >= 3 ? res : out;
+    }
+
+    /** Clipper 是否就绪 */
+    function fillClipperReady() {
+        return (typeof ClipperLib !== 'undefined') && !!ClipperLib
+            && !!ClipperLib.Clipper && !!ClipperLib.PolyTree && !!ClipperLib.IntPoint;
+    }
+
+    /** 点列(mm) → Clipper 整数路径（去重相邻点与首尾重复点） */
+    function fillToIntPath(pts) {
+        const path = [];
+        for (let i = 0; i < pts.length; i++) {
+            const X = Math.round(pts[i][0] * FILL_SCALE);
+            const Y = Math.round(pts[i][1] * FILL_SCALE);
+            const prev = path.length ? path[path.length - 1] : null;
+            if (prev && prev.X === X && prev.Y === Y) continue;
+            path.push({ X: X, Y: Y });
+        }
+        if (path.length > 1) {
+            const a = path[0], b = path[path.length - 1];
+            if (a.X === b.X && a.Y === b.Y) path.pop();
+        }
+        return path;
+    }
+
+    /** Clipper 整数路径 → 点列(mm) */
+    function fillFromIntPath(path) {
+        const pts = [];
+        for (let i = 0; i < path.length; i++) pts.push([path[i].X / FILL_SCALE, path[i].Y / FILL_SCALE]);
+        fillDropClosingDup(pts);
+        return pts;
+    }
+
+    /** 按需要统一 Clipper 路径的方向（wantCCW = 需要逆时针） */
+    function fillForceOrientation(path, wantCCW) {
+        const isCCW = ClipperLib.Clipper.Orientation(path);
+        if (isCCW !== wantCCW) path.reverse();
+        return path;
+    }
+
+    /**
+     * 给一条孔洞路径生成一条「开缝」窄矩形：左端落在孔洞内部，右端伸到区域外。
+     * 从区域里减掉它之后，这个孔洞就与外边界连通 → 不再是闭合孔洞（变成开口凹槽）。
+     * 代价是割掉一条 0.01mm 宽的铜 —— 这就是 keyhole 开缝的标准做法。
+     */
+    function fillHoleSlitRect(holePath, beyondX) {
+        const n = holePath.length;
+        if (n < 3) return null;
+        let y0 = Infinity, y1 = -Infinity;
+        for (let i = 0; i < n; i++) {
+            if (holePath[i].Y < y0) y0 = holePath[i].Y;
+            if (holePath[i].Y > y1) y1 = holePath[i].Y;
+        }
+        if (!(y1 - y0 >= 2)) return null;
+        // 在几条水平线上找孔洞内部区间，取最宽一段的中点作为缝的起点
+        const cands = [0.5, 0.37, 0.63, 0.22, 0.78];
+        const half = Math.max(1, Math.round(FILL_SLIT_HALF * FILL_SCALE));
+        for (let k = 0; k < cands.length; k++) {
+            const y = Math.round(y0 + (y1 - y0) * cands[k]);
+            const xs = [];
+            for (let i = 0; i < n; i++) {
+                const p = holePath[i], q = holePath[(i + 1) % n];
+                const a = p.Y > y, b = q.Y > y;
+                if (a === b) continue;
+                xs.push(p.X + (q.X - p.X) * (y - p.Y) / (q.Y - p.Y));
+            }
+            if (xs.length < 2) continue;
+            xs.sort((u, v) => u - v);
+            let bestA = null, bestB = null;
+            for (let i = 0; i + 1 < xs.length; i += 2) {
+                if (bestA === null || xs[i + 1] - xs[i] > bestB - bestA) { bestA = xs[i]; bestB = xs[i + 1]; }
+            }
+            if (bestA === null) continue;
+            const xIn = Math.round((bestA + bestB) / 2);
+            return [
+                { X: xIn, Y: y - half },
+                { X: beyondX, Y: y - half },
+                { X: beyondX, Y: y + half },
+                { X: xIn, Y: y + half }
+            ];
+        }
+        return null;
+    }
+
+    /**
+     * 负片区域 → 多个无孔洞填充区域（“负片转正片 + 拆分”的唯一入口）。
+     * @param {Array}  outerOps     外环（路径操作数组，mm）
+     * @param {Array}  holeOpsList  挖空环（路径操作数组的数组，mm）
+     * @returns {Array|null}        每项是一块填充区域的路径操作数组；null = 外环不合法
+     */
+    function fillSplitNegativeRegion(outerOps, holeOpsList) {
+        const outer = fillDropDupes(fillRingPoints(outerOps));
+        if (outer.length < 3) return null;
+
+        const holes = [];
+        (holeOpsList || []).forEach(ops => {
+            const h = fillDropDupes(fillRingPoints(ops));
+            if (h.length >= 3 && Math.abs(fillRingArea(h)) > FILL_AREA_EPS) holes.push(h);
+        });
+        if (!holes.length) return [fillPointsToOps(outer)];
+        if (!fillClipperReady()) {
+            console.warn('未加载 ClipperLib：负片挖空无法拆分，本块按整块填充输出');
+            return [fillPointsToOps(outer)];
+        }
+
+        // ---- ① 布尔差：外环 −（挖空环并集）----
+        const subjPaths = [fillToIntPath(outer)];
+        // 挖空统一方向：配合 pftNonZero，重叠的挖空才按「并集」处理（反向的会被抵消）
+        const clipPaths = holes.map(h => fillToIntPath(
+            fillRingArea(h) > 0 ? fillReverseRing(h.slice()) : h
+        ));
+        let maxX = -Infinity;
+        subjPaths[0].forEach(p => { if (p.X > maxX) maxX = p.X; });
+        clipPaths.forEach(pp => pp.forEach(p => { if (p.X > maxX) maxX = p.X; }));
+        const beyondX = maxX + FILL_SCALE;          // 开缝方向：向右伸出 1mm（足够到区域外）
+
+        const outers = [], holesOfResult = [];
+        try {
+            const cpr = new ClipperLib.Clipper();
+            cpr.AddPaths(subjPaths, ClipperLib.PolyType.ptSubject, true);
+            if (clipPaths.length) cpr.AddPaths(clipPaths, ClipperLib.PolyType.ptClip, true);
+            const tree = new ClipperLib.PolyTree();
+            const ok = cpr.Execute(ClipperLib.ClipType.ctDifference, tree,
+                ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+            if (!ok) {
+                console.warn('负片布尔差失败，本块按整块填充输出');
+                return [fillPointsToOps(outer)];
+            }
+            const walk = (node) => {
+                const kids = node.Childs();
+                for (let i = 0; i < kids.length; i++) {
+                    const c = kids[i];
+                    const contour = c.Contour();
+                    if (contour && contour.length >= 3) {
+                        if (c.IsHole()) holesOfResult.push(contour);
+                        else outers.push(contour);
+                    }
+                    walk(c);
+                }
+            };
+            walk(tree);
+        } catch (e) {
+            console.warn('负片布尔差异常:', e);
+            return [fillPointsToOps(outer)];
+        }
+        if (!outers.length) return [];
+
+        // ---- ② 残留孔洞开缝（keyhole）----
+        let finalPaths = null;
+        if (holesOfResult.length) {
+            const regionPaths = outers.map(p => fillForceOrientation(p.slice(), true))
+                .concat(holesOfResult.map(p => fillForceOrientation(p.slice(), false)));
+            const slits = [];
+            holesOfResult.forEach(hp => {
+                const rect = fillHoleSlitRect(hp, beyondX);
+                if (rect) slits.push(rect);
+            });
+            if (slits.length) {
+                try {
+                    const cpr2 = new ClipperLib.Clipper();
+                    cpr2.AddPaths(regionPaths, ClipperLib.PolyType.ptSubject, true);
+                    cpr2.AddPaths(slits, ClipperLib.PolyType.ptClip, true);
+                    const sol2 = [];
+                    const ok2 = cpr2.Execute(ClipperLib.ClipType.ctDifference, sol2,
+                        ClipperLib.PolyFillType.pftNonZero, ClipperLib.PolyFillType.pftNonZero);
+                    if (ok2) finalPaths = sol2;
+                } catch (e) { console.warn('负片开缝异常:', e); }
+            }
+        }
+
+        // ---- ③ 输出外边界（清理顶点后显式闭合）----
+        const out = [];
+        const srcPaths = finalPaths || outers.concat(holesOfResult);
+        let leftover = 0;
+        srcPaths.forEach(p => {
+            if (!p || p.length < 3) return;
+            if (!ClipperLib.Clipper.Orientation(p)) { leftover++; return; }   // 只取外环
+            const pts = fillCleanRing(fillFromIntPath(p));
+            if (pts.length >= 3 && Math.abs(fillRingArea(pts)) > FILL_AREA_EPS) out.push(fillPointsToOps(pts));
+        });
+        if (leftover) console.warn(`负片拆分：开缝后仍有 ${leftover} 个孔洞未消化`);
+        // 正常情况：out 每项都是一块无孔洞填充（整块被挖空时 out 为空数组 → 该块整块丢弃）。
+        // 只有「有外环但全被过滤掉」这种异常才退回到未开缝的外环（至少保住铜的形状）。
+        if (out.length) return out;
+        return outers.map(p => fillPointsToOps(fillCleanRing(fillFromIntPath(p))));
+    }
+
     // --- 辅助：获取当前环境信息 ---
     function getEnvInfo() {
         let clientVer = 'browser';
