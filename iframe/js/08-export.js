@@ -1417,7 +1417,17 @@
                 push(cx + r * Math.cos(a), cy + r * Math.sin(a));
             }
         }
-        return pts;
+        // 去掉相邻重复点：嘉立创EDA**标准版**导出的区域路径常以「M 起点 → L 起点」这种
+        // 零长首段开头（实测某板 1153 块填充里 879 块如此，仅 24% 显式闭合）。退化边会让
+        // EDA 端的多边形校验拒绝整块图元 —— 表现为「打开标准版工程后填充区域丢失」。
+        // 闭合由 stdPathStr(pts, true) 的 `Z` 负责，这里只做去重（几何不变）。
+        const out = [];
+        for (const p of pts) {
+            const q = out[out.length - 1];
+            if (q && Math.abs(q.x - p.x) < 1e-7 && Math.abs(q.y - p.y) < 1e-7) continue;
+            out.push(p);
+        }
+        return out;
     }
 
     /** 点列 → 标准版路径串 "M x y L x y ... [Z]" */

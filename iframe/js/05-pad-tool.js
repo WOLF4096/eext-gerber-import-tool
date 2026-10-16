@@ -1844,9 +1844,17 @@
             if (data.fills) {
                 data.fills.forEach(f => {
                     const ids = nextIds();
-                    const singlePath = generatePathStr(f.path);
-                    if (!singlePath.length) return;
-                    const holePaths = (f.holes || []).map(generatePathStr).filter(hp => hp.length >= 3);
+                    // 环规整（去零长线段 + 显式闭合）：嘉立创EDA **标准版** 导出的区域路径
+                    // 常带「M 起点 → L 起点」的零长首段且不闭合，未规整时 EDA 会拒绝整块填充
+                    // —— 表现为「画布渲染正常、导入 EDA 后填充区域丢失」（见 06-utils.js
+                    // fillNormalizeFlatRing 的说明）。专业版来源本就是干净闭合的，此处为空操作。
+                    const normalize = (typeof fillNormalizeFlatRing === 'function')
+                        ? fillNormalizeFlatRing : (a => a);
+                    const singlePath = normalize(generatePathStr(f.path));
+                    if (!singlePath || !singlePath.length) return;
+                    const holePaths = (f.holes || [])
+                        .map(h => normalize(generatePathStr(h)))
+                        .filter(hp => hp && hp.length >= 3);
                     const rings = [singlePath].concat(holePaths);
                     if (isV3) {
                         // --- [修改] V3 格式处理 ---

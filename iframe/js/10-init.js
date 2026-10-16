@@ -191,6 +191,9 @@
     // --- 初始化入口 ---
     document.addEventListener('DOMContentLoaded', () => {
         initLayerSelect();
+
+        // 初始化用户协议复选框对应的按钮外观：默认未勾选 → 导入 / 导出嘉立创EDA 按钮呈锁定态
+        if (typeof syncAgreementButtons === 'function') syncAgreementButtons();
         
         // 检测是否在嘉立创 EDA 环境中
         const isEdaEnv = typeof eda !== 'undefined';

@@ -749,6 +749,66 @@
         return res.length >= 3 ? res : out;
     }
 
+    /**
+     * 规整「填充环」的平铺源数组（即 05-pad-tool.js 里 generatePathStr 的输出格式：
+     * `[x0,y0,'L',x1,y1,'L',…]`，圆弧段为 `'ARC',角度,x,y`）。
+     *
+     * 为什么需要：**嘉立创EDA 标准版**（EasyEDA v6.x）导出的 Gerber 区域，路径常写成
+     * 「M 起点 → L 起点」这种**零长首段**，且**不闭合**（实测样本 1153 块填充里
+     * 879 块带零长首段、仅 24% 闭合）。EDA 端对多边形源数组做几何校验，退化边 /
+     * 未闭合会让整块填充创建失败 —— 用户看到的就是「渲染正常、导入 EDA 后填充区域丢失」。
+     * 专业版（EasyEDA Pro）导出的区域本来就是干净闭合的，所以不受影响。
+     *
+     * 处理：① 删除零长线段（相邻两点重合）；② 末点未回到首点时显式补一段闭合。
+     * 已经是干净闭合的环会**原样返回**（不做任何改动）。
+     *
+     * @param {Array} flat 平铺源数组；形如 ['CIRCLE',cx,cy,r] 的图元形式原样返回
+     * @param {number} [tolMil] 判定「重合」的容差（mil），默认 1e-3（≈0.025µm）
+     * @returns {Array|null} 规整后的数组；无法构成多边形（顶点 < 3）时返回 null
+     */
+    function fillNormalizeFlatRing(flat, tolMil) {
+        if (!Array.isArray(flat) || flat.length < 4) return flat;
+        // 只处理「坐标打头」的路径形式；['CIRCLE', …] / ['R', …] 等图元形式不碰
+        if (typeof flat[0] !== 'number' || typeof flat[1] !== 'number') return flat;
+        const tol = (typeof tolMil === 'number') ? tolMil : 1e-3;
+        const sx = flat[0], sy = flat[1];
+
+        // 解析为线段序列
+        const segs = [];
+        let i = 2;
+        while (i < flat.length) {
+            const op = flat[i];
+            if (op === 'L' && i + 2 < flat.length) {
+                segs.push({ op: 'L', x: flat[i + 1], y: flat[i + 2] }); i += 3;
+            } else if (op === 'ARC' && i + 3 < flat.length) {
+                segs.push({ op: 'ARC', a: flat[i + 1], x: flat[i + 2], y: flat[i + 3] }); i += 4;
+            } else { i++; } // 未知记号，跳过（防御）
+        }
+
+        // ① 去零长线段（ARC 不参与：零长圆弧可能是整圆）
+        const kept = [];
+        let px = sx, py = sy;
+        for (const s of segs) {
+            if (s.op === 'L' && Math.abs(s.x - px) <= tol && Math.abs(s.y - py) <= tol) continue;
+            kept.push(s); px = s.x; py = s.y;
+        }
+        if (!kept.length) return null;
+
+        // 顶点数：起点 + 各线段终点；末点回到起点时该点不重复计
+        const last = kept[kept.length - 1];
+        const lastIsStart = Math.abs(last.x - sx) <= tol && Math.abs(last.y - sy) <= tol;
+        if ((lastIsStart ? kept.length : kept.length + 1) < 3) return null;
+
+        // ② 重建，并按需补一段闭合
+        const out = [sx, sy];
+        for (const s of kept) {
+            if (s.op === 'ARC') out.push('ARC', s.a, s.x, s.y);
+            else out.push('L', s.x, s.y);
+        }
+        if (!lastIsStart) out.push('L', sx, sy);
+        return out;
+    }
+
     /** Clipper 是否就绪 */
     function fillClipperReady() {
         return (typeof ClipperLib !== 'undefined') && !!ClipperLib
@@ -946,6 +1006,44 @@
             else if (verStr.startsWith('3')) clientVer = 'pro_v3';
         }
         return { clientVer, isEdaEnv };
+    }
+
+    // --- 辅助：从 Gerber 头部注释识别「导出来源软件」与「导出时间」---
+    /**
+     * 扫描已导入文件的原文，识别产生该 Gerber 的软件与导出时间。
+     * 实测两种写法：
+     *   G04 EasyEDA Pro v2.2.32.3, 2024-11-18 13:44:47*
+     *   ;EasyEDA Pro Client v2.1.40.832e02bb.70b181, 2023-12-06 22:07:52
+     * 约定：EasyEDA = 标准版；EasyEDA Pro（含 Pro Client）= 专业版。
+     * @returns {{software:string, time:string, raw:string}|null} 未识别到返回 null
+     */
+    function detectEasyEdaSource() {
+        // 允许 G04 / ; 前缀，名称里可有 Pro / Client，版本号后可跟哈希段
+        const re = /(?:G04|;)\s*(EasyEDA(?:\s+Pro)?(?:\s+Client)?)\s+v([0-9][^\s,]*)\s*,\s*(\d{4}-\d{2}-\d{2}[ T][\d:]+)/i;
+        const files = (typeof rawFilesCache !== 'undefined' && Array.isArray(rawFilesCache)) ? rawFilesCache : [];
+        for (const f of files) {
+            if (!f || !f.content) continue;
+            const m = re.exec(f.content);
+            if (!m) continue;
+            const isPro = /pro/i.test(m[1]);
+            return {
+                software: `${isPro ? '嘉立创EDA专业版' : '嘉立创EDA标准版'} v${trimVersionTail(m[2])}`,
+                time: m[3],
+                raw: m[0].trim()
+            };
+        }
+        return null;
+    }
+
+    /** 版本号去掉尾部的哈希段：2.1.40.832e02bb.70b181 → 2.1.40；纯数字段全部保留 */
+    function trimVersionTail(v) {
+        const parts = String(v).split('.');
+        const keep = [];
+        for (const p of parts) {
+            if (/^\d+$/.test(p)) keep.push(p);
+            else break;
+        }
+        return keep.length ? keep.join('.') : String(v);
     }
 
 

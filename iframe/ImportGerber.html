@@ -131,6 +131,14 @@
 					<span class="control-label" style="color:#999;">埋盲孔</span>
 					<span id="prop-bb" style="font-family:'Consolas',monospace; color:#fff;">0</span>
 				</div>
+				<div class="control-row" id="row-prop-soft" style="margin-top:8px; display:none;">
+					<span class="control-label" style="color:#999;">软件名称</span>
+					<span id="prop-soft" style="font-family:'Consolas',monospace; color:#fff; font-size:12px;">-</span>
+				</div>
+				<div class="control-row" id="row-prop-time" style="margin-top:8px; display:none;">
+					<span class="control-label" style="color:#999;">导出时间</span>
+					<span id="prop-time" style="font-family:'Consolas',monospace; color:#fff; font-size:12px;">-</span>
+				</div>
 			</div>
 
 
@@ -185,10 +193,9 @@
 				style="padding: 10px 15px; font-size: 12px; line-height: 1.5; color: #999; border-bottom: 1px solid #333;">
 				<div style="color: #ff9800; font-weight: bold; margin-bottom: 4px;">⚠️ 当前为预览版本，非最终版本</div>
 				<ul style="margin: 0; padding-left: 16px; color: #ccc;">
-					<li>当前仅支持 <strong>嘉立创EDA专业版 V2.2+</strong> Gerber 文件</li>
-					<li>渲染画面仅供参考，请以实际导入为准</li>
-					<li>如果一直导入失败可 <strong>重启EDA软件</strong> 重试</li>
-					<li>文件 >2MB 时，建议 <strong>导出文件</strong> 后手动导入</li>
+					<li>画布渲染 ≠ 导入效果，不能保证100%准确</li>
+					<!-- <li>必须在 <strong>空白 PCB 文档</strong> 中使用，导出结果请核对后再使用</li> -->
+					<!-- <li>大文件 / 图元过多时，建议 <strong>导出文件</strong> 后手动导入，避免卡顿</li> -->
 				</ul>
 			</div>
 
@@ -215,15 +222,22 @@
 						<span style="font-size: 12px; color: #ccc; white-space: nowrap;">尝试生成网络</span>
 					</label>
 				</div>
+
+				<!-- 用户协议确认：勾选后下方的导入 / 导出嘉立创EDA 按钮才可用；点击文字查看条款 -->
+				<div id="agree-row" class="agree-row" title="勾选后方可导入 / 导出">
+					<input type="checkbox" id="cfg-agree" onchange="onAgreementChange(this.checked)">
+					<span class="agree-link" onclick="showDisclaimer()">《用户协议与免责声明》</span>
+				</div>
 			</div>
 
 			<div style="padding: 0 15px;" id="ui-export-canvas-btn-wrapper">
 				<div style="display: flex; gap: 10px; margin-top: 5px;">
-					<button class="btn-block btn-success" onclick="confirmAction(() => handleExportToCanvas('source'))"
-						style="flex: 1;">
+					<button class="btn-block btn-success agree-gated is-locked"
+						onclick="confirmAction(() => handleExportToCanvas('source'))" style="flex: 1;">
 						通过源码导入
 					</button>
-					<button class="btn-block btn-primary" onclick="confirmAction(() => handleExportToCanvas('api'))"
+					<button class="btn-block btn-primary agree-gated is-locked"
+						onclick="confirmAction(() => handleExportToCanvas('api'))"
 						style="flex: 1; background-color: #007acc;">
 						通过图元导入
 					</button>
@@ -232,9 +246,12 @@
 
 			<div class="section-title">导出嘉立创 EDA</div>
 			<div class="btn-group-grid">
-				<div class="btn-small" onclick="confirmAction(() => handleExportStandard())">标准版</div>
-				<div class="btn-small" onclick="confirmAction(() => handleExportProV2())">专业版 V2</div>
-				<div class="btn-small" onclick="confirmAction(() => handleExportProV3())">专业版 V3</div>
+				<div class="btn-small agree-gated is-locked" onclick="confirmAction(() => handleExportStandard())">标准版
+				</div>
+				<div class="btn-small agree-gated is-locked" onclick="confirmAction(() => handleExportProV2())">专业版 V2
+				</div>
+				<div class="btn-small agree-gated is-locked" onclick="confirmAction(() => handleExportProV3())">专业版 V3
+				</div>
 			</div>
 
 			<div class="section-title" style="margin-top: 20px;">导出位图 PDF</div>
@@ -283,59 +300,74 @@
 		<div class="modal-box">
 			<div class="modal-header">用户协议与免责声明</div>
 			<div class="modal-content">
-				<p><strong>版本日期：2026年2月9日</strong></p>
-				<p>欢迎使用本 Gerber 文件查看及格式转换工具（以下简称“本工具”）。<strong>任何访问、加载或使用本工具的行为，即视为您已阅读并完全同意本协议的所有条款。</strong></p>
+				<p><strong>版本日期：2026年10月16日</strong></p>
+				<p>欢迎使用本 Gerber
+					文件查看与转换工具（以下简称“本工具”）。<strong>任何访问、加载或使用本工具的行为，即视为您已阅读、理解并完全同意本协议全部条款。</strong>若不同意，请立即停止使用。</p>
 
 				<h3>一、 工具性质与授权范围</h3>
 				<ol>
-					<li><strong>工具定义</strong>：本工具为开源辅助软件，旨在提供 Gerber 制造文件的可视化查看及格式转换的功能。</li>
-					<li><strong>合法用途</strong>：仅授权用于以下符合法律法规及道德规范的场景：
+					<li><strong>工具定义</strong>：本工具为开源辅助软件，用于 Gerber 制造文件的本地可视化查看与格式转换。</li>
+					<li><strong>合法用途</strong>：仅授权用于符合法律法规与道德规范的场景：
 						<ul>
 							<li>个人学习、电路设计研究与教学演示</li>
 							<li>针对已停产、无原厂支持设备的维修与兼容性分析</li>
 							<li>用户自有设计文件的格式互转、数据迁移与技术审查</li>
 						</ul>
 					</li>
+					<li><strong>完全离线</strong>：本工具为纯前端程序，解析、渲染与导出全部在本地完成，<strong>不上传、不收集您的任何文件或数据</strong>。</li>
 				</ol>
 
-				<h3>二、 高风险操作与数据安全（重要）</h3>
-				<p>本工具涉及对 EDA 编辑器画布的直接读写操作，具有一定的技术风险。为保障您的数据安全，请务必遵守以下操作规范：</p>
+				<h3>二、 使用前提与数据安全（最重要）</h3>
+				<p>本工具会直接读写 EDA 编辑器画布，存在技术风险。为保障您的数据安全，请严格遵守：</p>
 				<ol>
-					<li><strong>务必在空白文档中使用</strong>：<strong style="color: #ff5555;">严禁在包含现有设计数据的 PCB
-							文档中运行本工具的导入功能。</strong> 请务必新建一个独立的空白 PCB 文档进行操作。</li>
-					<li><strong>数据覆盖风险</strong>：在非空白文档中操作可能导致原有图元被覆盖、参数被篡改或整个文档结构损坏。</li>
-					<li><strong>责任自负</strong>：<strong
-							style="color: #ff5555;">因用户未在空白文档操作、未提前备份数据或操作不当而导致的任何数据丢失、文件损坏或不可逆的修改，由此产生的损失均由用户自行承担，开发者概不负责。</strong>
-					</li>
-					<li><strong>隐私保护</strong>：本工具采用纯前端技术，文件解析与渲染均在浏览器本地完成，不会将您的设计文件上传至任何服务器。</li>
+					<li><strong>必须使用空白文档</strong>：<strong style="color: #ff5555;">严禁在包含现有设计数据的 PCB
+							文档中执行导入功能。</strong>请先新建一个独立的空白 PCB 文档再操作。</li>
+					<li><strong>建议提前备份</strong>：请在操作前自行备份原有设计文件，并对导出结果进行人工核对。</li>
+					<li><strong>覆盖风险</strong>：在非空白文档中操作，可能导致原有图元被覆盖、参数被篡改或整个文档结构损坏。</li>
+					<li><strong>不可逆操作</strong>：「通过图元导入」无法完全撤回；大量图元（数万个）导入可能造成 EDA 卡顿，建议改用「导出 PCB 文件」后再导入。</li>
 				</ol>
 
-				<h3>三、 严禁侵权与法律合规</h3>
+				<h3>三、 用户的权利与义务</h3>
 				<ol>
-					<li><strong>禁止侵权</strong>：<strong>严禁利用本工具从事侵犯知识产权的行为</strong>，包括但不限于：未经授权复制、仿制他人产品；窃取他人的商业秘密或专利设计。
-					</li>
-					<li><strong>逆向工程风险</strong>：用户需知悉“逆向工程”在不同司法管辖区的法律风险。利用本工具进行分析所产生的一切法律后果由用户自行承担。若因用户行为导致第三方提起侵权诉讼，用户应独立承担所有法律责任及赔偿费用。
+					<li><strong>权利</strong>：您可在本协议授权范围内免费使用本工具，并可依开源许可自行修改或二次开发。</li>
+					<li><strong>义务</strong>：您应确保导入的文件来源合法、拥有相应权利，并对导入结果进行独立核查后再使用；不得将本工具用于任何违法或侵权用途。</li>
+					<li><strong>数据管理</strong>：您应自行负责设计文件的备份与版本管理。</li>
+				</ol>
+
+				<h3>四、 严禁侵权与法律合规</h3>
+				<ol>
+					<li><strong>禁止侵权</strong>：严禁利用本工具从事侵犯知识产权的行为，包括但不限于：未经授权复制、仿制他人产品；窃取他人的商业秘密或专利设计。</li>
+					<li><strong>逆向工程风险</strong>：请知悉“逆向工程”在不同司法管辖区的法律风险。利用本工具进行分析所产生的一切法律后果由用户自行承担；若因此引发第三方侵权索赔，用户应独立承担全部法律责任及赔偿费用。
 					</li>
 				</ol>
 
-				<h3>四、 技术局限与免责条款</h3>
+				<h3>五、 技术局限与免责条款</h3>
 				<ol>
 					<li><strong>“按现状”提供</strong>：本工具不保证功能的绝对准确性、完整性或特定用途的适用性。</li>
-					<li><strong>转换误差</strong>：由于 Gerber 格式的复杂性及 EDA 版本差异，转换结果可能存在图形丢失、网络连接错误、孔径误判或层属性识别偏差。</li>
-					<li><strong>非生产级工具</strong>：<strong>本工具生成的工程文件仅供参考，严禁未经验证直接用于 PCB 生产制造。</strong>
-						因直接使用转换数据导致的产品报废、经济损失或设备损坏，开发者不承担任何责任。</li>
+					<li><strong>转换误差</strong>：受 Gerber 格式复杂度及 EDA
+						版本差异影响，转换结果可能存在图形丢失、网络缺失、孔径误判或层属性识别偏差。本工具当前<strong>不生成网络</strong>，标准版导出<strong>不包含文字、元件位号与埋盲孔</strong>。
+					</li>
+					<li><strong>兼容性范围</strong>：本工具主要适配嘉立创 EDA V2.2 及以上版本导出的 Gerber，其它软件导出的文件兼容性不作保证。</li>
+					<li><strong>非生产级工具</strong>：<strong>本工具生成的工程文件仅供参考，严禁未经验证直接用于 PCB
+							生产制造。</strong>因直接使用转换数据导致的产品报废、经济损失或设备损坏，开发者不承担任何责任。</li>
 				</ol>
 
-				<h3>五、 其他</h3>
-				<p>开发者保留在任何时候修改本协议的权利。如果您不同意本协议的任何条款，请立即停止使用本工具。</p>
+				<h3>六、 责任划分与风险提示</h3>
+				<ol>
+					<li>因<strong>未在空白文档操作、未提前备份或操作不当</strong>导致的任何数据丢失、文件损坏或不可逆修改，损失均由用户自行承担。</li>
+					<li>因<strong>转换结果存在误差、未人工复核即投产</strong>导致的一切后果，由用户自行承担。</li>
+					<li>因<strong>使用本工具从事违法或侵权行为</strong>产生的法律责任，由用户独立承担。</li>
+					<li>在法律允许的最大范围内，开发者不对使用本工具产生的任何直接或间接损失承担赔偿责任。</li>
+				</ol>
+
+				<h3>七、 其他</h3>
+				<p>开发者保留随时修改本协议的权利，修改后随工具或文档发布即刻生效。若您不同意本协议的任何条款，请立即停止使用本工具。</p>
 				<hr style="border:0; border-top:1px solid #444; margin: 15px 0;">
-				<p><strong>请确认：您已充分理解上述条款，并承诺仅在法律允许的范围内使用本工具。</strong></p>
+				<p><strong>请确认：您已充分理解上述条款，并承诺仅在法律允许的范围内、在空白 PCB 文档中使用本工具。</strong></p>
 			</div>
 			<div class="modal-footer">
-				<button class="btn-secondary" style="padding: 6px 15px; border-radius: 4px;"
-					onclick="handleDisclaimer(false)">不同意</button>
 				<button class="btn-primary" style="padding: 6px 15px; border-radius: 4px;"
-					onclick="handleDisclaimer(true)">我已知晓并继续</button>
+					onclick="closeDisclaimer()">关闭</button>
 			</div>
 		</div>
 	</div>

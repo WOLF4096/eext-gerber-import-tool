@@ -4,7 +4,7 @@
 // 职责：
 //   · 全局可变状态：rawFilesCache / loadedFiles / viewState
 //   · 主画布与标尺的 2D 上下文、离屏缓冲画布
-//   · 「免责声明 / 二次确认」弹窗控制（confirmAction / handleDisclaimer）
+//   · 用户协议确认与条款弹窗（confirmAction / showDisclaimer / 协议复选框同步）
 // 依赖：本文件在【加载时即访问 DOM】（#main-canvas / #ruler-h / #ruler-v），
 //       因此所有脚本必须放在 </body> 之前，且本文件早于 09-ui.js。
 // 加载顺序：第 3 个
@@ -20,12 +20,12 @@
 
     // --- 飞针标注层（引脚编号 / 网络名称 / 元件位号）---------------------------------
     // 数据源：压缩包内的 FlyingProbeTesting.json。这些层不对应 Gerber 文件，
-    // 只在画布上做文字标注；只有「元件位号」勾选后才会参与导出（见 05-pad-tool.js）。
-    // 前两层默认显示（导入的 Gerber 若带飞针文件即刻可见），位号默认关闭。
+    // 只在画布上做文字标注；「元件位号」勾选后还会参与导出（见 05-pad-tool.js）。
+    // 三层默认全部勾选显示（导入的 Gerber 若带飞针文件即刻可见）。
     const flyingOverlayVisible = {
         [FLYING_LAYER.PAD_NUMBER]: true,
         [FLYING_LAYER.NET_NAME]: true,
-        [FLYING_LAYER.REFDES]: false
+        [FLYING_LAYER.REFDES]: true
     };
     // 标注数据缓存：{ pads:[{x,y,num,net}], comps:[{x,y,ref}] }。导入/重载时置空重建，
     // 避免在 drawCanvas（跟随平移缩放高频调用）里重复做 extractRawData + consolidate。
@@ -43,33 +43,68 @@
 
 
 
-    // --- 弹窗逻辑控制 ---
-    let pendingAction = null; // 存储待执行的操作
+    // --- 弹窗与协议确认逻辑 ---
+    // 「用户协议与免责声明」的确认改由侧栏复选框（#cfg-agree）承担：
+    // 勾选后才会放行导入 / 导出嘉立创EDA 操作；弹窗本身只用于查看条款正文。
 
+    /** 打开《用户协议与免责声明》弹窗 */
+    function showDisclaimer() {
+        const modal = document.getElementById('disclaimer-modal');
+        if (modal) modal.style.display = 'flex';
+    }
+
+    /** 关闭《用户协议与免责声明》弹窗 */
+    function closeDisclaimer() {
+        const modal = document.getElementById('disclaimer-modal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    /** 协议复选框是否已勾选 */
+    function isAgreementChecked() {
+        const cb = document.getElementById('cfg-agree');
+        return !!(cb && cb.checked);
+    }
+
+    /** 复选框勾选状态变化时的回调（HTML onchange 调用） */
+    function onAgreementChange() {
+        syncAgreementButtons();
+    }
+
+    /** 依据协议勾选状态，切换受控按钮的「锁定」外观（按钮仍可点击，点击会震动提示） */
+    function syncAgreementButtons() {
+        const debugOn = typeof DEBUG !== 'undefined' && DEBUG;
+        const locked = !debugOn && !isAgreementChecked();
+        document.querySelectorAll('.agree-gated').forEach(btn => {
+            btn.classList.toggle('is-locked', locked);
+        });
+    }
+
+    /** 未勾选协议就点击受控按钮：让协议复选框左右震动提醒 */
+    function shakeAgreement() {
+        const row = document.getElementById('agree-row');
+        if (!row) return;
+        row.classList.remove('agree-shake');
+        void row.offsetWidth; // 强制回流，保证连续点击也能重放动画
+        row.classList.add('agree-shake');
+        row.addEventListener('animationend', () => row.classList.remove('agree-shake'), { once: true });
+        const cb = document.getElementById('cfg-agree');
+        if (cb) cb.focus();
+    }
+
+    /**
+     * 统一的导入 / 导出确认入口（HTML 内联 onclick 调用）。
+     * 已勾选协议 → 直接执行；未勾选 → 震动协议复选框并中止。
+     */
     function confirmAction(actionCallback) {
-        // 如果是 DEBUG 模式，直接执行，不弹窗
+        // DEBUG 模式跳过协议校验，便于调试
         if (typeof DEBUG !== 'undefined' && DEBUG) {
             actionCallback();
             return;
         }
-        
-        // 存储回调并在弹窗中显示
-        pendingAction = actionCallback;
-        document.getElementById('disclaimer-modal').style.display = 'flex';
-    }
-
-    function handleDisclaimer(isAgreed) {
-        // 隐藏弹窗
-        document.getElementById('disclaimer-modal').style.display = 'none';
-        
-        if (isAgreed) {
-            // 用户同意，执行存储的操作
-            if (pendingAction) pendingAction();
-        } else {
-            // 用户不同意，清空操作（也可以选择关闭窗口或提示）
-            console.log("用户拒绝了协议，操作取消。");
+        if (!isAgreementChecked()) {
+            shakeAgreement();
+            return;
         }
-        // 重置
-        pendingAction = null;
+        actionCallback();
     }
 

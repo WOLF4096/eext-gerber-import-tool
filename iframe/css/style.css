@@ -118,7 +118,7 @@
         backdrop-filter: blur(2px);
     }
     .modal-box {
-        background-color: var(--panel-bg); width: 470px; max-height: 320px;
+        background-color: var(--panel-bg); width: 470px; max-height: 72vh;
         border: 1px solid var(--border-color); border-radius: 8px;
         box-shadow: 0 10px 25px rgba(0,0,0,0.5); display: flex; flex-direction: column;
     }
@@ -139,5 +139,25 @@
         display: flex; justify-content: flex-end; gap: 10px; background-color: var(--panel-header-bg);
         border-bottom-left-radius: 8px; border-bottom-right-radius: 8px;
     }
+
+    /* --- 用户协议确认（位于「处理模式」下方） --- */
+    .agree-row { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding: 5px 6px; border-radius: 4px; font-size: 12px; color: #ccc; user-select: none; }
+    .agree-row input[type="checkbox"] { margin: 0; cursor: pointer; }
+    .agree-link { color: var(--accent-color); cursor: pointer; text-decoration: underline; }
+    .agree-link:hover { color: #4da3e0; }
+    .agree-row.agree-shake { animation: agree-shake-x 0.45s ease-in-out; }
+    @keyframes agree-shake-x {
+        0%, 100% { transform: translateX(0); }
+        12% { transform: translateX(-7px); }
+        28% { transform: translateX(7px); }
+        44% { transform: translateX(-6px); }
+        60% { transform: translateX(6px); }
+        76% { transform: translateX(-3px); }
+        90% { transform: translateX(3px); }
+    }
+
+    /* 未勾选协议时，导入 / 导出嘉立创EDA 按钮呈「锁定」外观（仍可点击：点击会震动协议复选框） */
+    .agree-gated.is-locked { opacity: 0.4; filter: saturate(0.4); }
+    .agree-gated.is-locked:hover { opacity: 0.6; filter: saturate(0.65); }
 
     

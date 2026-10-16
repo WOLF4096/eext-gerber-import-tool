@@ -147,25 +147,36 @@
      */
     function renderFlyingLayerRows(container) {
         if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return;
-        const head = document.createElement('div');
-        head.className = 'layer-header';
-        head.innerHTML = '<span>自定义/特殊 · 飞针标注（仅显示）</span>';
-        container.appendChild(head);
 
+        // 并入「自定义/特殊」分组：找到该分组的最后一行，把飞针标注行紧接其后插入；
+        // 若当前没有任何「自定义/特殊」文件，则先补一个分组标题（无文件时该组没有复选框行）。
+        const customGid = uiGroups[4].id;
+        let anchor = null;
+        container.querySelectorAll('.layer-row').forEach(row => {
+            if (row.dataset.group === customGid) anchor = row;
+        });
+        if (!anchor) {
+            const head = document.createElement('div');
+            head.className = 'layer-header';
+            head.innerHTML = `<span>${uiGroups[4].name}</span>`;
+            container.appendChild(head);
+            anchor = head;
+        }
+
+        let insertAfter = anchor;
         FLYING_LAYER_IDS.forEach(id => {
             const def = layerDefs[id];
             if (!def) return;
             const row = document.createElement('div');
             row.className = 'layer-row';
-            const tag = (id === FLYING_LAYER.REFDES)
-                ? `<span style="margin-left:6px;font-size:10px;color:#ffd633;">（${FLYING_REFDES_HEIGHT_MIL}mil · 勾选后导入）</span>`
-                : '<span style="margin-left:6px;font-size:10px;color:#888;">（仅显示）</span>';
+            row.dataset.group = customGid;
             row.innerHTML = `
                 <div class="col-color"><input type="color" value="${def.color}" onchange="updateColor(${id},this.value)"></div>
                 <div class="col-vis"><input type="checkbox" ${flyingOverlayVisible[id] ? 'checked' : ''} onchange="toggleOverlay(${id},this.checked)"></div>
-                <div class="col-layer">${def.name}${tag}</div>
+                <div class="col-name">${def.name}</div>
             `;
-            container.appendChild(row);
+            insertAfter.insertAdjacentElement('afterend', row);
+            insertAfter = row;
         });
     }
 
@@ -952,6 +963,27 @@
             bbRow.style.display = 'flex';
         } else {
             bbRow.style.display = 'none';
+        }
+
+        // 4. 来源软件与导出时间（从导入文件的头部注释解析；识别不到则隐藏）
+        const src = (typeof detectEasyEdaSource === 'function') ? detectEasyEdaSource() : null;
+        const softRow = document.getElementById('row-prop-soft');
+        const timeRow = document.getElementById('row-prop-time');
+        if (softRow) {
+            if (src && src.software) {
+                document.getElementById('prop-soft').textContent = src.software;
+                softRow.style.display = 'flex';
+            } else {
+                softRow.style.display = 'none';
+            }
+        }
+        if (timeRow) {
+            if (src && src.time) {
+                document.getElementById('prop-time').textContent = src.time;
+                timeRow.style.display = 'flex';
+            } else {
+                timeRow.style.display = 'none';
+            }
         }
     }
 
