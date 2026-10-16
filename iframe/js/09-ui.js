@@ -350,9 +350,21 @@
                     if (isArc) { 
                         const cx = cmd.prevX + cmd.i; const cy = cmd.prevY + cmd.j;
                         const radius = Math.sqrt(cmd.i*cmd.i + cmd.j*cmd.j);
-                        const sa = Math.atan2(cmd.prevY - cy, cmd.prevX - cx);
-                        const ea = Math.atan2(cmd.y - cy, cmd.x - cx);
-                        bufCtx.arc(cx, cy, radius, sa, ea, cmd.mode === 2);
+                        // 【整圆修复】Gerber 用「起点 = 终点」的 G02/G03 表达 360° 圆弧
+                        // （嘉立创EDA标准版把 CIRCLE 图元导出成这种整圆弧）。此时起止角相同，
+                        // arc(cx,cy,r,sa,ea) 的扫掠角为 0，Canvas 会画出空路径 —— 整圆因此
+                        // 「凭空消失」。这里必须先 moveTo 到圆周上的点，再显式画 0~2π。
+                        const isFullCircle = radius > 1e-9
+                            && Math.abs(cmd.x - cmd.prevX) < 1e-6
+                            && Math.abs(cmd.y - cmd.prevY) < 1e-6;
+                        if (isFullCircle) {
+                            bufCtx.moveTo(cx + radius, cy);
+                            bufCtx.arc(cx, cy, radius, 0, Math.PI * 2, cmd.mode === 2);
+                        } else {
+                            const sa = Math.atan2(cmd.prevY - cy, cmd.prevX - cx);
+                            const ea = Math.atan2(cmd.y - cy, cmd.x - cx);
+                            bufCtx.arc(cx, cy, radius, sa, ea, cmd.mode === 2);
+                        }
                     } else {
                         bufCtx.lineTo(cmd.x, cmd.y);
                     }
@@ -550,9 +562,18 @@
                         else if (op.cmd === 'A') {
                             const cx = op.startX + op.i, cy = op.startY + op.j;
                             const r = Math.sqrt(op.i*op.i + op.j*op.j);
-                            const sa = Math.atan2(op.startY - cy, op.startX - cx);
-                            const ea = Math.atan2(op.y - cy, op.x - cx);
-                            bufCtx.arc(cx, cy, r, sa, ea, op.mode === 2);
+                            // 同 type 1 的整圆修复：区域内也可能出现「起点=终点」的整圆弧
+                            const fullArc = r > 1e-9
+                                && Math.abs(op.x - op.startX) < 1e-6
+                                && Math.abs(op.y - op.startY) < 1e-6;
+                            if (fullArc) {
+                                bufCtx.moveTo(cx + r, cy);
+                                bufCtx.arc(cx, cy, r, 0, Math.PI * 2, op.mode === 2);
+                            } else {
+                                const sa = Math.atan2(op.startY - cy, op.startX - cx);
+                                const ea = Math.atan2(op.y - cy, op.x - cx);
+                                bufCtx.arc(cx, cy, r, sa, ea, op.mode === 2);
+                            }
                         }
                     });
                     bufCtx.closePath(); bufCtx.fill('evenodd'); 

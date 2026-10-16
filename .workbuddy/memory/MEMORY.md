@@ -76,6 +76,40 @@
 - **`isGerberText` 必须传 content**：只给文件名时会退回旧的扩展名判断。
 
 
+## 处理模式（2026-10-16 精简为两项）
+
+`processors/` 只保留 `registry.js` + `industry-common.js` + `industry-rs274x.js`（RS-274X 通用）
++ `jlc-internal.js`（嘉立创专业版）。X2 / X3 / RS-274D / 兼容 / 保底 **已全部删除**，
+下拉框 `#cfg-source-type` 只有两个 option。新增处理器记得同步改三处：
+`ImportGerber.html` 的 option + script 标签、`10-init.js` 的 resetConfig 默认值。
+（`processors/` 目录**已被 git 跟踪**，早期「未被跟踪」的记录已过期。）
+
+## 嘉立创EDA 标准版源码格式（导出标准版时必读）
+
+- **1 单位 = 10 mil = 0.254 mm**；`X = 4020 + mmX/0.254`，`Y = 3560.5 - mmY/0.254`（X 右正 Y 上正）。
+- 字段数必须逐位对齐：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 /
+  COPPERAREA 19 / SOLIDREGION 10。
+- 图层 ID 顺序与内部编号**不同**：内部 5/6(阻焊)↔标准 7/8、内部 7/8(锡膏)↔标准 5/6、
+  内部 9/10(装配)↔标准 13/14、11→10(BoardOutLine)、12→11(Multi)、13→12(Document)、14→15、
+  内层 15..46 → 21..52。
+- ARC 的 `d`：`M sx,sy A r,r 0 <largeArc> <sweep> ex,ey`；**G03(逆时针)→sweep=0，G02→1**；
+  half-circle 判 largeArc 用 `> 180.0001` 容差（浮点会给出 180.00000000000003）。
+- 参考素材 `Temp/标准版格式参考/` 里的 json 与 zip **是同一块板的源码↔Gerber 配对**，
+  可互为 ground truth 逐图元比对。
+
+## Gerber 两个通用坑（2026-10-16 修复）
+
+- **整圆**：标准版把 `CIRCLE` 导出成「起点=终点」的 360° 圆弧。
+  ① 画布 `ctx.arc(sa==ea)` 会画空路径 → 整圆消失，必须先 `moveTo(圆周点)` 再画 0~2π；
+  ② 导出 EDA 时 angle=360 的两点弧无法还原 → 拆成两段对向 180° 半圆。
+- **宏光圈焊盘**：`%AM` 做出来的掩膜/锡膏焊盘 `w=h=0`（尺寸只在 path 里），
+  `calcExp` 必须用 path 包围盒算，否则阻焊开窗扩展整块丢掉。
+
+## 覆铜图元类型（2026-10-16 变更）
+
+无私有段标记来源（标准版 / KiCad / Altium）的铜层区域**不再**降级成 0.1mm 细线折线，
+改为实心填充 FILL —— 与画布渲染一致，导入 EDA 才是真铜。判定：`effMode === 'POUR'` 走 `rawFills`。
+
 ## 目录约定（重要）
 
 - **所有临时文件放根目录 `Temp/`**，它同时被 `.gitignore` 与 `.edaignore` 排除（不进 git、不进 `.eext`）：
@@ -95,5 +129,10 @@
 ## 可用工具（均在 Temp/）
 
 - `verify.py`（字节级等价校验）、`split.py`（拆分器）、`smoke.js`（真实 Chrome 前后对比）、
-  `guard_test.js`、`processor_test.js`、`render_test.js`、`repro_full.js`。
-- 运行 JS 测试需设 `NODE_PATH=C:/Users/狼黑/.workbuddy/binaries/node/workspace/node_modules`（内含 playwright-core）。
+  `guard_test.js`、`processor_test.js`、`render_test.js`、`repro_full.js`、`probe5.js`（多样本回归，产出 `probe5_result.json`）。
+- **标准版/渲染系列**：`std_check.js`（单图层筛选+截图）、`std_each.js`（逐层截图+导出 commands）、
+  `std_each_cmp.py`（逐层 recall/precision + 差异掩码）、`std_verify.js`（一次性验收）、
+  `std_validate.py`（标准版导出结构与几何校验）、
+  **`raster_exact.py`（独立精确光栅化，支持圆弧/宏光圈/圆头线端，可作任何 Gerber 渲染的 ground truth）**。
+- 运行 JS 测试需设 `NODE_PATH=C:/Users/狼黑/.workbuddy/binaries/node/workspace/node_modules`（内含 playwright-core），
+  Chrome 路径 `C:/Program Files/Google/Chrome/Application/chrome.exe`。

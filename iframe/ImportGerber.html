@@ -195,14 +195,7 @@
                                 <option value="easyedapro" selected>嘉立创EDA专业版 V2.2 / V3 专用</option>
                             </optgroup>
                             <optgroup label="行业标准">
-                                <option value="rs274x">RS-274X（通用扩展）</option>
-                                <option value="gerberx2">Gerber X2（含属性）</option>
-                                <option value="gerberx3">Gerber X3（含元件网络）</option>
-                                <option value="rs274d">RS-274D（老式格式）</option>
-                            </optgroup>
-                            <optgroup label="其它">
-                                <option value="compatible">兼容模式 (开发中)</option>
-                                <option value="other">保底模式 (开发中)</option>
+                                <option value="rs274x">RS-274X（通用）</option>
                             </optgroup>
                         </select>
                     </div>
@@ -336,13 +329,11 @@
     <script src="/iframe/js/03-state.js"></script>
     <script src="/iframe/js/04-gerber-parser.js"></script>
     <!-- 处理模式模块：一个模式一个文件，由注册表路由。
-         顺序 = registry（注册表）→ industry-common（行业公用）→ 各模式模块 -->
+         顺序 = registry（注册表）→ industry-common（行业公用）→ 各模式模块
+         当前仅保留两个已实现的模式：easyedapro（内部标准）、rs274x（行业标准） -->
     <script src="/iframe/js/processors/registry.js"></script>
     <script src="/iframe/js/processors/industry-common.js"></script>
     <script src="/iframe/js/processors/industry-rs274x.js"></script>
-    <script src="/iframe/js/processors/industry-x2.js"></script>
-    <script src="/iframe/js/processors/industry-x3.js"></script>
-    <script src="/iframe/js/processors/industry-rs274d.js"></script>
     <script src="/iframe/js/processors/jlc-internal.js"></script>
     <script src="/iframe/js/05-pad-tool.js"></script>
     <script src="/iframe/js/06-utils.js"></script>

@@ -5,7 +5,7 @@
 //   · window.exportPDF            位图 PDF 导出（DPI 300/600/900/1200）
 //   · window.handleExportToCanvas 注入当前 PCB 画布（源码注入 / 图元注入）
 //   · window.handleExportProV2 / handleExportProV3   导出工程文件（.epcb / .epro2）
-//   · window.handleExportStandard 导出标准版（尚未实现，仅提示）
+//   · window.handleExportStandard 导出标准版（生成嘉立创EDA标准版 PCB 源码 .json）
 //   · configureHeader / configureBlindViasAPI        按板层与埋盲孔规则给模板头打补丁
 //   · exportForEasyEDA_Pro / exportForOther_Pro / importPrimitivesAPI / exportForStandard
 //   · window.generateDebugSource  生成调试源码（输出到文本框）
@@ -1177,10 +1177,485 @@
         }
     }
 
-    // 目标：标准版 (保留入口)
+    // ==================================================================================
+    // 目标：嘉立创EDA 标准版 —— 导出 PCB 源码（.json）
+    // ----------------------------------------------------------------------------------
+    // 格式规范取自 Temp/标准版格式参考/标准版PCB源码.json（嘉立创EDA标准版 v6.5.51 导出）。
+    // 三条硬约束（错一条标准版就打不开/解析错位）：
+    //   1. 全部坐标、长度以「1 单位 = 10 mil = 0.254 mm」存储；
+    //   2. 世界坐标 → 画布坐标： X = ORIGIN_X + mmX / 0.254 ， Y = ORIGIN_Y - mmY / 0.254
+    //      （X 向右为正，Y 向上为正，与参考文件的正负号一致）；
+    //   3. shape 是字符串数组，首字段是图元标识符，字段顺序必须与官方文档一致。
+    // 各图元字段顺序（0 基）：
+    //   PAD        shape,x,y,w,h,layer,net,num,holeR,points,rot,gId,holeLength,slotPts,
+    //              plated,locked,pasteExp,solderExp,holeCenter
+    //   VIA        x,y,diameter,net,holeR,gId,locked
+    //   HOLE       x,y,holeR,gId,locked
+    //   TRACK      strokeWidth,layer,net,points,gId,locked
+    //   ARC        strokeWidth,layer,net,d,helperDots,gId,locked
+    //   CIRCLE     cx,cy,r,strokeWidth,layer,gId,locked,net,transformArc
+    //   COPPERAREA strokeWidth,layer,net,pathStr,clearance,fillStyle,gId,thermal,keepIsland,compress
+    //   SOLIDREGION layer,'',pathStr,fillStyle,gId,'' ,'' ,'' ,0
+    // ==================================================================================
+
+    const STD_UNIT = 0.254;          // 1 标准版单位 = 10 mil
+    const STD_ORIGIN_X = 4020;       // 画布原点（与官方模板一致）
+    const STD_ORIGIN_Y = 3560.5;
+    const STD_EDITOR_VER = '6.5.51';
+
+    // 内部图层 ID → 标准版图层 ID（顺序不同！阻焊/锡膏、组装/文档都要换位）
+    const STD_LAYER_MAP = {
+        1: 1,    // 顶层铜   → TopLayer
+        2: 2,    // 底层铜   → BottomLayer
+        3: 3,    // 顶层丝印 → TopSilkLayer
+        4: 4,    // 底层丝印 → BottomSilkLayer
+        5: 7,    // 顶层阻焊 → TopSolderMaskLayer
+        6: 8,    // 底层阻焊 → BottomSolderMaskLayer
+        7: 5,    // 顶层锡膏 → TopPasteMaskLayer
+        8: 6,    // 底层锡膏 → BottomPasteMaskLayer
+        9: 13,   // 顶层装配 → TopAssembly
+        10: 14,  // 底层装配 → BottomAssembly
+        11: 10,  // 板框     → BoardOutLine
+        12: 11,  // 多层     → Multi-Layer
+        13: 12,  // 文档     → Document
+        14: 15,  // 机械     → Mechanical
+        47: 11,  // 钻孔     → Multi-Layer
+        56: 12,  // 钻孔图   → Document
+        57: 12   // 其它     → Document
+    };
+    const STD_LAYER = (internalId) => {
+        if (STD_LAYER_MAP[internalId] !== undefined) return STD_LAYER_MAP[internalId];
+        if (internalId >= 15 && internalId <= 46) return internalId + 6;  // Inner1(15) → 21
+        return 12;
+    };
+    const STD_IS_COPPER = (internalId) => internalId === 1 || internalId === 2 || (internalId >= 15 && internalId <= 46);
+
+    // 标准版图层表 / 对象表 / 设计规则（照抄参考文件，保证与官方模板一致）
+    const STD_LAYERS = [
+        '1~TopLayer~#FF0000~true~false~true~',
+        '2~BottomLayer~#0000FF~true~false~true~',
+        '3~TopSilkLayer~#FFCC00~true~false~true~',
+        '4~BottomSilkLayer~#66CC33~true~false~true~',
+        '5~TopPasteMaskLayer~#808080~true~false~true~',
+        '6~BottomPasteMaskLayer~#800000~true~false~true~',
+        '7~TopSolderMaskLayer~#800080~true~false~true~0.3',
+        '8~BottomSolderMaskLayer~#AA00FF~true~false~true~0.3',
+        '9~Ratlines~#6464FF~true~true~true~',
+        '10~BoardOutLine~#FF00FF~true~false~true~',
+        '11~Multi-Layer~#C0C0C0~true~false~true~',
+        '12~Document~#FFFFFF~true~false~true~',
+        '13~TopAssembly~#33CC99~false~false~false~',
+        '14~BottomAssembly~#5555FF~false~false~false~',
+        '15~Mechanical~#F022F0~false~false~false~',
+        '19~3DModel~#66CCFF~false~false~false~',
+        '21~Inner1~#999966~false~false~false~~',
+        '22~Inner2~#008000~false~false~false~~',
+        '23~Inner3~#00FF00~false~false~false~~',
+        '24~Inner4~#BC8E00~false~false~false~~',
+        '25~Inner5~#70DBFA~false~false~false~~',
+        '26~Inner6~#00CC66~false~false~false~~',
+        '27~Inner7~#9966FF~false~false~false~~',
+        '28~Inner8~#800080~false~false~false~~',
+        '29~Inner9~#008080~false~false~false~~',
+        '30~Inner10~#15935F~false~false~false~~',
+        '31~Inner11~#000080~false~false~false~~',
+        '32~Inner12~#00B400~false~false~false~~',
+        '33~Inner13~#2E4756~false~false~false~~',
+        '34~Inner14~#99842F~false~false~false~~',
+        '35~Inner15~#FFFFAA~false~false~false~~',
+        '36~Inner16~#99842F~false~false~false~~',
+        '37~Inner17~#2E4756~false~false~false~~',
+        '38~Inner18~#3535FF~false~false~false~~',
+        '39~Inner19~#8000BC~false~false~false~~',
+        '40~Inner20~#43AE5F~false~false~false~~',
+        '41~Inner21~#C3ECCE~false~false~false~~',
+        '42~Inner22~#728978~false~false~false~~',
+        '43~Inner23~#39503F~false~false~false~~',
+        '44~Inner24~#0C715D~false~false~false~~',
+        '45~Inner25~#5A8A80~false~false~false~~',
+        '46~Inner26~#2B937E~false~false~false~~',
+        '47~Inner27~#23999D~false~false~false~~',
+        '48~Inner28~#45B4E3~false~false~false~~',
+        '49~Inner29~#215DA1~false~false~false~~',
+        '50~Inner30~#4564D7~false~false~false~~',
+        '51~Inner31~#6969E9~false~false~false~~',
+        '52~Inner32~#9069E9~false~false~false~~',
+        '99~ComponentShapeLayer~#00CCCC~false~false~false~0.4',
+        '100~LeadShapeLayer~#CC9999~false~false~false~',
+        '101~ComponentMarkingLayer~#66FFCC~false~false~false~',
+        'Hole~Hole~#222222~~false~true~',
+        'DRCError~DRCError~#FAD609~~false~true~'
+    ];
+    const STD_OBJECTS = [
+        'All~true~false', 'Component~true~true', 'Prefix~true~true', 'Name~true~false',
+        'Track~true~true', 'Pad~true~true', 'Via~true~true', 'Hole~true~true',
+        'Copper_Area~true~true', 'Circle~true~true', 'Arc~true~true',
+        'Solid_Region~true~true', 'Text~true~true', 'Image~true~true', 'Rect~true~true',
+        'Dimension~true~true', 'Protractor~true~true'
+    ];
+    const STD_DRCRULE = {
+        "Default": { "trackWidth": 1, "clearance": 0.6, "viaHoleDiameter": 2.4, "viaHoleD": 1.2 },
+        "isRealtime": false,
+        "isDrcOnRoutingOrPlaceVia": false,
+        "checkObjectToCopperarea": true,
+        "showDRCRangeLine": true
+    };
+    const STD_CANVAS = 'CA~1000~1000~#000000~yes~#FFFFFF~10~1000~1000~line~0.5~mm~1~45ARC~~0.5~4020~3560.5~0~yes';
+
+    // 数字格式化：最多 4 位小数，去掉无意义的尾随 0（标准版源码里 1.5000 写作 1.5）
+    function stdNum(v) {
+        if (typeof v !== 'number' || !isFinite(v)) return '0';
+        let s = (Math.round(v * 1e4) / 1e4).toFixed(4);
+        if (s.indexOf('.') >= 0) s = s.replace(/0+$/, '').replace(/\.$/, '');
+        if (s === '' || s === '-0') return '0';
+        return s;
+    }
+    const stdX = (mm) => stdNum(STD_ORIGIN_X + mm / STD_UNIT);
+    const stdY = (mm) => stdNum(STD_ORIGIN_Y - mm / STD_UNIT);
+    const stdU = (mm) => stdNum(mm / STD_UNIT);
+
+    /**
+     * 把内部路径数组（M/L/A/ARC + i,j/sweep/cx,cy 三种弧表示）统一转成折线点列（mm）。
+     * 标准版的 TRACK / COPPERAREA / SOLIDREGION 都只吃点列，圆弧一律采样成短直线。
+     */
+    function stdFlattenPath(path, stepDeg) {
+        const pts = [];
+        if (!Array.isArray(path) || path.length === 0) return pts;
+        let cur = null;
+        const push = (x, y) => { if (typeof x === 'number' && isFinite(x) && typeof y === 'number' && isFinite(y)) { pts.push({ x, y }); cur = { x, y }; } };
+        for (let i = 0; i < path.length; i++) {
+            const op = path[i];
+            if (!op) continue;
+            if (op.cmd === 'M' || op.cmd === 'L') { push(op.x, op.y); continue; }
+            if (op.cmd !== 'A' && op.cmd !== 'ARC') { continue; }
+            if (!cur) continue;
+            const ex = op.x, ey = op.y;
+            // 1) 直接给了圆心
+            let cx = op.cx, cy = op.cy;
+            // 2) 给了相对圆心的 i/j
+            if (cx === undefined && op.i !== undefined) { cx = cur.x + op.i; cy = cur.y + op.j; }
+            // 3) 只给了扫掠角：由弦长 + 扫掠角反算圆心
+            let sweepRad = null;
+            if (op.sweep !== undefined) sweepRad = op.sweep * Math.PI / 180;
+            if (cx === undefined && sweepRad !== null && Math.abs(sweepRad) > 1e-9) {
+                const chord = Math.hypot(ex - cur.x, ey - cur.y);
+                const r = Math.abs(chord / (2 * Math.sin(sweepRad / 2)));
+                const mx = (cur.x + ex) / 2, my = (cur.y + ey) / 2;
+                const h = Math.sqrt(Math.max(0, r * r - (chord / 2) * (chord / 2)));
+                const ux = (ex - cur.x) / (chord || 1), uy = (ey - cur.y) / (chord || 1);
+                const sgn = sweepRad > 0 ? 1 : -1;
+                cx = mx + sgn * h * (-uy); cy = my + sgn * h * ux;
+            }
+            if (cx === undefined || !isFinite(cx) || !isFinite(cy)) {
+                // 圆心未知（含 360° 整圆）：退化为两点直线，至少不丢这一段
+                if (Math.abs(ex - cur.x) > 1e-9 || Math.abs(ey - cur.y) > 1e-9) push(ex, ey);
+                continue;
+            }
+            const r = Math.hypot(cur.x - cx, cur.y - cy);
+            if (!(r > 1e-9)) { push(ex, ey); continue; }
+            let a0 = Math.atan2(cur.y - cy, cur.x - cx);
+            let a1 = Math.atan2(ey - cy, ex - cx);
+            let d = a1 - a0;
+            const ccw = (op.mode === 3) || (sweepRad !== null && sweepRad > 0);
+            if (ccw) { while (d <= 1e-9) d += 2 * Math.PI; } else { while (d >= -1e-9) d -= 2 * Math.PI; }
+            const isFull = Math.abs(ex - cur.x) < 1e-6 && Math.abs(ey - cur.y) < 1e-6;
+            if (isFull) d = ccw ? 2 * Math.PI : -2 * Math.PI;
+            const step = (stepDeg || 6) * Math.PI / 180;
+            const n = Math.max(2, Math.ceil(Math.abs(d) / step));
+            for (let k = 1; k <= n; k++) {
+                const a = a0 + d * k / n;
+                push(cx + r * Math.cos(a), cy + r * Math.sin(a));
+            }
+        }
+        return pts;
+    }
+
+    /** 点列 → 标准版路径串 "M x y L x y ... [Z]" */
+    function stdPathStr(pts, closed) {
+        if (!pts || pts.length === 0) return '';
+        let s = 'M ' + stdX(pts[0].x) + ' ' + stdY(pts[0].y);
+        for (let i = 1; i < pts.length; i++) s += ' L' + stdX(pts[i].x) + ',' + stdY(pts[i].y);
+        if (closed) s += ' Z ';
+        return s;
+    }
+
+    /** 点列 → 标准版 points 串 "x y x y ..."（TRACK 用） */
+    function stdPointStr(pts) {
+        return pts.map(p => stdX(p.x) + ' ' + stdY(p.y)).join(' ');
+    }
+
+    /**
+     * 生成一个 COPPERAREA 图元串（19 字段，与官方导出的字段布局逐位对齐）：
+     * cmdKey, strokeWidth, layer, net, pathStr, clearanceWidth, fillStyle, gId,
+     * thermal, keepIsland, compressData, locked, name, order,
+     * gridTrackWidth, gridClearance, toBoardOutline, fabricationImprove, spoke_width
+     * 注：compressData 传 [] 即可，标准版会用 pathStr 重新生成压缩数据。
+     */
+    function stdCopperArea(layerWidthU, layer, pathStr, gid) {
+        return ['COPPERAREA', layerWidthU, layer, '', pathStr,
+            1, 'solid', gid, 'spoke', 'none', '[]',
+            0, gid, 1, 1, 2, 1, 'yes', 0].join('~');
+    }
+
+    /**
+     * 生成标准版 PCB 源码对象。
+     * @returns {object} 可直接 JSON.stringify 的标准版 PCB 源码
+     */
+    function buildStandardSource() {
+        const rawData = PadTool.extractRawData(loadedFiles.filter(f => f.visible));
+        const uni = PadTool.consolidate(
+            rawData.rawPads || [], rawData.rawVias || [], rawData.rawTracks || [],
+            rawData.rawPolys || [], rawData.rawFills || [], rawData.drills || [],
+            rawData.rawImages || [], rawData.rawTextLines || [], rawData.rawCoppers || []
+        );
+
+        const shapes = [];
+        let gidSeq = 1000;
+        const nextGid = () => 'gge' + (++gidSeq);
+        // 包围盒（标准版坐标）
+        let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity;
+        const grow = (xs, ys) => {
+            const x = Number(xs), y = Number(ys);
+            if (!isFinite(x) || !isFinite(y)) return;
+            if (x < bx0) bx0 = x; if (x > bx1) bx1 = x;
+            if (y < by0) by0 = y; if (y > by1) by1 = y;
+        };
+
+        // ---------- 1. 焊盘 ----------
+        (uni.unifiedPads || []).forEach(pad => {
+            const prim = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
+            if (!prim) return;
+            const hasDrill = !!pad.drill;
+            // 通孔 → 多层(11)；表贴 → 顶层(1) / 底层(2)
+            const layer = hasDrill ? 11
+                : (pad.top ? 1 : (pad.bottom ? 2 : STD_LAYER(prim.layerId)));
+
+            let w = prim.w, h = prim.h;
+            if (prim.shape === 'POLYGON') {
+                const poly = stdFlattenPath(prim.path, 6);
+                if (poly.length < 3) return;
+                let lx0 = Infinity, lx1 = -Infinity, ly0 = Infinity, ly1 = -Infinity;
+                poly.forEach(p => { lx0 = Math.min(lx0, p.x); lx1 = Math.max(lx1, p.x); ly0 = Math.min(ly0, p.y); ly1 = Math.max(ly1, p.y); });
+                w = lx1 - lx0; h = ly1 - ly0;
+            }
+            if (!(w > 0) || !(h > 0)) return;
+
+            let shapeName = 'ELLIPSE';
+            if (prim.shape === 'RECT' || prim.shape === 'ROUNDRECT') shapeName = 'RECT';
+            else if (prim.shape === 'OVAL') shapeName = 'OVAL';
+            else if (prim.shape === 'POLYGON') shapeName = 'POLYGON';
+
+            const rot = prim.rotation || 0;
+            const rad = rot * Math.PI / 180;
+            const cos = Math.cos(rad), sin = Math.sin(rad);
+            let points = '';
+            if (shapeName === 'POLYGON') {
+                points = stdFlattenPath(prim.path, 6).map(p => stdX(p.x) + ' ' + stdY(p.y)).join(' ');
+            } else if (shapeName === 'RECT') {
+                const hw = w / 2, hh = h / 2;
+                // 顺序：左上 → 右上 → 右下 → 左下（世界坐标 Y 向上）
+                const corners = [[-hw, hh], [hw, hh], [hw, -hh], [-hw, -hh]].map(([dx, dy]) => ({
+                    x: pad.x + dx * cos - dy * sin,
+                    y: pad.y + dx * sin + dy * cos
+                }));
+                points = corners.map(p => stdX(p.x) + ' ' + stdY(p.y)).join(' ');
+            } else if (shapeName === 'OVAL') {
+                // 长圆：给中轴线两端点
+                const along = w >= h;
+                const half = (along ? w : h) / 2 - Math.min(w, h) / 2;
+                const a = { x: pad.x - (along ? half : 0), y: pad.y - (along ? 0 : half) };
+                const b = { x: pad.x + (along ? half : 0), y: pad.y + (along ? 0 : half) };
+                const ra = { x: pad.x + (a.x - pad.x) * cos - (a.y - pad.y) * sin, y: pad.y + (a.x - pad.x) * sin + (a.y - pad.y) * cos };
+                const rb = { x: pad.x + (b.x - pad.x) * cos - (b.y - pad.y) * sin, y: pad.y + (b.x - pad.x) * sin + (b.y - pad.y) * cos };
+                points = stdX(ra.x) + ' ' + stdY(ra.y) + ' ' + stdX(rb.x) + ' ' + stdY(rb.y);
+            }
+
+            let holeR = 0, holeLength = 0, slotPts = '';
+            if (hasDrill) {
+                if (pad.drill.isSlot) {
+                    holeLength = stdU(Math.max(pad.drill.w, pad.drill.h) - Math.min(pad.drill.w, pad.drill.h));
+                    holeR = stdU(Math.min(pad.drill.w, pad.drill.h) / 2);
+                } else {
+                    holeR = stdU(pad.drill.w / 2);
+                }
+            }
+            const plated = hasDrill ? (pad.drill.isPlated ? 'Y' : 'N') : 'Y';
+            const solExp = (pad.exps && pad.exps.mt !== null && pad.exps.mt !== undefined) ? stdU(pad.exps.mt) : '';
+            const pstExp = (pad.exps && pad.exps.pt !== null && pad.exps.pt !== undefined) ? stdU(pad.exps.pt) : '';
+            const hx = stdX(pad.x), hy = stdY(pad.y);
+            grow(hx, hy);
+
+            const f = ['PAD', shapeName, hx, hy, stdU(w), stdU(h), layer, '', '1',
+                holeR, points, stdNum(rot), nextGid(), holeLength, slotPts, plated, 0,
+                pstExp, solExp, hx + ',' + hy];
+            shapes.push(f.join('~'));
+        });
+
+        // ---------- 2. 过孔 / 非金属化孔 ----------
+        (uni.remainingVias || []).forEach(v => {
+            const hx = stdX(v.x), hy = stdY(v.y);
+            grow(hx, hy);
+            if (v.isPlated) {
+                shapes.push(['VIA', hx, hy, stdU(v.padDia || v.dia), '', stdU(v.dia / 2), nextGid(), 0].join('~'));
+            } else {
+                shapes.push(['HOLE', hx, hy, stdU(v.dia / 2), nextGid(), 0].join('~'));
+            }
+        });
+
+        // ---------- 3. 导线 / 圆弧 ----------
+        const tracks = uni.tracks || [];
+        // 圆弧 → 标准版 ARC 图元： d = "M sx,sy A r,r 0 <largeArc> <sweep> ex,ey"
+        // 扫描方向与参考文件一致：Gerber G03（逆时针，角度为正）→ sweep-flag 0，G02 → 1。
+        const svgArcD = (sx, sy, ex, ey, r, sweepDeg) => {
+            // 容差：半圆的扫掠角由浮点运算得出，可能是 180.00000000000003，
+            // 直接用 > 180 会把半圆误判成优弧（large-arc=1）。
+            const largeArc = Math.abs(sweepDeg) > 180.0001 ? 1 : 0;
+            const sweepFlag = (sweepDeg > 0) ? 0 : 1;
+            return 'M' + stdX(sx) + ',' + stdY(sy) + ' A' + stdU(r) + ',' + stdU(r)
+                + ' 0 ' + largeArc + ' ' + sweepFlag + ' ' + stdX(ex) + ',' + stdY(ey);
+        };
+        for (let i = 0; i < tracks.length; i++) {
+            const t = tracks[i];
+            const layer = STD_LAYER(t.layerId);
+            const sw = stdU(t.width || 0.15);
+            const gid = nextGid();
+            if (t.type !== 'ARC') {
+                grow(stdX(t.x1), stdY(t.y1)); grow(stdX(t.x2), stdY(t.y2));
+                shapes.push(['TRACK', sw, layer, '', stdX(t.x1) + ' ' + stdY(t.y1) + ' ' + stdX(t.x2) + ' ' + stdY(t.y2), gid, 0].join('~'));
+                continue;
+            }
+            // 360° 整圆在提取阶段已拆成「两段对向的 180° 半圆」——
+            // 这里把它们重新合成标准版的 CIRCLE 图元（与 EDA 官方导出的形态一致）。
+            const nxt = tracks[i + 1];
+            const isHalf = Math.abs(Math.abs(t.angle) - 180) < 0.01;
+            const pairs = isHalf && nxt && nxt.type === 'ARC'
+                && Math.abs(nxt.angle - t.angle) < 0.01
+                && Math.abs(nxt.x1 - t.x2) < 1e-6 && Math.abs(nxt.y1 - t.y2) < 1e-6
+                && Math.abs(nxt.x2 - t.x1) < 1e-6 && Math.abs(nxt.y2 - t.y1) < 1e-6;
+            if (pairs) {
+                const cx = (t.x1 + t.x2) / 2, cy = (t.y1 + t.y2) / 2;
+                const r = Math.hypot(t.x2 - t.x1, t.y2 - t.y1) / 2;
+                grow(stdX(cx - r), stdY(cy)); grow(stdX(cx + r), stdY(cy));
+                shapes.push(['CIRCLE', stdX(cx), stdY(cy), stdU(r), sw, layer, gid, 0, '', ''].join('~'));
+                i++;   // 两段半圆已经合成一个整圆
+                continue;
+            }
+            const chord = Math.hypot(t.x2 - t.x1, t.y2 - t.y1);
+            const srad = (t.angle || 0) * Math.PI / 180;
+            if (chord < 1e-9 || Math.abs(Math.sin(srad / 2)) < 1e-9) {
+                // 退化圆弧（起点=终点又非整圆）：没有半径信息，按点处理跳过
+                grow(stdX(t.x1), stdY(t.y1));
+                continue;
+            }
+            const r = Math.abs(chord / (2 * Math.sin(srad / 2)));
+            grow(stdX(t.x1), stdY(t.y1)); grow(stdX(t.x2), stdY(t.y2));
+            shapes.push(['ARC', sw, layer, '', svgArcD(t.x1, t.y1, t.x2, t.y2, r, t.angle), '', gid, 0].join('~'));
+        }
+
+        // ---------- 4. 折线 / 覆铜 / 板框 ----------
+        (uni.polys || []).forEach(p => {
+            const pts = stdFlattenPath(p.path, 6);
+            if (pts.length < 2) return;
+            pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
+            if (p.layerId === 11) {
+                // 板框：标准版用 BoardOutLine 层上的闭合 TRACK 折线承载
+                shapes.push(['TRACK', stdU(p.width || 0.254), 10, '', stdPointStr(pts), nextGid(), 0].join('~'));
+            } else if (STD_IS_COPPER(p.layerId)) {
+                // 覆铜 → COPPERAREA（与画布渲染一致：实心铜）
+                shapes.push(stdCopperArea(stdU(p.width || 0.254), STD_LAYER(p.layerId), stdPathStr(pts, true), nextGid()));
+            } else {
+                // 其它层的折线（丝印/文档/机械的描边）保留为带线宽的 TRACK
+                shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), '', stdPointStr(pts), nextGid(), 0].join('~'));
+            }
+        });
+
+        // ---------- 5. 填充区域 ----------
+        (uni.fills || []).forEach(f => {
+            const pts = stdFlattenPath(f.path, 6);
+            if (pts.length < 3) return;
+            pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
+            if (STD_IS_COPPER(f.layerId)) {
+                shapes.push(stdCopperArea(stdU(0.254), STD_LAYER(f.layerId), stdPathStr(pts, true), nextGid()));
+            } else {
+                shapes.push(['SOLIDREGION', STD_LAYER(f.layerId), '', stdPathStr(pts, true), 'solid', nextGid(), '', '', '', 0].join('~'));
+            }
+        });
+
+        // ---------- 6. 图片（轮廓填充） ----------
+        (uni.images || []).forEach(img => {
+            const pts = stdFlattenPath(img.path, 6);
+            if (pts.length < 3) return;
+            pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
+            shapes.push(['SOLIDREGION', STD_LAYER(img.layerId), '', stdPathStr(pts, true), 'solid', nextGid(), '', '', '', 0].join('~'));
+        });
+
+        // 兜底：一个图元都没生成时，BBox 用原点，避免出现 Infinity
+        if (!isFinite(bx0)) { bx0 = STD_ORIGIN_X; bx1 = STD_ORIGIN_X; by0 = STD_ORIGIN_Y; by1 = STD_ORIGIN_Y; }
+
+        return {
+            head: {
+                docType: '3',
+                editorVersion: STD_EDITOR_VER,
+                newgId: true,
+                c_para: {},
+                x: STD_ORIGIN_X,
+                y: STD_ORIGIN_Y,
+                hasIdFlag: true
+            },
+            canvas: STD_CANVAS,
+            shape: shapes,
+            layers: STD_LAYERS,
+            objects: STD_OBJECTS,
+            BBox: {
+                x: stdNum(bx0),
+                y: stdNum(by0),
+                width: stdNum(bx1 - bx0),
+                height: stdNum(by1 - by0)
+            },
+            preference: { hideFootprints: '', hideNets: '' },
+            DRCRULE: STD_DRCRULE,
+            netColors: {}
+        };
+    }
+
+    // 目标：标准版 —— 生成并下载嘉立创EDA标准版 PCB 源码（.json）
     async function exportForStandard(config) {
-        // 待完善
-        alert('待后续更新');
+        if (!loadedFiles || loadedFiles.length === 0) {
+            alert('请先导入 Gerber 文件');
+            return;
+        }
+        try {
+            const doc = buildStandardSource();
+            if (!doc.shape.length) {
+                alert('没有可导出的图元，请检查已勾选的图层');
+                return;
+            }
+            const json = JSON.stringify(doc, null, 2);
+            const baseName = currentZipName || `${new Date().getTime()}`;
+            downloadBlobAsFile(new Blob([json], { type: 'application/json;charset=utf-8' }),
+                `Gerber_To_PCB_${baseName}.json`);
+
+            let nPad = 0, nVia = 0, nHole = 0, nTrack = 0, nArc = 0, nArea = 0, nSolid = 0;
+            doc.shape.forEach(s => {
+                const k = s.split('~')[0];
+                if (k === 'PAD') nPad++;
+                else if (k === 'VIA') nVia++;
+                else if (k === 'HOLE') nHole++;
+                else if (k === 'TRACK') nTrack++;
+                else if (k === 'ARC') nArc++;
+                else if (k === 'COPPERAREA') nArea++;
+                else if (k === 'SOLIDREGION') nSolid++;
+            });
+            appLog('-----------------------');
+            appLog('标准版源码生成完毕');
+            appLog(`焊盘 ${nPad} 个 / 过孔 ${nVia} 个 / 非金属化孔 ${nHole} 个`);
+            appLog(`导线 ${nTrack} 条 / 覆铜 ${nArea} 块 / 实心填充 ${nSolid} 块`);
+            appLog(`画布尺寸 ${doc.BBox.width} × ${doc.BBox.height} 单位（1 单位 = 10 mil）`);
+        } catch (e) {
+            console.error(e);
+            appLog(`标准版导出失败: ${e.message}`);
+            alert('标准版导出失败: ' + e.message);
+        }
     }
 
     // --- [新增] 手动生成 DEBUG 源码 ---

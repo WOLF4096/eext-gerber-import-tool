@@ -485,10 +485,13 @@
                         if (effMode === "IMAGE" || effMode === "TEXT") {
                             rawImages.push({ layerId, path: pathData, isRegion: true });
                         } else if (effMode === "POUR" || effMode === "COPPER") {
-                            // 覆铜：按需求用「折线闭合轮廓」承载。
-                            // createPolygon 会把首尾不重合的路径自动闭合成区域轮廓。
-                            // 覆铜只导入「闭合轮廓」，用细线描边即可；不能用上一个走线的光圈（最大 1.6mm）
-                            rawPolys.push({ layerId, width: 0.1, path: pathData, isPour: true });
+                            // 覆铜（无段标记来源：嘉立创EDA标准版 / KiCad / Altium / Eagle …）：
+                            // 生成「实心填充 (FILL)」，与画布上的渲染保持一致。
+                            // 【历史做法】曾把覆铜降级成 0.1mm 细线的「闭合折线轮廓」(POLY)，
+                            // 结果导入 EDA 后整块铜只剩一圈发丝线：画布上看得见铜、导入后铜
+                            // 却"没有"了 —— 属于图元类型错误。FILL 走的是与其它层区域填充
+                            // 完全相同的 createComplexPolygon 通道，已验证可用。
+                            rawFills.push({ layerId, path: pathData });
                         } else {
                             let targetLayer = layerId;
                             if (targetLayer === 56) targetLayer = 56; // 显式保留
@@ -516,7 +519,22 @@
                                     const endAngle = Math.atan2(targetY - centerY, targetX - centerX);
                                     let sweep = endAngle - startAngle;
                                     if (cmd.mode === 3) { if (sweep <= 0) sweep += 2 * Math.PI; } else { if (sweep >= 0) sweep -= 2 * Math.PI; }
-                                    rawTracks.push({ type: "ARC", layerId, x1: currX, y1: currY, x2: targetX, y2: targetY, angle: sweep * 180 / Math.PI, width: currentWidth });
+                                    // 【整圆修复】起点=终点的 360° 整圆弧（嘉立创EDA标准版导出的 CIRCLE
+                                    // 图元就是这样一条铜箔圆弧）。直接导出成 angle=360 的两点圆弧，
+                                    // EDA 侧无法还原（两点重合、方向未定义），整圆会丢失或画错。
+                                    // 拆成两段 180° 半圆，端点取圆心两侧的对称点，几何完全等价。
+                                    const radiusMM = Math.sqrt(cmd.i * cmd.i + cmd.j * cmd.j);
+                                    const isFullCircle = radiusMM > 1e-9
+                                        && Math.abs(targetX - currX) < 1e-6 && Math.abs(targetY - currY) < 1e-6;
+                                    if (isFullCircle) {
+                                        const dir = (cmd.mode === 3) ? 1 : -1;   // G03 逆时针为正
+                                        const px = centerX - radiusMM, py = centerY;
+                                        const qx = centerX + radiusMM, qy = centerY;
+                                        rawTracks.push({ type: "ARC", layerId, x1: px, y1: py, x2: qx, y2: qy, angle: 180 * dir, width: currentWidth });
+                                        rawTracks.push({ type: "ARC", layerId, x1: qx, y1: qy, x2: px, y2: py, angle: 180 * dir, width: currentWidth });
+                                    } else {
+                                        rawTracks.push({ type: "ARC", layerId, x1: currX, y1: currY, x2: targetX, y2: targetY, angle: sweep * 180 / Math.PI, width: currentWidth });
+                                    }
                                 }
                             }
                         }
@@ -739,9 +757,39 @@
             });
 
             // 3. 生成最终对象
+            // 焊盘的实际尺寸：普通焊盘直接取 w/h；**宏光圈多边形**（shape === 'POLYGON'，
+            // 例如嘉立创EDA标准版 / P-CAD 用 %AM 宏做出来的阻焊开窗）的 w/h 恒为 0，
+            // 真实尺寸只存在于 path 的包围盒里。旧实现只看 w/h，于是这类焊盘的
+            // 阻焊/助焊扩展被判为「无法计算」而整块丢掉 —— 导入 EDA 后焊盘被阻焊盖住。
+            const effWH = (prim) => {
+                if (!prim) return null;
+                let w = prim.w, h = prim.h;
+                if ((!(w > 0) || !(h > 0)) && prim.shape === 'POLYGON'
+                    && Array.isArray(prim.path) && prim.path.length) {
+                    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+                    prim.path.forEach(pt => {
+                        if (typeof pt.x !== 'number' || !isFinite(pt.x)) return;
+                        if (pt.x < minX) minX = pt.x;
+                        if (pt.x > maxX) maxX = pt.x;
+                        if (pt.y < minY) minY = pt.y;
+                        if (pt.y > maxY) maxY = pt.y;
+                    });
+                    if (isFinite(minX) && isFinite(maxX) && maxX > minX) { w = maxX - minX; h = maxY - minY; }
+                }
+                if (!(w > 0) || !(h > 0)) return null;
+                return { w: w, h: h };
+            };
             const unifiedPads = [];
             map.forEach(node => {
-                const calcExp = (mask, copper) => { if (!mask || !copper) return null; if (mask.w <= 0 || copper.w <= 0) return null; const mMin = Math.min(mask.w, mask.h); const cMin = Math.min(copper.w, copper.h); const exp = (mMin - cMin) / 2; if (exp > 1.0 || exp < -0.05) return null; if (Math.abs(exp) < 0.002) return 0; return exp; };
+                const calcExp = (mask, copper) => {
+                    const m = effWH(mask), c = effWH(copper);
+                    if (!m || !c) return null;
+                    const mMin = Math.min(m.w, m.h); const cMin = Math.min(c.w, c.h);
+                    const exp = (mMin - cMin) / 2;
+                    if (exp > 1.0 || exp < -0.05) return null;
+                    if (Math.abs(exp) < 0.002) return 0;
+                    return exp;
+                };
                 let innerRep = null; if (node.inners.length > 0) { innerRep = node.inners.reduce((prev, curr) => (curr.w < prev.w) ? curr : prev); innerRep = { ...innerRep }; }
                 // [修改] 增加 inners: node.inners，将所有内层数据透传
                 unifiedPads.push({ 

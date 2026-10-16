@@ -59,7 +59,8 @@
             document.getElementById('cfg-dec').value = 5;
             document.getElementById('cfg-d-int').value = 2;
             document.getElementById('cfg-d-dec').value = 4;
-            document.getElementById('cfg-source-type').value = 'other';
+            // 兜底模式已移除，重置为默认的处理模式（嘉立创EDA专业版）
+            document.getElementById('cfg-source-type').value = 'easyedapro';
             
             // 显式重置两个单位面板的 UI
             if (window.setUnitUI) {
