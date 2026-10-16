@@ -4,7 +4,7 @@
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>Gerber 查看 / 导入PCB画布 / 生成PCB文件 / 导出PDF文件（预览版）</title>
+	<title>Gerber 查看 / Gerber 转 PCB / 导出PDF文件</title>
 	<!-- 浏览器环境 -->
 	<!-- <script src="js/jszip.min.js"></script>
     <script src="js/jspdf.umd.min.js"></script> -->
@@ -13,9 +13,6 @@
 	<script src="/iframe/js/jspdf.umd.min.js"></script>
 	<!-- Clipper：整数坐标多边形布尔运算（负片转正片要算「外环 − 挖空并集」）。Boost Software License -->
 	<script src="/iframe/js/clipper.js"></script>
-	<!-- 单文件使用 -->
-	<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script> -->
-	<!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script> -->
 
 	<link rel="stylesheet" href="/iframe/css/style.css">
 </head>
@@ -191,11 +188,13 @@
 
 			<div
 				style="padding: 10px 15px; font-size: 12px; line-height: 1.5; color: #999; border-bottom: 1px solid #333;">
-				<div style="color: #ff9800; font-weight: bold; margin-bottom: 4px;">⚠️ 当前为预览版本，非最终版本</div>
+				<div style="color: #ff9800; font-weight: bold; margin-bottom: 4px;">⚠️ 本工具非 EDA 官方工具，由 <a
+						style="color: #ff9800; font-weight: bold; margin-bottom: 4px;"
+						href="https://github.com/WOLF4096" target="_blank">WOLF4096</a> 开发</div>
 				<ul style="margin: 0; padding-left: 16px; color: #ccc;">
-					<li>画布渲染 ≠ 导入效果，不能保证100%准确</li>
-					<!-- <li>必须在 <strong>空白 PCB 文档</strong> 中使用，导出结果请核对后再使用</li> -->
-					<!-- <li>大文件 / 图元过多时，建议 <strong>导出文件</strong> 后手动导入，避免卡顿</li> -->
+					<li>渲染画面 ≠ 导入效果，不能保证100%准确</li>
+					<li>生成网络功能，不能保证100%准确</li>
+					<li>使用前请阅读《用户协议与免责声明》</li>
 				</ul>
 			</div>
 
@@ -207,24 +206,19 @@
 						<span style="font-size: 12px; margin-right: 8px; white-space: nowrap;">处理模式:</span>
 						<select id="cfg-source-type" class="layer-select"
 							style="width: 232px; height: 26px; border-radius: 3px; cursor: pointer; padding-left: 4px;">
-							<!-- <optgroup label="内部标准"> -->
-							<option value="easyedapro" selected>嘉立创 EDA 专业版</option>
-							<!-- </optgroup> -->
-							<!-- <optgroup label="行业标准"> -->
+							<option value="easyedapro" selected>嘉立创 EDA 专业版 v2.2+</option>
 							<option value="rs274x">RS-274X（通用）</option>
-							<!-- </optgroup> -->
 						</select>
 					</div>
 
-					<label id="generatenet"
-						style="display: flex; align-items: center; justify-content: flex-start; cursor: pointer; height: 26px; width: 110px; background-color: #3c3c3c; border: 1px solid #555; border-radius: 3px; user-select: none; padding-left: 8px; box-sizing: border-box;">
-						<input type="checkbox" id="cfg-netlist" style="margin: 0 6px 0 0; cursor: pointer;" checked>
-						<span style="font-size: 12px; color: #ccc; white-space: nowrap;">尝试生成网络</span>
-					</label>
 				</div>
 
-				<!-- 用户协议确认：勾选后下方的导入 / 导出嘉立创EDA 按钮才可用；点击文字查看条款 -->
-				<div id="agree-row" class="agree-row" title="勾选后方可导入 / 导出">
+				<!-- 网络生成：勾选后导入 / 导出时按铜层连通性为图元分配网络名 -->
+				<div id="agree-row" class="agree-row">
+					<input type="checkbox" id="cfg-netlist" checked>
+					<span>尝试生成网络</span>
+
+					<!-- 用户协议确认：勾选后下方的导入 / 导出嘉立创EDA 按钮才可用；点击文字查看条款 -->
 					<input type="checkbox" id="cfg-agree" onchange="onAgreementChange(this.checked)">
 					<span class="agree-link" onclick="showDisclaimer()">《用户协议与免责声明》</span>
 				</div>

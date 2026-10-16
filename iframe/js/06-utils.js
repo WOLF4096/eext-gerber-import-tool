@@ -1046,5 +1046,535 @@
         return keep.length ? keep.join('.') : String(v);
     }
 
+    // ====================================================================================
+    // 物理网络生成（连通分量分析）
+    // ------------------------------------------------------------------------------------
+    // 移植自「狼黑工具 · 物理网络生成」（Temp/生成网络/GenerateNet.html）的逻辑：
+    //   ① 取铜层图元（焊盘 / 过孔 / 导线 / 圆弧 / 折线 / 填充），建空间网格加速求候选对；
+    //   ② 逐对做几何连通判定（折线用「边相交 + 相互包含」；非异形焊盘按最短边内切圆保守处理）；
+    //   ③ 并查集求连通分量；每个分量定一个网络名：
+    //        · 分量内已有网络名（**优先来自飞针文件的 NET_NAME**）→ 沿用（飞针名 > 真实名 > 通用 NET\d+）
+    //        · 一个都没有 → 分配未被占用的 "NET{n}"
+    //   ④ 把网络名回填到该分量内的每个图元。
+    // 与参考实现的差异：本工具坐标单位是 mm（参考实现是 mil），故网格尺寸/容差按 mm 取值。
+    // ====================================================================================
+
+    /** 铜层判定：顶层(1) / 底层(2) / 多层(12) / 内层(15~46) */
+    function netIsCopperLayer(id) {
+        return id === 1 || id === 2 || id === 12 || (id >= 15 && id <= 46);
+    }
+
+    /** 叠层顺序：顶层(1) + 内层(升序) + 底层(2) */
+    function netStackIds(innerLayerIds) {
+        const uniq = [...new Set((innerLayerIds || []).filter(n => n >= 15 && n <= 46))].sort((a, b) => a - b);
+        return [1, ...uniq, 2];
+    }
+
+    /** 把埋盲孔的物理层序号区间（如 1-3）换算成真实层 ID 数组 */
+    function netRangeLayers(startIdx, endIdx, stackIds) {
+        let s = parseInt(startIdx, 10);
+        let e = parseInt(endIdx, 10);
+        if (!isFinite(s) || !isFinite(e)) return null;
+        if (s < 1) s = 1;
+        if (e > stackIds.length) e = stackIds.length;
+        const out = [];
+        for (let i = s; i <= e; i++) {
+            const id = stackIds[i - 1];
+            if (id !== undefined) out.push(id);
+        }
+        return out.length ? out : null;
+    }
+
+    /** 路径操作数组 → 顶点数组（去重相邻点，并丢掉与首点重合的收尾点） */
+    function netPathToVertices(path) {
+        const pts = [];
+        (path || []).forEach(op => {
+            if (!op || typeof op.x !== 'number' || !isFinite(op.x)) return;
+            if (typeof op.y !== 'number' || !isFinite(op.y)) return;
+            const q = pts[pts.length - 1];
+            if (q && Math.abs(q.x - op.x) < 1e-9 && Math.abs(q.y - op.y) < 1e-9) return;
+            pts.push({ x: op.x, y: op.y });
+        });
+        while (pts.length > 1) {
+            const a = pts[0], b = pts[pts.length - 1];
+            if (Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9) pts.pop();
+            else break;
+        }
+        return pts;
+    }
+
+    /**
+     * 焊盘的真实外形轮廓（mm）。圆形不在这里（由 shape:'ROUND' 走精确距离判定）。
+     * 矩形按旋转角取四角；长圆（Oval）按胶囊采样；异形（Polygon）取原路径。
+     * @returns {Array<{x,y}>|null} 顶点数组（首尾不重复）
+     */
+    function netPadOutline(prim) {
+        if (!prim) return null;
+        if (prim.shape === 'POLYGON' && Array.isArray(prim.path)) {
+            const v = netPathToVertices(prim.path);
+            return v.length >= 3 ? v : null;
+        }
+        const w = prim.w, h = prim.h;
+        if (!(w > 0) || !(h > 0)) return null;
+        const rot = (prim.rotation || 0) * Math.PI / 180;
+        const ux = Math.cos(rot), uy = Math.sin(rot);   // w 的朝向
+        const vx = -uy, vy = ux;                        // h 的朝向
+        const at = (a, b) => ({ x: prim.x + a * ux + b * vx, y: prim.y + a * uy + b * vy });
+        if (prim.shape === 'RECT') {
+            const hw = w / 2, hh = h / 2;
+            return [at(hw, hh), at(-hw, hh), at(-hw, -hh), at(hw, -hh)];
+        }
+        // OVAL 等：胶囊（长边 = max(w,h)，两端半圆半径 = min(w,h)/2）
+        const long = Math.max(w, h), short = Math.min(w, h);
+        const r = short / 2, d = (long - short) / 2;
+        const e1x = (w >= h) ? ux : vx, e1y = (w >= h) ? uy : vy;   // 长轴单位向量
+        const e2x = -e1y, e2y = e1x;
+        const pts = [];
+        const N = 8;
+        for (let i = 0; i <= N; i++) {
+            const t = -Math.PI / 2 + Math.PI * (i / N);
+            pts.push({ x: prim.x + e1x * d + r * (Math.cos(t) * e1x + Math.sin(t) * e2x), y: prim.y + e1y * d + r * (Math.cos(t) * e1y + Math.sin(t) * e2y) });
+        }
+        for (let i = 1; i < N; i++) {
+            const t = Math.PI / 2 + Math.PI * (i / N);
+            pts.push({ x: prim.x - e1x * d + r * (Math.cos(t) * e1x + Math.sin(t) * e2x), y: prim.y - e1y * d + r * (Math.cos(t) * e1y + Math.sin(t) * e2y) });
+        }
+        return pts;
+    }
+
+    // --- 几何基元 ---
+    function netDistPointSeg2(px, py, x1, y1, x2, y2) {
+        const l2 = (x2 - x1) ** 2 + (y2 - y1) ** 2;
+        if (l2 === 0) return (px - x1) ** 2 + (py - y1) ** 2;
+        let t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / l2;
+        t = Math.max(0, Math.min(1, t));
+        return (px - (x1 + t * (x2 - x1))) ** 2 + (py - (y1 + t * (y2 - y1))) ** 2;
+    }
+
+    function netSegmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+        const cross = (x1, y1, x2, y2, x3, y3) => (x2 - x1) * (y3 - y1) - (y2 - y1) * (x3 - x1);
+        const d1 = cross(ax, ay, bx, by, cx, cy);
+        const d2 = cross(ax, ay, bx, by, dx, dy);
+        const d3 = cross(cx, cy, dx, dy, ax, ay);
+        const d4 = cross(cx, cy, dx, dy, bx, by);
+        return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
+    }
+
+    function netPointInPoly(px, py, vertices) {
+        let inside = false;
+        for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
+            const xi = vertices[i].x, yi = vertices[i].y;
+            const xj = vertices[j].x, yj = vertices[j].y;
+            if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+        }
+        return inside;
+    }
+
+    function netPointInRect(x, y, r) {
+        return Math.abs(x - r.x) <= r.w / 2 && Math.abs(y - r.y) <= r.h / 2;
+    }
+
+    function netLineHitRect(x1, y1, x2, y2, r) {
+        const l = r.x - r.w / 2, rr = r.x + r.w / 2, t = r.y - r.h / 2, b = r.y + r.h / 2;
+        if (netPointInRect(x1, y1, r) || netPointInRect(x2, y2, r)) return true;
+        return netSegmentsIntersect(x1, y1, x2, y2, l, t, rr, t) ||
+            netSegmentsIntersect(x1, y1, x2, y2, l, b, rr, b) ||
+            netSegmentsIntersect(x1, y1, x2, y2, l, t, l, b) ||
+            netSegmentsIntersect(x1, y1, x2, y2, rr, t, rr, b);
+    }
+
+    /** 图元的边列表（折线取相邻顶点，线段取自身，圆取内接正十二边形，矩形取包围盒四边） */
+    function netShapeEdges(p) {
+        if (p._edges) return p._edges;
+        const out = [];
+        if (p.shape === 'POLY' && p.vertices && p.vertices.length) {
+            const v = p.vertices;
+            for (let i = 0; i < v.length; i++) {
+                const a = v[i], b = v[(i + 1) % v.length];
+                out.push([a.x, a.y, b.x, b.y]);
+            }
+        } else if (p.shape === 'line') {
+            out.push([p.x1, p.y1, p.x2, p.y2]);
+        } else if (p.shape === 'ROUND') {
+            // ⚠️ 圆形**不能**用「包围盒四边」近似：方角在对角方向比真实半径远 √2 倍，
+            // 会把「圆心距区域边界 1.27mm、半径仅 0.955mm」的焊盘判成与覆铜相接
+            // （实测：GND 覆铜因此被"焊"到 GPIO0 的大焊盘上，整板被并成一个网络，
+            //   最后按"最短名优先"被命名成 DP）。改成内接正十二边形，顶点严格落在圆周上。
+            const r = p.r || 0;
+            const N = 12;
+            for (let i = 0; i < N; i++) {
+                const a1 = (i / N) * Math.PI * 2;
+                const a2 = ((i + 1) / N) * Math.PI * 2;
+                out.push([
+                    p.x + r * Math.cos(a1), p.y + r * Math.sin(a1),
+                    p.x + r * Math.cos(a2), p.y + r * Math.sin(a2)
+                ]);
+            }
+        } else {
+            const hw = (p.w || 0) / 2, hh = (p.h || 0) / 2;
+            const l = p.x - hw, r = p.x + hw, t = p.y - hh, b = p.y + hh;
+            out.push([l, t, r, t], [r, t, r, b], [r, b, l, b], [l, b, l, t]);
+        }
+        p._edges = out;
+        return out;
+    }
+
+    function netBBox(p) {
+        if (p._bbox) return p._bbox;
+        let bb;
+        if (p.shape === 'line') {
+            const r = (p.w || 0) / 2;
+            bb = {
+                x0: Math.min(p.x1, p.x2) - r, x1: Math.max(p.x1, p.x2) + r,
+                y0: Math.min(p.y1, p.y2) - r, y1: Math.max(p.y1, p.y2) + r
+            };
+        } else if (p.shape === 'POLY' && p.vertices && p.vertices.length) {
+            let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+            p.vertices.forEach(v => {
+                if (v.x < x0) x0 = v.x; if (v.x > x1) x1 = v.x;
+                if (v.y < y0) y0 = v.y; if (v.y > y1) y1 = v.y;
+            });
+            bb = { x0, x1, y0, y1 };
+        } else {
+            const hw = (p.w || 0) / 2, hh = (p.h || 0) / 2;
+            bb = { x0: p.x - hw, x1: p.x + hw, y0: p.y - hh, y1: p.y + hh };
+        }
+        p._bbox = bb;
+        return bb;
+    }
+
+    /** 两层是否有公共铜层（'ALL' = 多层/通孔，与任意铜层相连） */
+    function netLayersConnected(a, b) {
+        if (a.layers === 'ALL' || b.layers === 'ALL') return true;
+        for (let i = 0; i < a.layers.length; i++) {
+            if (b.layers.indexOf(a.layers[i]) !== -1) return true;
+        }
+        return false;
+    }
+
+    function netLinesTouching(a, b) {
+        const lim = ((a.w || 0) + (b.w || 0)) / 2;
+        const lim2 = lim * lim;
+        if (netDistPointSeg2(a.x1, a.y1, b.x1, b.y1, b.x2, b.y2) <= lim2) return true;
+        if (netDistPointSeg2(a.x2, a.y2, b.x1, b.y1, b.x2, b.y2) <= lim2) return true;
+        if (netDistPointSeg2(b.x1, b.y1, a.x1, a.y1, a.x2, a.y2) <= lim2) return true;
+        if (netDistPointSeg2(b.x2, b.y2, a.x1, a.y1, a.x2, a.y2) <= lim2) return true;
+        return netSegmentsIntersect(a.x1, a.y1, a.x2, a.y2, b.x1, b.y1, b.x2, b.y2);
+    }
+
+    /** 两个图元是否电气连通（对应参考实现的 checkConnectivityHighPrecision） */
+    function netConnected(a, b) {
+        if (!netLayersConnected(a, b)) return false;
+        // 先做包围盒粗筛（便宜且绝不会漏判：真正相接的图元包围盒必然相交）
+        const ba = netBBox(a), bb = netBBox(b);
+        if (ba.x1 < bb.x0 || bb.x1 < ba.x0 || ba.y1 < bb.y0 || bb.y1 < ba.y0) return false;
+
+        const aPoly = a.shape === 'POLY' && a.vertices && a.vertices.length >= 3;
+        const bPoly = b.shape === 'POLY' && b.vertices && b.vertices.length >= 3;
+        if (aPoly || bPoly) {
+            const poly = aPoly ? a : b;
+            const other = aPoly ? b : a;
+            // ① 边相交（其它图元一律用包围盒四边 / 线段近似）
+            const eA = netShapeEdges(poly);
+            const eB = netShapeEdges(other);
+            for (let i = 0; i < eA.length; i++) {
+                for (let j = 0; j < eB.length; j++) {
+                    const la = eA[i], lb = eB[j];
+                    if (netSegmentsIntersect(la[0], la[1], la[2], la[3], lb[0], lb[1], lb[2], lb[3])) return true;
+                }
+            }
+            // ② 对方落在本多边形内（折线判各顶点；线段判两端点；其它形状只看中心点）
+            if (other.vertices && other.vertices.length) {
+                for (const v of other.vertices) if (netPointInPoly(v.x, v.y, poly.vertices)) return true;
+            } else if (other.shape === 'line') {
+                if (netPointInPoly(other.x1, other.y1, poly.vertices)) return true;
+                if (netPointInPoly(other.x2, other.y2, poly.vertices)) return true;
+                // 线段端点「停在多边形边界上」也要算相接：严格相交判定对共线/相切返回 false，
+                // 会让导线连不上焊盘（同一网络被拆成孤岛 → 导入后出现飞线）。
+                const lim2 = (((other.w || 0) / 2) ** 2);
+                for (const v of poly.vertices) {
+                    if (netDistPointSeg2(v.x, v.y, other.x1, other.y1, other.x2, other.y2) <= lim2) return true;
+                }
+            } else if (netPointInPoly(other.x, other.y, poly.vertices)) return true;
+            // ③ 反向包含
+            if (other.vertices && other.vertices.length) {
+                for (const v of poly.vertices) if (netPointInPoly(v.x, v.y, other.vertices)) return true;
+            } else if (other.shape === 'RECT') {
+                for (const v of poly.vertices) if (netPointInRect(v.x, v.y, other)) return true;
+            }
+            return false;
+        }
+        if (a.shape === 'line' && b.shape === 'line') return netLinesTouching(a, b);
+        let n = null, r = null;
+        if (a.shape === 'line') { n = a; r = b; } else if (b.shape === 'line') { n = b; r = a; }
+        if (n && r) {
+            if (r.shape === 'ROUND') {
+                const lim = (r.r || 0) + (n.w || 0) / 2;
+                return netDistPointSeg2(r.x, r.y, n.x1, n.y1, n.x2, n.y2) <= lim * lim;
+            }
+            if (r.shape === 'RECT') {
+                const e = (n.w || 0) / 2 + 0.1;
+                return netLineHitRect(n.x1, n.y1, n.x2, n.y2, { x: r.x, y: r.y, w: (r.w || 0) + 2 * e, h: (r.h || 0) + 2 * e });
+            }
+        }
+        if (a.shape === 'ROUND' && b.shape === 'ROUND') {
+            const dx = a.x - b.x, dy = a.y - b.y, lim = (a.r || 0) + (b.r || 0);
+            return dx * dx + dy * dy < lim * lim;
+        }
+        return Math.abs(a.x - b.x) < ((a.w || 0) + (b.w || 0)) / 2 && Math.abs(a.y - b.y) < ((a.h || 0) + (b.h || 0)) / 2;
+    }
+
+    /**
+     * 把 consolidate 的统一数据拍平成「连通性图元」列表（只保留铜层图元）。
+     * @param {object} data { unifiedPads, remainingVias, tracks, polys, fills }
+     * @param {object} opts { padNet:Map<pad,string>, innerCopperLayers:number[] }
+     */
+    function netBuildPrims(data, opts) {
+        const o = opts || {};
+        const d = data || {};
+        const stackIds = netStackIds(o.innerCopperLayers);
+        const prims = [];
+
+        (d.unifiedPads || []).forEach((pad, i) => {
+            const prims0 = [pad.top, pad.bottom, pad.innerRep].filter(Boolean).concat(pad.inners || []);
+            if (!prims0.length) return;
+            let layers;
+            if (pad.drill) {
+                // 通孔 → 连接所有铜层；埋盲孔 → 只连层对区间
+                layers = (pad.drill.pairStart && pad.drill.pairEnd)
+                    ? (netRangeLayers(pad.drill.pairStart, pad.drill.pairEnd, stackIds) || 'ALL') : 'ALL';
+            } else {
+                layers = [...new Set(prims0.map(x => x.layerId).filter(netIsCopperLayer))];
+                if (!layers.length) return;
+            }
+            // 焊盘外形：圆形 → 精确圆判定；矩形 / 长圆 / 异形 → **真实轮廓多边形**。
+            // ⚠️ 参考实现「一律按最短边内切圆」会把矩形焊盘算小，导致「导线明明连在焊盘上
+            // 却判为不相接」→ 同一网络被拆成多个孤岛 → 导入 EDA 后出现飞线。
+            const prim0 = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
+            const seed = (o.padNet && o.padNet.get(pad)) || '';
+            const isCircle = !prim0 || /ELLIPSE|CIRCLE/i.test(String(prim0.shape || ''));
+            if (isCircle) {
+                let w = Infinity, h = Infinity;
+                prims0.forEach(x => {
+                    if (x.w > 0) w = Math.min(w, x.w);
+                    if (x.h > 0) h = Math.min(h, x.h);
+                });
+                if (!isFinite(w) || !isFinite(h)) return;
+                prims.push({
+                    id: 'P' + i, src: pad, layers, shape: 'ROUND',
+                    x: pad.x, y: pad.y, w, h, r: Math.min(w, h) / 2, net: seed, isFlying: !!seed
+                });
+                return;
+            }
+            const verts = netPadOutline(prim0);
+            if (!verts || verts.length < 3) return;
+            prims.push({ id: 'P' + i, src: pad, layers, shape: 'POLY', vertices: verts, net: seed, isFlying: !!seed });
+        });
+
+        (d.remainingVias || []).forEach((v, i) => {
+            const dia = (v.padDia > 0) ? v.padDia : v.dia;
+            if (!(dia > 0)) return;
+            const layers = (v.pairStart && v.pairEnd)
+                ? (netRangeLayers(v.pairStart, v.pairEnd, stackIds) || 'ALL') : 'ALL';
+            prims.push({
+                id: 'V' + i, src: v, layers, shape: 'ROUND',
+                x: v.x, y: v.y, w: dia, h: dia, r: dia / 2, net: '', isFlying: false
+            });
+        });
+
+        (d.tracks || []).forEach((t, i) => {
+            if (!netIsCopperLayer(t.layerId)) return;
+            if (!isFinite(t.x1) || !isFinite(t.y1) || !isFinite(t.x2) || !isFinite(t.y2)) return;
+            const w = (t.width > 0) ? t.width : 0.15;
+            const layers = [t.layerId];
+            // 圆弧**不能**只取弦：弦离真实弧最远可差一个矢高（90° 弧 ≈ 0.29r），
+            // 会造成「明明相邻却判不相接 / 明明隔开却判相接」。这里按 ≤22.5° 折线离散，
+            // 多个子段共用同一个 src，回填网络时仍映射回原导线对象。
+            if (t.type === 'ARC' && isFinite(t.angle) && Math.abs(t.angle) > 1e-6) {
+                const ch = Math.hypot(t.x2 - t.x1, t.y2 - t.y1);
+                let th = Math.min(Math.abs(t.angle) * Math.PI / 180, Math.PI * 2);
+                if (ch < 1e-9 || th < 1e-9) {
+                    prims.push({ id: 'T' + i, src: t, layers, shape: 'line', x1: t.x1, y1: t.y1, x2: t.x2, y2: t.y2, w, net: '', isFlying: false });
+                    return;
+                }
+                const r = ch / (2 * Math.sin(th / 2));
+                const mx = (t.x1 + t.x2) / 2, my = (t.y1 + t.y2) / 2;
+                const nx = -(t.y2 - t.y1) / ch, ny = (t.x2 - t.x1) / ch;
+                const h = Math.sqrt(Math.max(0, r * r - (ch / 2) * (ch / 2)));
+                const sign = (t.angle >= 0) ? 1 : -1;      // 正角 = 逆时针，圆心在弦左侧
+                const cx = mx + nx * h * sign, cy = my + ny * h * sign;
+                const a0 = Math.atan2(t.y1 - cy, t.x1 - cx);
+                const sweep = sign * th;
+                const N = Math.max(2, Math.min(12, Math.ceil(Math.abs(sweep) / (Math.PI / 8))));
+                let px = t.x1, py = t.y1;
+                for (let k = 1; k <= N; k++) {
+                    const a = a0 + sweep * (k / N);
+                    const qx = cx + r * Math.cos(a), qy = cy + r * Math.sin(a);
+                    prims.push({ id: 'T' + i + '_' + k, src: t, layers, shape: 'line', x1: px, y1: py, x2: qx, y2: qy, w, net: '', isFlying: false });
+                    px = qx; py = qy;
+                }
+                return;
+            }
+            prims.push({
+                id: 'T' + i, src: t, layers, shape: 'line',
+                x1: t.x1, y1: t.y1, x2: t.x2, y2: t.y2, w, net: '', isFlying: false
+            });
+        });
+
+        const addPolygon = (arr, prefix, key) => {
+            (arr || []).forEach((p, i) => {
+                if (!netIsCopperLayer(p.layerId)) return;
+                const v = netPathToVertices(p.path);
+                if (v.length < 3) return;
+                prims.push({
+                    id: prefix + i, src: p, layers: [p.layerId], shape: 'POLY',
+                    vertices: v, net: '', isFlying: false
+                });
+            });
+        };
+        addPolygon(d.polys, 'Y');
+        addPolygon(d.fills, 'F');
+
+        return prims;
+    }
+
+    /** 简单并查集（按网络字符串 id 合并） */
+    function netUnionFind() {
+        const parent = {};
+        const find = (id) => {
+            if (parent[id] === undefined) parent[id] = id;
+            if (parent[id] !== id) parent[id] = find(parent[id]);
+            return parent[id];
+        };
+        return { find, union(a, b) { const x = find(a), y = find(b); if (x !== y) parent[x] = y; } };
+    }
+
+    /**
+     * 生成网络分配表。
+     * @param {object} data { unifiedPads, remainingVias, tracks, polys, fills }
+     * @param {object} opts { padNet:Map<pad,string>, innerCopperLayers:number[] }
+     * @returns {{netOf:Map<object,string>, stats:object}} netOf 以「原始图元对象」为键
+     */
+    function buildNetAssignments(data, opts) {
+        const prims = netBuildPrims(data, opts || {});
+        const stats = { prims: prims.length, clusters: 0, named: 0, generated: 0, reused: 0, mixedClusters: 0, ambiguousClusters: 0, rejectedMerges: 0 };
+        const netOf = new Map();
+        if (!prims.length) return { netOf, stats };
+
+        // ① 空间网格求候选对（网格 5mm，另加 1mm 余量；坐标单位是 mm）
+        const GRID = 5, PAD = 1;
+        const grid = {};
+        prims.forEach(p => {
+            const bb = netBBox(p);
+            const x0 = Math.floor((bb.x0 - PAD) / GRID), x1 = Math.floor((bb.x1 + PAD) / GRID);
+            const y0 = Math.floor((bb.y0 - PAD) / GRID), y1 = Math.floor((bb.y1 + PAD) / GRID);
+            for (let x = x0; x <= x1; x++) {
+                for (let y = y0; y <= y1; y++) {
+                    const k = x + ',' + y;
+                    (grid[k] || (grid[k] = [])).push(p);
+                }
+            }
+        });
+
+        // ② 并查集
+        const uf = netUnionFind();
+        const seen = new Set();
+
+        // 「已知网络」是不可违背的证据（来自飞针文件的 NET_NAME），绝不允许把两个已经带有
+        // **不同**已知网络的分量并成一块 —— 那一定是几何判定的假象。实测：某板 GND 走线与
+        // GPIO7 走线的中心线只差 0.0877mm，而「线宽和」判据（(0.127+0.148)/2 = 0.1376）就
+        // 判成相接 → 整板 35 个网络被并成一个分量 → 覆铜被命名成 DP。
+        const labelsOf = {};
+        prims.forEach(p => {
+            const r = uf.find(p.id);
+            if (p.net) (labelsOf[r] || (labelsOf[r] = new Set())).add(p.net);
+        });
+        const tryUnion = (a, b) => {
+            const ra = uf.find(a.id), rb = uf.find(b.id);
+            if (ra === rb) return false;
+            const la = labelsOf[ra], lb = labelsOf[rb];
+            if (la && lb) {
+                let same = false;
+                for (const n of la) { if (lb.has(n)) { same = true; break; } }
+                if (!same) { stats.rejectedMerges++; return false; }
+            }
+            uf.union(a.id, b.id);
+            const nr = uf.find(ra);
+            const merged = new Set();
+            if (la) la.forEach(n => merged.add(n));
+            if (lb) lb.forEach(n => merged.add(n));
+            delete labelsOf[ra];
+            delete labelsOf[rb];
+            if (merged.size) labelsOf[nr] = merged;
+            return true;
+        };
+
+        for (const k in grid) {
+            const cell = grid[k];
+            for (let i = 0; i < cell.length; i++) {
+                for (let j = i + 1; j < cell.length; j++) {
+                    const a = cell[i], b = cell[j];
+                    const pair = a.id < b.id ? a.id + '|' + b.id : b.id + '|' + a.id;
+                    if (seen.has(pair)) continue;
+                    seen.add(pair);
+                    if (netConnected(a, b)) tryUnion(a, b);
+                }
+            }
+        }
+
+        // ③ 分量 → 网络名
+        const clusters = {};
+        prims.forEach(p => { const root = uf.find(p.id); (clusters[root] || (clusters[root] = [])).push(p); });
+
+        const used = new Set();
+        prims.forEach(p => { if (p.net) used.add(p.net); });
+        const isGenericNet = (n) => /^NET\d+$/i.test(n);
+        let counter = 1;
+
+        for (const root in clusters) {
+            const group = clusters[root];
+            const votes = new Map();   // 网络名 → 票数（该分量内携带此名的图元数）
+            const flying = new Set();  // 该网络名是否来自飞针文件
+            group.forEach(p => {
+                if (!p.net || p.net === 'null' || p.net === 'undefined') return;
+                votes.set(p.net, (votes.get(p.net) || 0) + 1);
+                if (p.isFlying) flying.add(p.net);
+            });
+            // 与参考实现一致：单图元分量不分配网络；但**带飞针网络名**的单个图元要保留
+            if (group.length < 2 && !votes.size) continue;
+            stats.clusters++;
+
+            let target;
+            if (votes.size) {
+                if (votes.size > 1) stats.mixedClusters++;
+                // ⚠️ 必须按「票数」定名，**不能按名字长短**：分量里常混进少量被误连的异物
+                // （实测：GND 覆铜被误连了 1 个 DP 焊盘，按"最短名优先"整块被报成 DP）。
+                // 参考实现用的 `a.length - b.length` 就是这条错误规则。
+                // 排序：① 票数多者优先（物理证据最强）② 飞针提供的名字优先
+                //       ③ 真实名优先于通用 NET* ④ 名字短 ⑤ 字典序（保证结果稳定）
+                target = [...votes.keys()].sort((x, y) => {
+                    if (votes.get(x) !== votes.get(y)) return votes.get(y) - votes.get(x);
+                    const gx = (flying.has(x) ? 0 : 1) * 2 + (isGenericNet(x) ? 1 : 0);
+                    const gy = (flying.has(y) ? 0 : 1) * 2 + (isGenericNet(y) ? 1 : 0);
+                    if (gx !== gy) return gx - gy;
+                    if (x.length !== y.length) return x.length - y.length;
+                    return x < y ? -1 : (x > y ? 1 : 0);
+                })[0];
+                const top = votes.get(target);
+                if (top * 2 < group.filter(p => p.net).length) stats.ambiguousClusters++;
+                stats.reused++;
+            } else {
+                while (used.has('NET' + counter)) counter++;
+                target = 'NET' + counter;
+                used.add(target);
+                counter++;
+                stats.generated++;
+            }
+            stats.named++;
+            group.forEach(p => netOf.set(p.src, target));
+        }
+        return { netOf, stats };
+    }
+
 
 

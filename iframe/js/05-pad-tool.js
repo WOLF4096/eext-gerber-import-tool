@@ -1117,6 +1117,37 @@
                 console.log(`已加载 ${flyIndex.pins.length} 个飞针引脚用于匹配`);
             }
 
+            // --- 物理网络生成（勾选「生成网络」时生效）--------------------------------
+            // 对铜层图元做连通分量分析，给每个图元分配网络名；**有飞针文件时优先沿用其
+            // NET_NAME**（飞针网络名 > 其余已有名 > 新分配的 NET{n}）。算法见 06-utils.js
+            // 的 buildNetAssignments（移植自 Temp/生成网络/GenerateNet.html）。
+            let netOf = null;
+            if (config && config.tryNetlist) {
+                try {
+                    const padNet = new Map();
+                    if (hasNetlist) {
+                        unifiedPads.forEach(p => {
+                            const p0 = p.top || p.bottom || p.innerRep || (p.inners && p.inners[0]);
+                            const m = flyingPinAt(flyIndex, p.x, p.y, padMatchBoxMM(p0));
+                            if (m && m.net) padNet.set(p, String(m.net));
+                        });
+                    }
+                    const innerCopper = [...new Set(loadedFiles.map(f => f.layerId).filter(id => id >= 15 && id <= 46))];
+                    const res = buildNetAssignments(data, { padNet, innerCopperLayers: innerCopper });
+                    netOf = res.netOf;
+                    const st = res.stats;
+                    console.log(`物理网络：铜层图元 ${st.prims} → 连通分量 ${st.clusters}`
+                        + `（沿用已有网络名 ${st.reused} 个 / 新分配 NET 名 ${st.generated} 个 / 共命名 ${st.named}）`
+                        + (padNet.size ? `，其中 ${padNet.size} 个焊盘来自飞针文件` : ''));
+                    appLog(`生成网络：连通分量 ${st.clusters} 个（沿用飞针/已有名 ${st.reused}，新分配 ${st.generated}）`);
+                } catch (e) {
+                    console.error('物理网络生成失败：', e);
+                    netOf = null;
+                }
+            }
+            /** 取图元对应的网络名（未生成网络时恒为空串） */
+            const netNameOf = (obj) => (netOf && obj) ? (netOf.get(obj) || '') : '';
+
             const getCornerObj = (prim) => {
                 if (prim && prim.shape === 'RECT' && prim.radiusRatio > 0) return ["ROUND", prim.radiusRatio, prim.radiusRatio];
                 return null;
@@ -1186,12 +1217,14 @@
                     const prim0 = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
                     const match = flyingPinAt(flyIndex, pad.x, pad.y, padMatchBoxMM(prim0));
                     if (match && !match.isPadOnly) {
-                        netName = ""; //当前版本暂不生成网络
+                        netName = match.net ? String(match.net) : ""; // 飞针文件的 NET_NAME 优先
                         pinNumber = match.num || "1";
                         const cName = match.comp;
                         if (cName && compCounts[cName] > 1) groupId = cName;
                     }
                 }
+                // 没有飞针网络名时，用连通分量算出来的网络
+                if (!netName) netName = netNameOf(pad);
 
                 const targets = [];
                 
@@ -1570,7 +1603,7 @@
                         const content = { 
                             "partitionId": "", 
                             "groupId": 0, 
-                            "netName": "", 
+                            "netName": netNameOf(v), 
                             "layerId": 12,      // 12 = Multi-Layer
                             "width": 1,         // 线宽，保留示例中的 1
                             "fillStyle": "SOLID", // 填充模式：实心
@@ -1587,7 +1620,7 @@
                         // V2 中通常使用 "FILL" (填充区域) 或 "HOLE" (挖孔) 来表示非金属化孔
                         // 此处生成一个圆形挖孔区域 (CIRCLE)，layerId 12 (Multi-Layer)
                         // 格式: ["FILL", id, group, net, layerId, type(1=solid), 0, path, rot]
-                        const arr = ["FILL", ids.id, 0, "", 12, 1, 0, [["CIRCLE", x, y, radius]], 0];
+                        const arr = ["FILL", ids.id, 0, netNameOf(v), 12, 1, 0, [["CIRCLE", x, y, radius]], 0];
                         output.push(JSON.stringify(arr));
                     }
                 } else {
@@ -1608,7 +1641,7 @@
                         //   官方 EPCB_PrimitivePadHoleType 只有 ROUND(长圆形) / RECT，没有 SLOT —— 用 SLOT 会被判为非法
                         // padShape: ["OVAL", 长+5mil, 宽+5mil] (默认加一点铜环宽度)
                         const arr = [
-                            "PAD", ids.id, 0, "", 12, "1",
+                            "PAD", ids.id, 0, netNameOf(v), 12, "1",
                             PadTool.toMil(v.x), PadTool.toMil(v.y),
                             v.rotation || 0,
                             ["ROUND", minS, maxS],
@@ -1629,7 +1662,7 @@
                             const content = {
                                 "partitionId": "",
                                 "groupId": 0,
-                                "netName": "",
+                                "netName": netNameOf(v),
                                 "ruleName": layerRangeStr,
                                 "centerX": PadTool.toMil(v.x),
                                 "centerY": PadTool.toMil(v.y),
@@ -1653,7 +1686,7 @@
                             // 格式: ["VIA", id, group, net, layerRangeStr, x, y, drillDia, padDia, rot, topExp, botExp, 0]
                             // layerRangeStr: 用于表示盲埋孔层对 (如 "1-2")，若是通孔则为空字符串 ""
                             const arr = [
-                                "VIA", ids.id, 0, "",
+                                "VIA", ids.id, 0, netNameOf(v),
                                 layerRangeStr,         // 之前计算好的层对字符串
                                 PadTool.toMil(v.x),
                                 PadTool.toMil(v.y),
@@ -1771,7 +1804,7 @@
                         const content = { 
                             "partitionId": "", 
                             "groupId": 0, 
-                            "netName": "", 
+                            "netName": netNameOf(t), 
                             "layerId": t.layerId, 
                             "locked": false, 
                             "zIndex": null, 
@@ -1792,11 +1825,11 @@
                     } else {
                         // --- V2 格式处理 (保持不变) ---
                         if (t.type === 'LINE') { 
-                            const arr = ["LINE", ids.id, 0, "", t.layerId, x1, y1, x2, y2, width, 0]; 
+                            const arr = ["LINE", ids.id, 0, netNameOf(t), t.layerId, x1, y1, x2, y2, width, 0]; 
                             output.push(JSON.stringify(arr)); 
                         } else { 
                             const angle = parseFloat(t.angle.toFixed(4)); 
-                            const arr = ["ARC", ids.id, 0, "", t.layerId, x1, y1, x2, y2, angle, width, 0]; 
+                            const arr = ["ARC", ids.id, 0, netNameOf(t), t.layerId, x1, y1, x2, y2, angle, width, 0]; 
                             output.push(JSON.stringify(arr)); 
                         }
                     }
@@ -1818,7 +1851,7 @@
                     const content = {
                         "partitionId": "",
                         "groupId": 0,
-                        "netName": "",
+                        "netName": netNameOf(p),
                         "layerId": p.layerId,
                         "locked": false,
                         "zIndex": null,
@@ -1831,7 +1864,7 @@
                 } else {
                     // --- V2 格式处理 (保持不变) ---
                     // ["POLY", id, group, net, layer, width, path, type]
-                    const arr = ["POLY", ids.id, 0, "", p.layerId, width, pathObj, 0];
+                    const arr = ["POLY", ids.id, 0, netNameOf(p), p.layerId, width, pathObj, 0];
                     output.push(JSON.stringify(arr));
                 }
                 });
@@ -1863,7 +1896,7 @@
                         const content = {
                             "partitionId": "",
                             "groupId": 0,
-                            "netName": "",
+                            "netName": netNameOf(f),
                             "layerId": f.layerId,
                             "width": 0.2,           // 线宽 (保持与 V2 逻辑一致，或者设为 0)
                             "fillStyle": "SOLID",   // [新增] 填充模式：SOLID (实心填充)
@@ -1879,7 +1912,7 @@
                     } else {
                         // --- V2 格式处理 ---
                         // ["FILL", id, group, net, layer, type(0.2?? width?), type(0=solid), path, rot]
-                        const arr = ["FILL", ids.id, 0, "", f.layerId, 0.2, 0, rings, 0];
+                        const arr = ["FILL", ids.id, 0, netNameOf(f), f.layerId, 0.2, 0, rings, 0];
                         output.push(JSON.stringify(arr));
                     }
                 });

@@ -237,8 +237,7 @@
             panel.style.display = 'flex'; 
         }
 
-        // document.querySelector('#generatenet').closest('div').style.display = 'none';
-        document.getElementById('generatenet').style.display = 'none';
+        // 「生成网络」复选框常驻显示（勾选后导入 / 导出时按铜层连通性为图元分配网络）
 
         if (typeof DEBUG !== 'undefined' && DEBUG) {
             // === DEBUG 模式 ===
