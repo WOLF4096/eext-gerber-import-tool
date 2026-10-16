@@ -87,8 +87,17 @@
 ## 嘉立创EDA 标准版源码格式（导出标准版时必读）
 
 - **1 单位 = 10 mil = 0.254 mm**；`X = 4020 + mmX/0.254`，`Y = 3560.5 - mmY/0.254`（X 右正 Y 上正）。
-- 字段数必须逐位对齐：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 /
-  COPPERAREA 19 / SOLIDREGION 10。
+- 字段数必须逐位对齐：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10。
+- **区域类图元一律用 SOLIDREGION（填充区域），不要输出 COPPERAREA**：后者要求附带
+  「铺铜压缩数据 + 网络」等 19 字段附属信息，SOLIDREGION 是纯几何、打开即见实心铜。
+  这是用户明确要求（2026-10-16）。
+- **槽孔焊盘必须同时给 `holeLength`(idx13) 与 `slotPointArr`(idx14)**：只给 holeLength 时
+  标准版会把槽从原点拉到焊盘中心，槽长被撑到 1000mm+。约定：
+  `holeR = 槽宽/2`、`holeLength = 槽全长（含圆头）= 中心线长 + 2*holeR`、
+  `slotPointArr = 中心 ± (全长-槽宽)/2 · (cos(钻刀rotation), sin(钻刀rotation))`。
+- **飞针文件给焊盘编号**：`FlyingProbeTesting.json` 的 `lengthUnit = "mil"`；
+  fields 里取 PIN_NAME(末段下划线后是引脚号)/PIN_X/PIN_Y。⚠️ 引脚坐标不一定是焊盘几何中心
+  （异形/多边形焊盘实测可偏 27mil）→ 两级匹配：中心 2.5mil 内含 → 否则「引脚落在焊盘包围盒内」。
 - 图层 ID 顺序与内部编号**不同**：内部 5/6(阻焊)↔标准 7/8、内部 7/8(锡膏)↔标准 5/6、
   内部 9/10(装配)↔标准 13/14、11→10(BoardOutLine)、12→11(Multi)、13→12(Document)、14→15、
   内层 15..46 → 21..52。

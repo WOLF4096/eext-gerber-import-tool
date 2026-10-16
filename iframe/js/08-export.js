@@ -1194,8 +1194,10 @@
     //   TRACK      strokeWidth,layer,net,points,gId,locked
     //   ARC        strokeWidth,layer,net,d,helperDots,gId,locked
     //   CIRCLE     cx,cy,r,strokeWidth,layer,gId,locked,net,transformArc
-    //   COPPERAREA strokeWidth,layer,net,pathStr,clearance,fillStyle,gId,thermal,keepIsland,compress
-    //   SOLIDREGION layer,'',pathStr,fillStyle,gId,'' ,'' ,'' ,0
+    //   SOLIDREGION layer,'',pathStr,fillStyle,gId,'','','',locked
+    // 注：所有区域类图元（含覆铜）统一用 SOLIDREGION 承载，不再输出 COPPERAREA
+    //     —— 后者需要「铺铜压缩数据 + 网络」附属信息，SOLIDREGION 才是纯几何、
+    //     打开即见实心铜，也避免标准版自己去重建铺铜时的各种边界问题。
     // ==================================================================================
 
     const STD_UNIT = 0.254;          // 1 标准版单位 = 10 mil
@@ -1316,7 +1318,7 @@
 
     /**
      * 把内部路径数组（M/L/A/ARC + i,j/sweep/cx,cy 三种弧表示）统一转成折线点列（mm）。
-     * 标准版的 TRACK / COPPERAREA / SOLIDREGION 都只吃点列，圆弧一律采样成短直线。
+     * 标准版的 TRACK / SOLIDREGION 都只吃点列，圆弧一律采样成短直线。
      */
     function stdFlattenPath(path, stepDeg) {
         const pts = [];
@@ -1385,16 +1387,13 @@
     }
 
     /**
-     * 生成一个 COPPERAREA 图元串（19 字段，与官方导出的字段布局逐位对齐）：
-     * cmdKey, strokeWidth, layer, net, pathStr, clearanceWidth, fillStyle, gId,
-     * thermal, keepIsland, compressData, locked, name, order,
-     * gridTrackWidth, gridClearance, toBoardOutline, fabricationImprove, spoke_width
-     * 注：compressData 传 [] 即可，标准版会用 pathStr 重新生成压缩数据。
+     * 生成一个 SOLIDREGION 图元串（10 字段，与官方导出的字段布局逐位对齐）：
+     * cmdKey, layer, '', pathStr, fillStyle, gId, '', '', '', locked
+     * 所有区域类图元（含覆铜）统一用它承载 —— 标准版对 SOLIDREGION 的解析最稳，
+     * 不需要 COPPERAREA 那套「压缩数据 + 网络」附属信息，打开即见实心铜。
      */
-    function stdCopperArea(layerWidthU, layer, pathStr, gid) {
-        return ['COPPERAREA', layerWidthU, layer, '', pathStr,
-            1, 'solid', gid, 'spoke', 'none', '[]',
-            0, gid, 1, 1, 2, 1, 'yes', 0].join('~');
+    function stdSolidRegion(layer, pathStr, gid) {
+        return ['SOLIDREGION', layer, '', pathStr, 'solid', gid, '', '', '', 0].join('~');
     }
 
     /**
@@ -1421,6 +1420,59 @@
             if (y < by0) by0 = y; if (y > by1) by1 = y;
         };
 
+        // ---------- 飞针测试数据（FlyingProbeTesting.json）----------
+        // 压缩包里带飞针文件时，用它给焊盘补上「焊盘编号」(PAD 的第 9 个字段)：
+        // 坐标系与专业版图元生成保持一致 —— 飞针 PIN_X/PIN_Y 是 mil，按 2.5mil 就近匹配。
+        const netlistPoints = [];
+        (function buildNetlistPoints() {
+            if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return;
+            try {
+                const pins = flyingProbeData.pins;
+                if (!pins || !pins.rows || !pins.fields) return;
+                const idxName = pins.fields.indexOf('PIN_NAME');
+                const idxX = pins.fields.indexOf('PIN_X');
+                const idxY = pins.fields.indexOf('PIN_Y');
+                if (idxName < 0 || idxX < 0 || idxY < 0) return;
+                pins.rows.forEach(row => {
+                    const x = parseFloat(row[idxX]);
+                    const y = parseFloat(row[idxY]);
+                    if (!isFinite(x) || !isFinite(y)) return;
+                    const fullPinName = String(row[idxName] || '');
+                    // PIN_NAME 形如 C1_1（元件名_引脚号），取最后一段作引脚号
+                    const lastUnder = fullPinName.lastIndexOf('_');
+                    const pinNum = lastUnder > 0 ? fullPinName.substring(lastUnder + 1) : fullPinName;
+                    netlistPoints.push({ x: x, y: y, num: pinNum });
+                });
+                appLog(`标准版导出：已读取飞针文件，共 ${netlistPoints.length} 个引脚用于匹配焊盘编号`);
+            } catch (e) {
+                console.error('解析飞针数据失败:', e);
+            }
+        })();
+        // 按坐标匹配引脚号；匹配不到时返回 null（调用处回退为 '1'）
+        // 注意：飞针的 PIN_X/PIN_Y 不一定落在焊盘的几何中心上 —— 异形（多边形）焊盘
+        // 的引入点常常偏在一侧（实测开关类焊盘可偏 27mil）。所以两级匹配：
+        //   1) 引脚与焊盘中心重合（绝大多数规则焊盘）
+        //   2) 引脚落在该焊盘的包围盒内（异形焊盘），取离中心最近的那个引脚
+        const findPinNum = (xMM, yMM, boxMM) => {
+            if (!netlistPoints.length) return null;
+            const px = PadTool.toMil(xMM), py = PadTool.toMil(yMM);
+            const tol = 2.5;   // mil，与专业版图元生成保持一致
+            const near = netlistPoints.find(pt => Math.abs(pt.x - px) < tol && Math.abs(pt.y - py) < tol);
+            if (near) return near.num;
+            if (boxMM) {
+                const x0 = PadTool.toMil(boxMM.x0), x1 = PadTool.toMil(boxMM.x1);
+                const y0 = PadTool.toMil(boxMM.y0), y1 = PadTool.toMil(boxMM.y1);
+                let best = null;
+                netlistPoints.forEach(pt => {
+                    if (pt.x < x0 - tol || pt.x > x1 + tol || pt.y < y0 - tol || pt.y > y1 + tol) return;
+                    const dd = Math.hypot(pt.x - px, pt.y - py);
+                    if (!best || dd < best.d) best = { d: dd, num: pt.num };
+                });
+                if (best) return best.num;
+            }
+            return null;
+        };
+
         // ---------- 1. 焊盘 ----------
         (uni.unifiedPads || []).forEach(pad => {
             const prim = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
@@ -1431,12 +1483,14 @@
                 : (pad.top ? 1 : (pad.bottom ? 2 : STD_LAYER(prim.layerId)));
 
             let w = prim.w, h = prim.h;
+            let padBox = null;   // 多边形焊盘的世界包围盒（mm），供飞针匹配用
             if (prim.shape === 'POLYGON') {
                 const poly = stdFlattenPath(prim.path, 6);
                 if (poly.length < 3) return;
                 let lx0 = Infinity, lx1 = -Infinity, ly0 = Infinity, ly1 = -Infinity;
                 poly.forEach(p => { lx0 = Math.min(lx0, p.x); lx1 = Math.max(lx1, p.x); ly0 = Math.min(ly0, p.y); ly1 = Math.max(ly1, p.y); });
                 w = lx1 - lx0; h = ly1 - ly0;
+                padBox = { x0: lx0, x1: lx1, y0: ly0, y1: ly1 };
             }
             if (!(w > 0) || !(h > 0)) return;
 
@@ -1473,8 +1527,24 @@
             let holeR = 0, holeLength = 0, slotPts = '';
             if (hasDrill) {
                 if (pad.drill.isSlot) {
-                    holeLength = stdU(Math.max(pad.drill.w, pad.drill.h) - Math.min(pad.drill.w, pad.drill.h));
-                    holeR = stdU(Math.min(pad.drill.w, pad.drill.h) / 2);
+                    // === 槽孔 ===
+                    // PadTool 里槽孔的 w = 全长（中心距 + 钻刀直径），h = 槽宽；
+                    // 标准版的约定（对照官方源码实测）：
+                    //   [9]  holeR      = 槽宽 / 2（半径）
+                    //   [13] holeLength = 槽孔全长（含两端圆头）
+                    //   [14] slotPointArr = 槽中心线两端点（画布绝对坐标）
+                    // 【必须给出 slotPointArr】只给 holeLength 时标准版会把槽从原点
+                    // 拉到焊盘中心，槽长被撑到 1000mm 以上（实测复现）。
+                    const slotW = Math.min(pad.drill.w, pad.drill.h);
+                    const slotLen = Math.max(pad.drill.w, pad.drill.h);
+                    holeR = stdU(slotW / 2);
+                    holeLength = stdU(slotLen);
+                    const halfLine = (slotLen - slotW) / 2;      // 中心线半长
+                    const slotRad = (pad.drill.rotation || 0) * Math.PI / 180;
+                    const ddx = Math.cos(slotRad) * halfLine;
+                    const ddy = Math.sin(slotRad) * halfLine;
+                    slotPts = stdX(pad.x - ddx) + ' ' + stdY(pad.y - ddy) + ' '
+                        + stdX(pad.x + ddx) + ' ' + stdY(pad.y + ddy);
                 } else {
                     holeR = stdU(pad.drill.w / 2);
                 }
@@ -1485,7 +1555,9 @@
             const hx = stdX(pad.x), hy = stdY(pad.y);
             grow(hx, hy);
 
-            const f = ['PAD', shapeName, hx, hy, stdU(w), stdU(h), layer, '', '1',
+            // 焊盘编号：优先取飞针文件里匹配到的引脚号，否则回退 '1'
+            const padNum = findPinNum(pad.x, pad.y, padBox) || '1';
+            const f = ['PAD', shapeName, hx, hy, stdU(w), stdU(h), layer, '', padNum,
                 holeR, points, stdNum(rot), nextGid(), holeLength, slotPts, plated, 0,
                 pstExp, solExp, hx + ',' + hy];
             shapes.push(f.join('~'));
@@ -1561,24 +1633,20 @@
                 // 板框：标准版用 BoardOutLine 层上的闭合 TRACK 折线承载
                 shapes.push(['TRACK', stdU(p.width || 0.254), 10, '', stdPointStr(pts), nextGid(), 0].join('~'));
             } else if (STD_IS_COPPER(p.layerId)) {
-                // 覆铜 → COPPERAREA（与画布渲染一致：实心铜）
-                shapes.push(stdCopperArea(stdU(p.width || 0.254), STD_LAYER(p.layerId), stdPathStr(pts, true), nextGid()));
+                // 覆铜 → 填充区域（SOLIDREGION），与画布渲染一致：打开就是实心铜
+                shapes.push(stdSolidRegion(STD_LAYER(p.layerId), stdPathStr(pts, true), nextGid()));
             } else {
                 // 其它层的折线（丝印/文档/机械的描边）保留为带线宽的 TRACK
                 shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), '', stdPointStr(pts), nextGid(), 0].join('~'));
             }
         });
 
-        // ---------- 5. 填充区域 ----------
+        // ---------- 5. 填充区域（含铜层覆铜，统一走 SOLIDREGION） ----------
         (uni.fills || []).forEach(f => {
             const pts = stdFlattenPath(f.path, 6);
             if (pts.length < 3) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
-            if (STD_IS_COPPER(f.layerId)) {
-                shapes.push(stdCopperArea(stdU(0.254), STD_LAYER(f.layerId), stdPathStr(pts, true), nextGid()));
-            } else {
-                shapes.push(['SOLIDREGION', STD_LAYER(f.layerId), '', stdPathStr(pts, true), 'solid', nextGid(), '', '', '', 0].join('~'));
-            }
+            shapes.push(stdSolidRegion(STD_LAYER(f.layerId), stdPathStr(pts, true), nextGid()));
         });
 
         // ---------- 6. 图片（轮廓填充） ----------
@@ -1586,7 +1654,7 @@
             const pts = stdFlattenPath(img.path, 6);
             if (pts.length < 3) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
-            shapes.push(['SOLIDREGION', STD_LAYER(img.layerId), '', stdPathStr(pts, true), 'solid', nextGid(), '', '', '', 0].join('~'));
+            shapes.push(stdSolidRegion(STD_LAYER(img.layerId), stdPathStr(pts, true), nextGid()));
         });
 
         // 兜底：一个图元都没生成时，BBox 用原点，避免出现 Infinity
@@ -1635,21 +1703,20 @@
             downloadBlobAsFile(new Blob([json], { type: 'application/json;charset=utf-8' }),
                 `Gerber_To_PCB_${baseName}.json`);
 
-            let nPad = 0, nVia = 0, nHole = 0, nTrack = 0, nArc = 0, nArea = 0, nSolid = 0;
+            let nPad = 0, nVia = 0, nHole = 0, nTrack = 0, nArc = 0, nSolid = 0, nSlot = 0;
             doc.shape.forEach(s => {
                 const k = s.split('~')[0];
-                if (k === 'PAD') nPad++;
+                if (k === 'PAD') { nPad++; if (parseFloat(s.split('~')[13]) > 0) nSlot++; }
                 else if (k === 'VIA') nVia++;
                 else if (k === 'HOLE') nHole++;
                 else if (k === 'TRACK') nTrack++;
                 else if (k === 'ARC') nArc++;
-                else if (k === 'COPPERAREA') nArea++;
                 else if (k === 'SOLIDREGION') nSolid++;
             });
             appLog('-----------------------');
             appLog('标准版源码生成完毕');
-            appLog(`焊盘 ${nPad} 个 / 过孔 ${nVia} 个 / 非金属化孔 ${nHole} 个`);
-            appLog(`导线 ${nTrack} 条 / 覆铜 ${nArea} 块 / 实心填充 ${nSolid} 块`);
+            appLog(`焊盘 ${nPad} 个（含槽孔 ${nSlot} 个）/ 过孔 ${nVia} 个 / 非金属化孔 ${nHole} 个`);
+            appLog(`导线 ${nTrack} 条 / 圆弧 ${nArc} 条 / 填充区域 ${nSolid} 块`);
             appLog(`画布尺寸 ${doc.BBox.width} × ${doc.BBox.height} 单位（1 单位 = 10 mil）`);
         } catch (e) {
             console.error(e);
