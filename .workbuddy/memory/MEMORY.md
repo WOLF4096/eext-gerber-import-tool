@@ -13,7 +13,7 @@
 - 铁律：脚本放 `</body>` 前；引用用绝对路径 `/iframe/...`；`.js`/`.css` 带 **UTF-8 BOM**；
   不要反缩进（模板字面量对空白敏感）；新功能别内联回 HTML。
 - 版本以 `extension.json` 为准（`package.json` 同步），`npm run build` → `build/dist/*.eext`。
-  临时文件一律放 `Temp/`（gitignore + edaignore）。当前 **V3.9.9**。
+  临时文件一律放 `Temp/`（gitignore + edaignore）。当前 **V3.9.10**。
 **Temp 已分类（2026-10-17）**：`scripts/{checks,diag,shots,tools}`、`samples/{测试gerber,FPC,fixtures,解压}`、
 `refs/{image,生成网络}`、`backup/{code,base,old,serve_before}`、`shots`、`assets`、`del`（可清空）；
 `fonttest`/`rewardtest` 是依赖目录（README 引用路径，勿改名）。详见 `Temp/README.md`；
@@ -111,6 +111,16 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
 - 健康度指标（`Temp/scripts/checks/net_health.js`）：`mixedClusters`（分量混多网络）与「同名多岛」（= 飞线）。
   6 个样本全部 0/0/0，网络名数 = 分量数 1:1。PCB1_2026-10-15：GND 2645 图元 / DP 35 图元 / 22 块覆铜归 GND。
 - 校验脚本：`Temp/scripts/checks/` 下的 `net_conflict_probe.js`、`fix_check.js`、`fix_regress.js`。
+- **V3.9.10 性能改造**（别改回去！）：连通判定加 2mm 边索引 + y 分带（`netPolyEdgeIndex`）；
+  两块 ≥800 顶点的多边形用 Clipper `ctIntersection` 判面积重叠（结果缓存在图元对象上，**不能用 id 做键**）；
+  配对去重改成「两者包围盒交集的最小角所在格子」，删掉了全局 seen 字符串 Set；
+  `a.src === b.src` 直接算连通（拆分填充块在 consolidate 里挂回 `src: f`）；
+  连通图用 Douglas-Peucker 简化 0.05mm（只影响连通图）；网格 1mm。
+  实测 1.6MB 板网络 78.4s→3.3s，5.6MB 板 26.9s→5.7s。
+- **V3.9.10 交互**：缩放/平移走快照快放（`03-state` snapCanvas + `09-ui` paintFromSnapshot +
+  `notifyViewInteraction`，停手 150ms 补完整渲染）；导出/PDF（`forceNoDpr=true`）不走快照。
+- **仍存在的坑**：`Gerber_PCB1_2025-06-10.zip` 的内层平面是一整块正向区域（0 个 LPC 清区、15289 顶点），
+  连通判定当实心铜 → 82 个网络并成 NET1。与 V3.9.10 改动无关（A/B 一致），待按「轮廓凹口」重做判定。
 
 ## 9. 飞针标注 / 位号 / 补强标注
 - 虚拟层：2001 引脚编号 / 2002 网络名称 / 2003 元件位号（有 `FlyingProbeTesting.json` 才出现）/

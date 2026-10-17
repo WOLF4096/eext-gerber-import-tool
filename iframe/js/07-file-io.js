@@ -17,7 +17,10 @@
 
     // handleFiles (文件入口)。
     async function handleFiles(files) {
-        document.getElementById('loading-overlay').style.display = 'flex';
+        const overlay = document.getElementById('loading-overlay');
+        overlay.style.display = 'flex';
+        overlay.textContent = '读取文件...';
+        stepBegin('读取 / 解压文件');
         rawFilesCache = []; 
         
         // 重置状态
@@ -92,6 +95,9 @@
                 }
             }
 
+            stepEnd('读取 / 解压文件');
+            stepBegin(`检测单位与精度（${rawFilesCache.length} 个图层）`);
+
             // --- 阶段二：全量自动检测 ---
             // 单位与精度优先取「文件自己的声明」：%FS 扩展指令、G04 注释
             // （"3 integer and 6 decimal" / "Dimensions in inches" / P-CAD 的
@@ -157,8 +163,10 @@
                 forceUnits: window.manualUnitOverride === true,
                 forceFormat: window.manualFormatOverride === true
             };
+            stepEnd('检测单位与精度');
             processRawFiles(finalConfig);
 
+            setStepStatus('就绪', 0, null);
             appLog(`渲染完成`);
 
         } catch (e) {
@@ -183,6 +191,7 @@
             appLog(`处理模式「${processor.label}」尚未实现，暂按通用方式解析`);
         }
 
+        stepBegin(`解析图层（共 ${rawFilesCache.length} 个）`);
         rawFilesCache.forEach((fileObj) => {
             const parseResult = parser.parse(fileObj.content, configOverride, parserFeatures);
             if (parseResult.commands.length === 0) return; 
@@ -235,16 +244,23 @@
             });
         });
 
+        stepEnd('解析图层');
+
         // 1. 排序
+        stepBegin('识别板层结构');
         sortLoadedFiles();
 
         // 2. 自动检测设置
         autoDetectSettings();
 
+        stepEnd('识别板层结构');
+
         // 3. 调整视图与渲染
+        stepBegin('渲染画布');
         autoFitView();
         renderLayerTable(); 
         drawCanvas();
+        stepEnd('渲染画布');
         // --- [新增] 更新板子属性面板 ---
         updateBoardStats();
 

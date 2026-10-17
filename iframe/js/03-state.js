@@ -49,6 +49,18 @@
 
     let isRenderPending = false; // RAF 锁
 
+    // --- 交互期「快照快放」 ---
+    // 大板（>500KB）整幅重绘要 300ms 以上（19k 图元 × 逐条 stroke），缩放/平移只有 3fps。
+    // 交互（滚轮缩放 / 中键拖拽）期间不再整幅重绘，而是把上一帧的位图按新的偏移/缩放贴回去
+    // （一次 drawImage，1~3ms），松手 150ms 后再做一次完整重绘。视觉上缩放像「图片缩放」，
+    // 但操作是跟手的；停止操作后立刻恢复清晰渲染。
+    const snapCanvas = document.createElement('canvas');
+    const snapCtx = snapCanvas.getContext('2d', { alpha: false });
+    let snapInfo = null;          // { offsetX, offsetY, scale, w, h }
+    let snapValid = false;
+    let snapIdleTimer = 0;
+    let viewInteracting = false;  // true = 正在拖动/缩放中（允许走快照路径）
+
 
 
     // --- 弹窗与协议确认逻辑 ---

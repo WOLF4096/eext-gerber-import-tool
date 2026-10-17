@@ -194,9 +194,8 @@
 						href="https://github.com/WOLF4096" target="_blank">WOLF4096</a> 开发</div>
 				<ul style="margin: 0; padding-left: 16px; color: #ccc;">
 					<li>渲染画面 ≠ 导入效果，不能保证100%准确</li>
-					<li>生成网络按铜层几何连通性推算，冲突处会整块改名为 <code>NET*</code>，请人工复核</li>
-					<li>元件位号来自飞针文件 <code>FlyingProbeTesting.json</code>：专业版写入装配层（顶层 9 / 底层 10），标准版写入文档层</li>
-					<li>FPC 补强只能「通过源码导入」写入，图元通道会跳过</li>
+					<li>生成网络按铜层几何连通性推算，不能保证100%准确</li>
+					<li>FPC 补强只能「通过源码导入」写入，图元导入无法创建</li>
 					<li>使用前请阅读《用户协议与免责声明》</li>
 				</ul>
 			</div>
@@ -242,7 +241,8 @@
 					</button>
 				</div>
 				<!-- 不在 PCB 画布时显示（由 03-state.js applyPcbContextUI 控制显隐） -->
-				<div id="pcb-context-hint" style="display:none; margin-top:8px; font-size:11px; line-height:1.5; color:#ff9800;"></div>
+				<div id="pcb-context-hint"
+					style="display:none; margin-top:8px; font-size:11px; line-height:1.5; color:#ff9800;"></div>
 			</div>
 
 			<div class="section-title">导出嘉立创 EDA</div>
@@ -281,6 +281,20 @@
 				<div class="btn-small" onclick="exportPDF('all')" title="导出所有图层，每层一页">全部图层</div>
 			</div>
 
+			<div class="section-title"
+				style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center;">
+				<span>运行日志</span>
+				<span id="run-log-toggle" style="font-size: 11px; color: #888; cursor: pointer;"
+					onclick="toggleRunLog()">收起</span>
+			</div>
+			<div style="padding: 0 15px 12px;">
+				<!-- 当前步骤 + 预计剩余：导入/导出时实时更新（见 06-utils.js setStepStatus） -->
+				<div id="run-step" style="font-size: 12px; color: #ff9800; margin-bottom: 6px;">空闲</div>
+				<div id="run-log-lines"
+					style="height: 150px; overflow: auto; background: #111; border: 1px solid #3e3e42; border-radius: 4px; padding: 6px; font-family: 'Consolas', monospace; font-size: 11px; line-height: 1.5; color: #bbb; white-space: pre-wrap;">
+				</div>
+			</div>
+
 			<div id="debug-panel" style="display:none; padding-top: 10px;">
 				<div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
 					<span id="debug-panel-title">图形源码 (DEBUG)</span>
@@ -293,6 +307,24 @@
 				</div>
 				<textarea id="debug-source-area" readonly spellcheck="false"
 					style="width: 100%; background-color: #111; color: #cccccc; border: 1px solid #444; font-family: 'Consolas', monospace; font-size: 11px; padding: 5px; white-space: pre; overflow: auto;"></textarea>
+			</div>
+		</div>
+	</div>
+
+	<!-- 大数据量导入确认：通过源码导入时源文件较大，EDA 编辑器会卡住数秒到数十秒 -->
+	<div id="heavy-import-modal" class="modal-overlay" style="display:none;">
+		<div class="modal-box" style="max-width: 460px;">
+			<div class="modal-header">数据量较大，可能卡顿</div>
+			<div class="modal-content">
+				<p id="heavy-import-text">本次数据较大。</p>
+				<p style="color: #ff9800;">「通过源码导入」会把整份源码交给编辑器解析，文件越大卡顿越明显（期间界面无响应）。<br>
+					更稳的做法：先「导出专业版 V3」，再在 EDA 里打开该工程文件。</p>
+			</div>
+			<div class="modal-footer" style="display: flex; gap: 10px; justify-content: flex-end;">
+				<button class="btn-secondary" style="padding: 6px 15px; border-radius: 4px;"
+					onclick="resolveHeavyImport(false)">关闭</button>
+				<button class="btn-primary" style="padding: 6px 15px; border-radius: 4px;"
+					onclick="resolveHeavyImport(true)">继续导入</button>
 			</div>
 		</div>
 	</div>

@@ -427,6 +427,21 @@
             return;
         }
 
+        // --- [性能保护] 大数据量先提示 ---
+        // 实测 1.6MB 的 Gerber：生成图元 + 网络约 8s，编辑器解析源码再卡若干秒。
+        // 「通过源码导入」是同步塞给编辑器的，期间界面完全无响应，用户会以为卡死。
+        // 超过 500KB 先弹窗说明，让用户自己决定【继续导入】还是改用导出文件。
+        const heavyBytes = (typeof loadedGerberBytes === 'function') ? loadedGerberBytes() : 0;
+        if (method === 'source' && heavyBytes > HEAVY_IMPORT_BYTES) {
+            appLog(`数据量 ${(heavyBytes / 1024).toFixed(0)}KB > 500KB，提示可能卡顿`);
+            const goOn = await confirmHeavyImport(heavyBytes);
+            if (!goOn) {
+                appLog('已取消导入：用户选择关闭（数据量较大）。');
+                return;
+            }
+            appLog('用户确认继续导入（数据量较大）');
+        }
+
         // 按当前处理模式路由到对应导出后端；成功后计入导入次数（PDF 不计）
         const ok = await routeExport(config);
         if (ok && typeof recordImportExportSuccess === 'function') {
@@ -786,6 +801,7 @@
         const isLineFormat = isV3 || isV4;
         const separator = isLineFormat ? "|\n" : "\n"; // 提前定义分隔符
         
+        stepBegin('准备源码头');
         // 1. 准备源码头 (移除 !DEBUG 判断，始终生成头文件)
         let rawTemplate = isV4 ? LCEDA_V4_Head_Source
             : (isV3 ? LCEDA_V3_Head_Source : LCEDA_V2_Head_Source);
@@ -795,11 +811,15 @@
         // 仅在非Debug或Debug但未显示日志时记录，避免刷屏，但此处为了逻辑简单保留
         // appLog(`已根据设置动态更新文件头配置`);
 
-        // 2. 提取数据
-        // 仅导出勾选的图层
+        stepEnd('准备源码头');
+
+        // 2. 提取数据（仅导出勾选的图层）
+        stepBegin('提取图层数据');
         const rawData = PadTool.extractRawData(loadedFiles.filter(f => f.visible));
+        stepEnd('提取图层数据');
         
         // 3. 聚合数据
+        stepBegin('聚合焊盘 / 导线');
         const unifiedData = PadTool.consolidate(
             rawData.rawPads || [], 
             rawData.rawVias || [], 
@@ -817,7 +837,14 @@
             ? { ticket: 200, id: 200 } 
             : calculateMaxId(finalSource, config.targetVer);
 
+        stepEnd('聚合焊盘 / 导线');
+
         // 5. 生成图元字符串 (这一步才真正决定了最终有多少个图元)
+        //    这一步最慢（含物理网络生成），耗时大约随数据量线性增长：
+        //    实测 1.6MB / 3.6k 焊盘 / 6.8k 导线 ≈ 8s。先按体量给出预计值，
+        //    让用户在「界面无响应」之前就知道要等多久。
+        const _estMs = estimateExportMs();
+        stepBegin(`生成图元（含网络，预计约 ${Math.max(1, Math.round(_estMs / 1000))}s）`);
         const primitives = PadTool.generatePrimitives(unifiedData, {
             isV3: isLineFormat,
             ticket: startIds.ticket || 10000,
@@ -879,6 +906,8 @@
         appLog(`生成填充 ${stat_fills} 个`);
         appLog(`生成文本 ${stat_texts} 个`);
 
+        stepEnd('生成图元');
+
         // 6. 处理 DEBUG 输出 (修改点：拼接完整源码)
         if (typeof DEBUG !== 'undefined' && DEBUG) {
             if (config.mode === 'debug') {
@@ -898,11 +927,14 @@
         }
 
         // 7. 正式输出拼接 (非 Debug 模式，或者 Debug 模式下的文件导出)
+        stepBegin('拼装源码');
         if (primitives.length > 0) {
             // 注意：V3 格式如果直接拼接在头文件后，需要补一个分隔符
             if (isLineFormat) finalSource += separator + primitives.join(separator);
             else finalSource += "\n" + primitives.join("\n");
         }
+
+        stepEnd('拼装源码');
 
         const endTime = performance.now();
         const duration = ((endTime - startTime) / 1000).toFixed(2);
@@ -999,6 +1031,8 @@
                         return true; // 图元 API 全部调用完毕（个别图元失败已在日志单独统计）
                     } else {
                         appLog(`正在写入全量数据...`);
+                        // 编辑器解析整份源码是同步的，期间界面无响应 —— 先把状态写出来
+                        setStepStatus(`写入画布（${(finalSource.length / 1024 / 1024).toFixed(1)}MB，编辑器可能无响应）`, 0, null);
                         const result = await eda.sys_FileManager.setDocumentSource(finalSource);
                         const writeEndTime = performance.now();
                         const writeDuration = ((writeEndTime - writeStartTime) / 1000).toFixed(2);

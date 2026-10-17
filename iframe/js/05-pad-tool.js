@@ -405,7 +405,7 @@
                 // Start/End 这类私有段标记说明每一段图形的用途。KiCad / Altium / P-CAD /
                 // 嘉立创**标准版**导出的 Gerber 没有这些标记，必须按图层与指令类型自行推断，
                 // 否则焊盘与导线会被整体丢弃（这正是"只有钻孔导入成功"的原因）。
-                const hasSectionMarkers = /G04[^\r\n*]*(?:Pad|Via|Track|PolygonModel|Copper|Image|Text|Rect|Circle|Drill Drawing)[^\r\n*]*(?:Start|End)/.test(rawContent || '');
+                const hasSectionMarkers = /G04[^\r\n*]*(?:Pad|Via|Track|PolygonModel|Copper|Image|Text|Rect|Circle|Dimension|Drill Drawing)[^\r\n*]*(?:Start|End)/.test(rawContent || '');
                 
                 // 铜层：用于判断 Flash 该做焊盘、Drawing 该做导线
                 const isCopperLayer = (layerId === 1 || layerId === 2 || (layerId >= 15 && layerId <= 46));
@@ -545,6 +545,12 @@
                         else if (cmd.text.includes("Image End")) { flushPoly(); mode = "NONE"; }
                         else if (cmd.text.includes("Text Start")) { flushPoly(); mode = "TEXT"; }
                         else if (cmd.text.includes("Text End")) { flushPoly(); mode = "NONE"; }
+                        // 文档层标注（尺寸线 / 文字笔画 / 箭头）：GDL 里的「Dimension Start…End」
+                        // 段既不是 Pad 也不是 PolygonModel/Rect，旧实现没有任何分支匹配它 →
+                        // mode 停在 NONE → 这些线段被整段丢弃（画布上只剩 Rect，标注全没了）。
+                        // 它们是「带线宽的折线」，与 Rect / Text 一样走 POLY。
+                        else if (cmd.text.includes("Dimension Start")) { flushPoly(); mode = "POLY"; }
+                        else if (cmd.text.includes("Dimension End")) { flushPoly(); mode = "NONE"; }
                         else if (cmd.text.includes("Copper Start")) { flushPoly(); mode = "COPPER"; }
                         else if (cmd.text.includes("Copper End")) { flushPoly(); mode = "NONE"; }
                         // [新增] 钻孔图支持
@@ -809,10 +815,24 @@
             // 例外：整块暗区都落在清区内部时，它是「清区之后再补画的铜」（island），不能挖，
             // 否则会被整块抹掉。
             if ((rawClearRegions.length || rawClearRings.length) && rawFills.length) {
+                // 包围盒（**必须先展平圆弧**）
+                // ⚠️ 只取圆弧的「终点」算包围盒会得到退化结果：嘉立创负片平面里的隔离孔
+                // 绝大多数是「整圆 = 两段半圆」，两段的端点都落在同一条直径上 →
+                // 包围盒高/宽为 0 → 被下面的 `x1 > x0 && y1 > y0` 判为无效 → 该清区直接丢弃
+                // → 平面保持实心 → 落在平面范围内的所有焊盘/过孔都判成「与平面相连」
+                // → 整板并成一个连通块、106 个网络名冲突、整块改名 NET1
+                //（实测 Gerber_PCB1_2025-01-11：315 个清区里 250 个因此被丢）。
                 const bboxOfPath = (path) => {
+                    let pts = path || [];
+                    if (typeof fillRingPoints === 'function'
+                        && pts.some(pt => pt && (pt.cmd === 'A' || pt.cmd === 'ARC'))) {
+                        const flat = fillRingPoints(pts);      // 圆弧按 FILL_ARC_TOL 离散
+                        if (flat.length >= 2) pts = flat.map(p => ({ x: p[0], y: p[1] }));
+                    }
                     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-                    (path || []).forEach(pt => {
+                    pts.forEach(pt => {
                         if (typeof pt.x !== 'number' || !isFinite(pt.x)) return;
+                        if (typeof pt.y !== 'number' || !isFinite(pt.y)) return;
                         if (pt.x < x0) x0 = pt.x; if (pt.x > x1) x1 = pt.x;
                         if (pt.y < y0) y0 = pt.y; if (pt.y > y1) y1 = pt.y;
                     });
@@ -822,7 +842,7 @@
                 rawFills.forEach(f => bboxCache.set(f, bboxOfPath(f.path)));
                 // 单块覆铜的挖空数量保护（负片覆铜可能有上千个间隙）
                 const MAX_HOLES_PER_FILL = 3000;
-                let droppedHoles = 0, attachedTotal = 0, islandSkip = 0;
+                let droppedHoles = 0, attachedTotal = 0, islandSkip = 0, nullBBox = 0, noOverlap = 0;
                 const attach = (hole, hb) => {
                     rawFills.forEach(f => {
                         if (f.layerId !== hole.layerId) return;
@@ -830,7 +850,7 @@
                         if (!fb) return;
                         const ox = Math.min(hb.x1, fb.x1) - Math.max(hb.x0, fb.x0);
                         const oy = Math.min(hb.y1, fb.y1) - Math.max(hb.y0, fb.y0);
-                        if (ox <= 1e-6 || oy <= 1e-6) return;            // 包围盒不重叠 → 无关
+                        if (ox <= 1e-6 || oy <= 1e-6) { noOverlap++; return; }   // 包围盒不重叠 → 无关
                         const isIsland = fb.x0 >= hb.x0 - 1e-6 && fb.x1 <= hb.x1 + 1e-6
                             && fb.y0 >= hb.y0 - 1e-6 && fb.y1 <= hb.y1 + 1e-6;
                         if (isIsland) { islandSkip++; return; }          // 清区之后补画的铜 → 保留
@@ -842,12 +862,20 @@
                 };
                 rawClearRegions.forEach(hole => {
                     const hb = bboxOfPath(hole.path);
-                    if (hb) attach(hole, hb);
+                    if (!hb) { nullBBox++; return; }
+                    attach(hole, hb);
                 });
                 rawClearRings.forEach(hole => {
                     const hb = bboxOfPath(hole.path);
-                    if (hb) attach(hole, hb);
+                    if (!hb) { nullBBox++; return; }
+                    attach(hole, hb);
                 });
+                // 诊断（DEBUG 打开时输出）：清区收集 vs 实际挖空数量，排查「负片平面被当成实心铜」
+                if (typeof DEBUG !== 'undefined' && DEBUG) {
+                    console.log(`清区挂载：收集 ${rawClearRegions.length} 区域 + ${rawClearRings.length} 环`
+                        + `，挖空 ${attachedTotal}，island 跳过 ${islandSkip}，bbox 无效 ${nullBBox}`
+                        + `，无重叠 ${noOverlap}，超限丢弃 ${droppedHoles}`);
+                }
                 if (droppedHoles > 0) console.warn(`覆铜挖空超过上限，丢弃 ${droppedHoles} 个挖空`);
                 if (islandSkip > 0) console.log(`清区挂载：跳过 ${islandSkip} 处「清区后补画的铜(island)」`);
             }
@@ -1098,7 +1126,11 @@
                         negHoles += f.holes.length;
                         negPieces += pieces.length;
                         if (!pieces.length) fullyCleared++;
-                        pieces.forEach(p => fillsOut.push({ layerId: f.layerId, path: p }));
+                        // 拆分出来的每一块都挂回**原始填充对象**（src: f）：
+                        // 它们在电气上就是同一块铜（同一块负片平面被挖空后剩下的部分）。
+                        // 网络生成用 src 判「同源即连通」，没有这个标记的话，一块 52mm 平面
+                        // 拆出的上百块之间还要两两做几何求交（实测 1 万多顶点的两块 437ms/对）。
+                        pieces.forEach(p => fillsOut.push({ layerId: f.layerId, path: p, src: f }));
                         if (t0) {
                             const dt = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : 0) - t0;
                             if (dt > 400) console.log(`负片拆分耗时 ${dt.toFixed(0)}ms（挖空 ${f.holes.length} 个 → ${pieces.length} 块）`);

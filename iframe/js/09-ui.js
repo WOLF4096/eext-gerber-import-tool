@@ -162,7 +162,10 @@
         if (!anchor) {
             const head = document.createElement('div');
             head.className = 'layer-header';
-            head.innerHTML = `<span>${uiGroups[4].name}</span>`;
+            // 该组没有任何真实文件时，表头复选框也要能勾选/取消（否则标注层无法整组开关）
+            head.innerHTML = `<input type="checkbox" id="group-cb-${customGid}"`
+                + ` onchange="toggleGroup('${customGid}', this.checked)" style="margin-right:8px">`
+                + `<span>${uiGroups[4].name}</span>`;
             container.appendChild(head);
             anchor = head;
         }
@@ -192,11 +195,19 @@
     window.toggleOverlay = (id, checked) => {
         if (!isFlyingLayer(id)) return;
         flyingOverlayVisible[id] = !!checked;
+        // 标注层属于「自定义/特殊」组：单独改一行后，组复选框要跟着变全选/半选/不选
+        updateGroupCheckboxState(getGroupId(id));
         drawCanvas();
     };
 
     // 新增 forceSolid 参数，用于独立控制是否强制 100% 不透明
     function drawCanvas(forceNoDpr = false, forceSolid = false) {
+        // --- 交互期快照快放（只用于屏幕交互，导出/PDF 一律走完整渲染）---
+        // 见 03-state.js 里 viewInteracting / snapInfo 的说明。
+        if (!forceNoDpr && viewInteracting && snapValid && snapInfo
+            && snapCanvas.width === mainCanvas.width && snapCanvas.height === mainCanvas.height
+            && paintFromSnapshot()) return;
+
         // --- [核心修复] ---
         // 如果是导出模式 (forceNoDpr=true)，强制 dpr=1，忽略屏幕缩放
         // 否则使用屏幕的 devicePixelRatio
@@ -690,7 +701,65 @@
         if (!forceNoDpr) drawRulers();
         // 与函数开头的 ctx.save() 配对：不 restore 会每帧泄漏一个 save 状态
         ctx.restore();
+        if (!forceNoDpr) captureSnapshot();
     }
+
+    /** 把当前画布内容存成「上一帧快照」，供交互期快速贴图 */
+    function captureSnapshot() {
+        if (!mainCanvas.width || !mainCanvas.height) return;
+        if (snapCanvas.width !== mainCanvas.width || snapCanvas.height !== mainCanvas.height) {
+            snapCanvas.width = mainCanvas.width;
+            snapCanvas.height = mainCanvas.height;
+        }
+        const dpr = window.devicePixelRatio || 1;
+        snapCtx.setTransform(1, 0, 0, 1, 0, 0);
+        snapCtx.clearRect(0, 0, snapCanvas.width, snapCanvas.height);
+        snapCtx.drawImage(mainCanvas, 0, 0);
+        snapInfo = {
+            offsetX: viewState.offsetX, offsetY: viewState.offsetY,
+            scale: viewState.scale,
+            w: mainCanvas.width / dpr, h: mainCanvas.height / dpr
+        };
+        snapValid = true;
+    }
+
+    /**
+     * 用快照贴出当前视图（缩放/平移中）。
+     * 世界点 p 在快照里的屏幕位置 = snapOffset + snapScale·p，
+     * 现在要画在 offset + scale·p → 整幅图按 k = scale/snapScale 缩放、
+     * 平移 (offset - k·snapOffset) 即可。
+     * @returns {boolean} 是否成功贴图（false 时调用方回退到完整渲染）
+     */
+    function paintFromSnapshot() {
+        const k = viewState.scale / (snapInfo.scale || 1);
+        if (!isFinite(k) || k <= 0) return false;
+        const dpr = window.devicePixelRatio || 1;
+        const w = mainCanvas.width / dpr, h = mainCanvas.height / dpr;
+        const sx = viewState.offsetX - snapInfo.offsetX * k;
+        const sy = viewState.offsetY - snapInfo.offsetY * k;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(snapCanvas, 0, 0, snapCanvas.width, snapCanvas.height,
+            sx, sy, snapInfo.w * k, snapInfo.h * k);
+        ctx.restore();
+        return true;
+    }
+
+    /**
+     * 标记「正在交互」：交互期间走快照路径，停止 150ms 后补一次完整渲染。
+     * 缩放/拖拽的每一帧都调用它（滚轮、中键拖动都接）。
+     */
+    window.notifyViewInteraction = () => {
+        viewInteracting = true;
+        if (snapIdleTimer) clearTimeout(snapIdleTimer);
+        snapIdleTimer = setTimeout(() => {
+            viewInteracting = false;
+            requestDraw();
+        }, 150);
+    };
 
     /**
      * 构建飞针标注数据（引脚编号 / 网络名称 / 元件位号）。
@@ -1190,17 +1259,20 @@
         const groupCb = document.getElementById(`group-cb-${gid}`);
         if (!groupCb) return;
 
-        // 找到该组下的所有文件
+        // 组内成员 = 真实图层文件 + 标注虚拟层（引脚编号 / 网络名称 / 元件位号 / 补强名称）。
+        // 标注层不在 loadedFiles 里，早先只统计文件 → 单独取消一个标注行时组复选框不会变半选。
         const groupFiles = loadedFiles.filter(f => getGroupId(f.layerId) === gid);
-        
-        if (groupFiles.length === 0) {
+        const flyingIds = FLYING_LAYER_IDS.filter(id => getGroupId(id) === gid);
+        const total = groupFiles.length + flyingIds.length;
+
+        if (total === 0) {
             groupCb.checked = false;
             groupCb.indeterminate = false;
             return;
         }
 
-        const total = groupFiles.length;
-        const visibleCount = groupFiles.filter(f => f.visible).length;
+        const visibleCount = groupFiles.filter(f => f.visible).length
+            + flyingIds.filter(id => !!flyingOverlayVisible[id]).length;
 
         if (visibleCount === 0) {
             // 1. 全不选
@@ -1236,7 +1308,7 @@
 
     // 切换组可见性
     window.toggleGroup = (gid, isChecked) => { 
-        // 1. 更新数据状态
+        // 1. 更新数据状态（真实文件）
         let hasChanged = false;
         loadedFiles.forEach(f => {
             if (getGroupId(f.layerId) === gid) {
@@ -1247,18 +1319,27 @@
             }
         });
 
-        // 2. 更新 DOM：同步下方所有子项的复选框
-        if (hasChanged) {
-            // 找到所有属于该组的行内的复选框
-            const rows = document.querySelectorAll(`.layer-row[data-group="${gid}"] .file-cb`);
-            rows.forEach(cb => cb.checked = isChecked);
-            
-            // 3. 更新自身状态 (清除半选样式)
-            const groupCb = document.getElementById(`group-cb-${gid}`);
-            if (groupCb) groupCb.indeterminate = false;
+        // 1.5 标注虚拟层（引脚编号 / 网络名称 / 元件位号 / 补强名称）也归在「自定义/特殊」组，
+        //     但它们的状态在 flyingOverlayVisible 里，不在 loadedFiles —— 早先这里只遍历文件，
+        //     所以勾选/取消「自定义/特殊」时引脚编号等行毫无反应（画布上也依然显示）。
+        const flyingIds = (typeof FLYING_LAYER_IDS !== 'undefined' ? FLYING_LAYER_IDS : [])
+            .filter(id => getGroupId(id) === gid);
+        flyingIds.forEach(id => {
+            if (!!flyingOverlayVisible[id] !== !!isChecked) {
+                flyingOverlayVisible[id] = !!isChecked;
+                hasChanged = true;
+            }
+        });
 
-            drawCanvas();
-        }
+        // 2. 更新 DOM：同步该组下所有子项复选框（含标注虚拟层；它们没有 .file-cb 类）
+        document.querySelectorAll(`.layer-row[data-group="${gid}"] .col-vis input[type="checkbox"]`)
+            .forEach(cb => { cb.checked = isChecked; });
+
+        // 3. 更新自身状态 (清除半选样式；checked 也显式对齐，便于脚本/快捷键调用)
+        const groupCb = document.getElementById(`group-cb-${gid}`);
+        if (groupCb) { groupCb.checked = !!isChecked; groupCb.indeterminate = false; }
+
+        if (hasChanged) drawCanvas();
     };
 
     // 切换单文件可见性
@@ -1492,12 +1573,14 @@
         viewState.offsetX = mx - wx * viewState.scale;
         viewState.offsetY = my + wy * viewState.scale; 
 
+        notifyViewInteraction();   // 缩放期间走快照，停止 150ms 后完整重绘
         requestDraw(); // 使用异步绘制
     }, { passive: false }); // 显式声明非被动，确保 preventDefault 生效
 
     // 鼠标按下事件
     mainCanvas.addEventListener('mousedown', (e) => {
         if (e.button===2 || e.button===1) {
+            notifyViewInteraction();
             viewState.isDragging = true;
             viewState.lastX = e.clientX; viewState.lastY = e.clientY;
             mainCanvas.style.cursor = 'grabbing';
@@ -1510,6 +1593,7 @@
             viewState.offsetX += e.clientX - viewState.lastX;
             viewState.offsetY += e.clientY - viewState.lastY;
             viewState.lastX = e.clientX; viewState.lastY = e.clientY;
+            notifyViewInteraction();   // 交互期走快照，松手后再完整重绘
             requestDraw(); // 使用异步绘制
         }
     });
