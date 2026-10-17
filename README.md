@@ -249,6 +249,8 @@ iframe/
 后置模块依赖前置模块的全局定义；`ImportGerber.html` 中的标签顺序与上表一致。
 
 - 修改功能时请按职责定位到对应文件，不要重新把脚本内联回 HTML。
+- `docs/` 放面向人的分析文档（解析测试报告、真彩图分析、修复记录、完成度报告），
+  `Temp/` 放校验脚本与测试样本 —— 两者都不进扩展包；工作区结构见 [`Temp/README.md`](Temp/README.md)，文档索引见 [`docs/README.md`](docs/README.md)。
 - `01-templates.js` 是「由 EDA 导出的模板文本」，请勿手工格式化或调整缩进。
 - `.js` / `.css` 均带 UTF-8 BOM，可在服务端未声明 charset 时仍正确解析中文。
 - 改动后建议执行语法自检：`node --check iframe/js/*.js`

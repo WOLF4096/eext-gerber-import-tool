@@ -14,6 +14,10 @@
   不要反缩进（模板字面量对空白敏感）；新功能别内联回 HTML。
 - 版本以 `extension.json` 为准（`package.json` 同步），`npm run build` → `build/dist/*.eext`。
   临时文件一律放 `Temp/`（gitignore + edaignore）。当前 **V3.9.9**。
+**Temp 已分类（2026-10-17）**：`scripts/{checks,diag,shots,tools}`、`samples/{测试gerber,FPC,fixtures,解压}`、
+`refs/{image,生成网络}`、`backup/{code,base,old,serve_before}`、`shots`、`assets`、`del`（可清空）；
+`fonttest`/`rewardtest` 是依赖目录（README 引用路径，勿改名）。详见 `Temp/README.md`；
+面向人的分析文档在项目根 `docs/`（已加入 edaignore，不进包）。
 
 ## 2. 处理模式（仅两项）
 下拉 `#cfg-source-type`：`easyedapro`（嘉立创内部）/ `rs274x`（通用）。
@@ -30,7 +34,7 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
 - 跨文件配点必须容差（0.05mm 栅格归并）；`toFixed(3)` 精确键会让过孔/钻孔大面积配不上。
 - 焊盘去重必须带 `layerId`（`rawPads` 是所有层公共数组）。
 - 过孔 vs 插件盘：钻孔≥0.6mm 且铜环≥0.25mm → 插件焊盘（THT_DRILL_MIN/THT_RING_MIN）。
-- 宏基元 6/7 未绘制；`%SR` 未处理；真彩图片离线无解（见 `Temp/FCTS_解析报告.md`）。
+- 宏基元 6/7 未绘制；`%SR` 未处理；真彩图片离线无解（见 `docs/FCTS_解析报告.md`）。
 - ⚠️ 测试坑：`rawFilesCache` / `loadedFiles` 是 03-state 的顶层 `let`，页面里必须**裸赋值**；
   写 `window.rawFilesCache = …` 只会加 window 属性 → `hasSectionMarkers` 判 false → 静默测错版本。
 
@@ -55,7 +59,7 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
 - **标准版 Gerber 区域环「零长首段 + 未闭合」**（只有标准版来源会「渲染对、导入错」，填充全丢）：
   `fillNormalizeFlatRing(flat, tol)`（06-utils）去零长边 + 补闭合，`05-pad-tool` 生成 FILL 时对
   `singlePath` 和每个 `holes` 环都过一遍；`08-export` 的 `stdFlattenPath` 出口去掉相邻重复点。
-  判据：**无退化边 + 显式闭合**，否则 EDA 面多边形校验会拒整块。脚本：`Temp/fill_*_check.js`。
+  判据：**无退化边 + 显式闭合**，否则 EDA 面多边形校验会拒整块。脚本：`Temp/scripts/checks/fill_*_check.js`。
 
 ## 6. 标准版导出格式（08-export.js `buildStandardSource`）
 - 字段数：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10 / TEXT 17。**没有 POLY**。
@@ -76,7 +80,7 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
   `npm i opentype.js --prefix Temp/fonttest --no-save` →
   `NODE_PATH=Temp/fonttest/node_modules node tools/font-outline.js --font <ttf> [--extra "字符"] [--range 0x4E00-0x9FA5]`
 - `C:/Windows/Fonts/NotoSansSC-VF.ttf` 是**可变字体**（默认 wght=100 Thin），opentype.js 的
-  `variation.set` 不改轮廓 → 先 `python -m fontTools.varLib.instancer <VF> wght=350 -o Temp/NotoSansSC-DemiLight.ttf`
+  `variation.set` 不改轮廓 → 先 `python -m fontTools.varLib.instancer <VF> wght=350 -o Temp/assets/NotoSansSC-DemiLight.ttf`
   （已验证 cap/em = 0.732）。
 - 字高约定：PCB 说的「字高」= **cap height**。`em = capMil / (capHeight/upem)`；30mil → em ≈ 41.0mil ≈ 4.098 标准版单位。
 - 缺字跳过并记日志，绝不用近似字形顶替。
@@ -104,9 +108,9 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
   焊盘取值时 `isNetRenamed(pad) → netName = netOf.get(pad)`；否则焊盘沿用自己的飞针名，
   出现「焊盘 NET_4 / 焊盘 NET_2 / 中间导线 NET1」。**焊盘编号与 groupId 不受影响**（来自飞针匹配）。
   正常分量仍**飞针名优先**（飞针文件才是名字来源）。
-- 健康度指标（`Temp/net_health.js`）：`mixedClusters`（分量混多网络）与「同名多岛」（= 飞线）。
+- 健康度指标（`Temp/scripts/checks/net_health.js`）：`mixedClusters`（分量混多网络）与「同名多岛」（= 飞线）。
   6 个样本全部 0/0/0，网络名数 = 分量数 1:1。PCB1_2026-10-15：GND 2645 图元 / DP 35 图元 / 22 块覆铜归 GND。
-- 校验脚本：`Temp/net_conflict_probe.js`、`Temp/fix_check.js`、`Temp/fix_regress.js`。
+- 校验脚本：`Temp/scripts/checks/` 下的 `net_conflict_probe.js`、`fix_check.js`、`fix_regress.js`。
 
 ## 9. 飞针标注 / 位号 / 补强标注
 - 虚拟层：2001 引脚编号 / 2002 网络名称 / 2003 元件位号（有 `FlyingProbeTesting.json` 才出现）/
@@ -143,7 +147,7 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
 - `getEnvInfo()`：`getEditorCurrentVersion()` 首字符 2→pro_v2 / 3→pro_v3 / 4→pro_v4。
 - V4 图元行与 V3 **逐字节同构**，只有文档头不同（多 `META`/`LAYER_PHYS`/`D3_ATTRIBUTE`/`RULE:CREEPAGE`
   与一批显示配置 PRIMITIVE；`DOCHEAD` 多 `editVersion`/`user`；`CANVAS` 多 `layerBrightness`）。
-  模板 `LCEDA_V4_Head_Source` 取自官方 4.1.78 空白 `.epru`，生成脚本 `Temp/rebuild_v4_template.js`。
+  模板 `LCEDA_V4_Head_Source` 取自官方 4.1.78 空白 `.epru`，生成脚本 `Temp/scripts/tools/rebuild_v4_template.js`。
 - 三个坑：① 模板字面量里 JSON 的 `\"` 要写成 `\\"`（少一层 → `LAYER` 行非法 JSON，60 行全废）；
   ② 末行**不能**以 `|` 结尾（否则 `}||`）；③ 以官方导出为准，别按旧模板补猜字段。
 - `isV3`（严格 V3，仅 .epru 打包）/ `isLineFormat = isV3 || isV4`；`calculateMaxId` V3 分支扩到 V4。
@@ -154,7 +158,7 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
 - **高 DPI**（V3.9.7）：给 `canvas.width` 赋值会把变换重置成单位矩阵。`drawCanvas` 进入时无条件
   `ctx.setTransform(dpr,0,0,dpr,0,0)`（幂等自愈），结尾补 `ctx.restore()`；PDF 恢复现场改调 `resizeCanvas()`。
   `watchDprChanges()` 用 `matchMedia('(resolution: Ndppx)')` 监听并**重新挂载**。
-  验证口径：dpr=2 的物理尺寸必须是 dpr=1 的 2 倍（`Temp/dpr_fix_check.js`，必须跨 dsf 比较）。
+  验证口径：dpr=2 的物理尺寸必须是 dpr=1 的 2 倍（`Temp/scripts/checks/dpr_fix_check.js`，必须跨 dsf 比较）。
 - **PCB 画布门控**：`detectPcbCanvasContext()` —— `getDocumentSource()` 读不到 = 不在画布；
   读到非 PCB 源码 = 不在；源码为空时用 `documentType === 3` 交叉确认（空白 PCB 源码可能为空）。
   按钮加 `pcb-gated` + `confirmPcbAction()`；`.is-off-canvas` 只灰显、保留 pointer-events（否则点不到弹不出提示）。
@@ -182,4 +186,5 @@ PCB/FPC 手动开关只改 UI；标准版不导出埋盲孔；真彩图片离线
 功能改动要同步四处：`CHANGELOG.md`（新版本条目）→ `README.md`（能力矩阵 + 4.4 特殊功能）→
 `iframe/ImportGerber.html`（导出页提示列表 + 协议「技术局限」）→ `iframe/About.html`（使用方法/注意事项）。
 版本号改 `extension.json` + `package.json`，然后 `npm run build`（HTML 也打进包，文档改了必须重打包）。
-进度报告类一次性文档放 `Temp/`（gitignore + edaignore）。
+分析类文档放项目根 `docs/`（报告/修复记录/参考三个子目录，edaignore 已排除）；
+一次性数据 dump、临时截图放 `Temp/del/`（可随时清空）。
