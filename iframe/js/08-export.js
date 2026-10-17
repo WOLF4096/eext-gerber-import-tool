@@ -1711,8 +1711,14 @@
             if (p.layerId === 11) {
                 // 板框：标准版用 BoardOutLine 层上的闭合 TRACK 折线承载（板框不属于任何网络）
                 shapes.push(['TRACK', stdU(p.width || 0.254), 10, '', stdPointStr(pts), nextGid(), 0].join('~'));
+            } else if (p.isStroke || !STD_IS_COPPER(p.layerId)) {
+                // 描边折线 → 带线宽的多点 TRACK（一条 POLY 就是一条多段 TRACK，不拆散）。
+                // 【2026-10-17】铜层的 p.isStroke 来自 G04 Copper 段（G36 区域外的 D01/弧）：
+                // 它是「用给定线宽画出来的折线」，必须保留线宽。若走下面的 SOLIDREGION 分支，
+                // 只会写中心线围成的闭合区域 —— 0.2mm 的描边铜会变成零宽轮廓，几何全丢。
+                shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), stdNet(p), stdPointStr(pts), nextGid(), 0].join('~'));
             } else if (STD_IS_COPPER(p.layerId)) {
-                // 覆铜 → 填充区域（SOLIDREGION），与画布渲染一致：打开就是实心铜
+                // 实心铜多边形 → 填充区域（SOLIDREGION），与画布渲染一致：打开就是实心铜
                 shapes.push(stdSolidRegion(STD_LAYER(p.layerId), stdPathStr(pts, true), nextGid(), stdNet(p)));
             } else {
                 // 其它层的折线（丝印/文档/机械的描边）保留为带线宽的 TRACK

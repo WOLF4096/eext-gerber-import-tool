@@ -201,7 +201,7 @@
                             currentPath.push({ cmd: 'L', x: seg.x2, y: seg.y2 });
                         }
                     });
-                    mergedPaths.push({ path: currentPath, width: pathWidth });
+                    mergedPaths.push({ path: currentPath, width: pathWidth, stroke: !!first.stroke });
                 }
                 return mergedPaths;
             };
@@ -501,7 +501,11 @@
                                 let targetLayer = layerId;
                                 // 56 是 DrillDrawing, 导出时通常归类到 Document(13) 或保持 56
                                 // 这里保持 56，GeneratePrimitives 中已处理
-                                rawPolys.push({ layerId: targetLayer, width: m.width, path: m.path });
+                                // isStroke：来自 G04 Copper 段的「描边铜」（G36 区域外的 D01/弧）。
+                                // 它不是实心多边形，而是一条带线宽的多段线 —— 标准版导出必须按
+                                // TRACK 折线写，不能走 SOLIDREGION（后者只写中心线，会把 0.2mm
+                                // 的描边铜变成零宽轮廓，几何彻底丢失）。
+                                rawPolys.push({ layerId: targetLayer, width: m.width, path: m.path, isStroke: !!m.stroke });
                             }
                         });
                         tempPolySegments = [];
@@ -625,7 +629,7 @@
                             if (ap) currentWidth = toMM(ap.params[0]);   // 光圈参数仍是文件单位
                         }
 
-                        if (effMode === "TRACK" || effMode === "COPPER") {
+                        if (effMode === "TRACK") {
                             if (isCopperLayer && cmd.type === 1) {
                                 if (cmd.mode === 1) { rawTracks.push({ type: "LINE", layerId, x1: currX, y1: currY, x2: targetX, y2: targetY, width: currentWidth }); } 
                                 else { 
@@ -653,21 +657,46 @@
                                 }
                             }
                         }
-                        else if (effMode === "POLY" || effMode === "IMAGE" || effMode === "TEXT" || effMode === "DRILL_SYM") { 
+                        // 折线流程：POLY / IMAGE / TEXT / DRILL_SYM，以及 **Copper 段的描边铜**。
+                        // 【2026-10-17】Copper 段里 G36 区域之外的 D01/弧，以前是逐段生成 LINE/ARC
+                        // 走 rawTracks（一条轮廓被拆成几十上百个独立图元，接头处靠圆头重叠掩盖缝隙）。
+                        // 现在改走与非铜层折线**完全相同**的流程：先累积 tempPolySegments，切段时
+                        // flushPoly → mergeSegments 合并成整条多段线 → rawPolys。
+                        // 区别只有两点：
+                        //   ① 层号仍是铜层（rawPolys 的 layerId 直接用它），参与铜层网络连通；
+                        //   ② 打 stroke 标记，标准版导出按「带线宽的多点 TRACK」写，而不是 SOLIDREGION
+                        //      —— SOLIDREGION 只写中心线，会把 0.2mm 的描边铜变成零宽轮廓。
+                        else if (effMode === "COPPER" || effMode === "POLY" || effMode === "IMAGE" || effMode === "TEXT" || effMode === "DRILL_SYM") { 
                             // 注意：DRILL_SYM 的线段也作为 POLY 处理
                             if (cmd.type !== 2) {
+                                const stroke = (effMode === "COPPER");
                                 let seg = { x1: currX, y1: currY, x2: targetX, y2: targetY, width: currentWidth };
-                                if (cmd.mode === 1) { seg.type = 'LINE'; } 
-                                else {
+                                if (stroke) seg.stroke = true;
+                                if (cmd.mode === 1) {
+                                    seg.type = 'LINE';
+                                    tempPolySegments.push(seg);
+                                } else {
                                     seg.type = 'ARC';
                                     const centerX = currX + mmOf(cmd.i); const centerY = currY + mmOf(cmd.j);
                                     const startAngle = Math.atan2(currY - centerY, currX - centerX);
                                     const endAngle = Math.atan2(targetY - centerY, targetX - centerX);
                                     let sweep = endAngle - startAngle;
                                     if (cmd.mode === 3) { if (sweep <= 0) sweep += 2 * Math.PI; } else { if (sweep >= 0) sweep -= 2 * Math.PI; }
-                                    seg.angle = sweep * 180 / Math.PI;
+                                    const radiusMM = Math.sqrt(cmd.i * cmd.i + cmd.j * cmd.j);
+                                    const isFullCircle = radiusMM > 1e-9
+                                        && Math.abs(targetX - currX) < 1e-6 && Math.abs(targetY - currY) < 1e-6;
+                                    if (isFullCircle) {
+                                        // POLY 的圆弧只记「终点 + 扫角」，360° 无法被 EDA 还原
+                                        // → 从当前点起按对径点拆成两段 180°，几何完全等价且路径连续。
+                                        const dir = (cmd.mode === 3) ? 1 : -1;
+                                        const ox = 2 * centerX - currX, oy = 2 * centerY - currY;
+                                        tempPolySegments.push({ x1: currX, y1: currY, x2: ox, y2: oy, width: currentWidth, type: 'ARC', angle: 180 * dir, stroke: !!stroke });
+                                        tempPolySegments.push({ x1: ox, y1: oy, x2: currX, y2: currY, width: currentWidth, type: 'ARC', angle: 180 * dir, stroke: !!stroke });
+                                    } else {
+                                        seg.angle = sweep * 180 / Math.PI;
+                                        tempPolySegments.push(seg);
+                                    }
                                 }
-                                tempPolySegments.push(seg);
                             }
                         }
 

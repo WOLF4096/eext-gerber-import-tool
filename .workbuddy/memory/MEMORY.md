@@ -162,3 +162,24 @@ EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外�
   随机（圆/矩形逆时针、线段四边形顺时针）→ 必须先统一方向（`fillRingArea(p) < 0` 就
   `fillReverseRing`），否则圆角被整块挖掉。
 - 缓存键 = 光圈类型 + 参数 + 倍率；实测 48~61 条，整板 3473 flash 全量重绘 ≈ 40ms。
+
+## Copper 段描边铜 → 合并 POLY（2026-10-17，V3.8.2）
+- `G04 Copper Start/End` 段里 **G36 区域之外的 D01/弧**（EasyEDA 用 0.2mm 光圈描出的铜箔轮廓）
+  不再逐段进 `rawTracks`，改走与非铜层折线相同的 `tempPolySegments → flushPoly → mergeSegments → rawPolys`。
+- 标记：`rawPolys[i].isStroke = true`（由 `seg.stroke` 经 `mergeSegments` 透传）。
+  `Track Start/End` 段仍是真·走线，保持 `rawTracks`（`effMode === "TRACK"` 已与 COPPER 拆开）。
+- **标准版导出必须分流**：`isStroke` 的铜层 POLY → 带线宽的多点 TRACK；否则落 SOLIDREGION，
+  而 SOLIDREGION 只写中心线 → 0.2mm 描边铜变成零宽轮廓（几何全丢）。
+- **网络**：`netBuildPrims` 里 `isStroke` 的 POLY 走 `pushStrokePoly`，按线段（弧 ≤22.5° 离散）入图，
+  `src` 仍指向 POLY 本体 → 整条折线拿同一个网络名。不能走 `netPathToVertices`：它只取顶点，
+  2 点开口折线顶点数 < 3 会被跳过（没网络名），弧也被当弦。
+- 折线通道的 **360° 整圆**按对径点（`2c - 起点`）拆两段 180°；不能照搬 TRACK 通道的 px/qx 拆法，
+  那两段接不上路径起点，POLY 会断开。
+- 实测 pcb1（GTL/GBL/G1/GKO）：顶层 1421 段 → 37 条 POLY，长度 1193.294 vs 1193.241mm（0.004%）；
+  专业版图元 3592 → 1030（LINE 1529 + ARC 1607 → 462 + 0），网络名 127 个不变；标准版 3557 → 995。
+- g12（Copper 段无区外线）逐项零差异；V2/V3 输出一致；80 条描边 POLY 全部带网络名、78 条含 ARC。
+- 校验脚本：`Temp/copper_stroke_check.js`（12/12）、`Temp/copper_stroke_pro_check.js`（9/9）、
+  `Temp/copper_stroke_ab.js`（7/7，A/B 基线用 `git archive HEAD` 导出到 `Temp/old`）。
+- ⚠️ 测试坑：`rawFilesCache` / `loadedFiles` 是 03-state.js 的顶层 `let`，在页面里必须**裸赋值**
+  （`rawFilesCache = …`）；写成 `window.rawFilesCache = …` 只会加一个 window 属性，原变量仍是 `[]`，
+  于是 `hasSectionMarkers` 判为 false、全走推断分支，测试会静默测错版本。

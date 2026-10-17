@@ -1712,9 +1712,66 @@
             });
         });
 
+        /**
+         * 铜层「描边折线」（G04 Copper 段里 G36 区域之外的 D01/弧，导出为带线宽的 POLY）
+         * 按**线段**参与连通判定，而不是按多边形顶点。
+         * 原因：
+         *   ① 开口折线（例如只有 2 个点的一段 0.2mm 直铜）顶点不足 3 个，走多边形分支会被
+         *      直接跳过 → 整条线拿不到网络名；
+         *   ② netPathToVertices 只取顶点，弧会被当弦（差一个矢高），与真实铜形不符。
+         * 这里按 ≤22.5° 离散后逐段入图，多个子段共用同一个 src（POLY 本体），
+         * 回填网络时仍映射回整条 POLY —— 与导线圆弧离散的处理方式完全一致。
+         */
+        const pushStrokePoly = (p, i) => {
+            const w = (p.width > 0) ? p.width : 0.15;
+            const layers = [p.layerId];
+            const path = p.path || [];
+            const STEP = Math.PI / 8;   // 22.5°
+            let prev = null, si = 0;
+            path.forEach(op => {
+                if (!op || typeof op.x !== 'number' || !isFinite(op.x) ||
+                    typeof op.y !== 'number' || !isFinite(op.y)) return;
+                if (op.cmd === 'M' || prev === null) { prev = op; return; }
+                if (op.cmd === 'L') {
+                    prims.push({
+                        id: `Y${i}_${si++}`, src: p, layers, shape: 'line',
+                        x1: prev.x, y1: prev.y, x2: op.x, y2: op.y, w, net: '', isFlying: false
+                    });
+                    prev = op;
+                    return;
+                }
+                if (op.cmd !== 'A' && op.cmd !== 'ARC') { prev = op; return; }
+                const angle = (op.sweep !== undefined) ? op.sweep : op.angle;
+                const ch = Math.hypot(op.x - prev.x, op.y - prev.y);
+                const th = Math.min(Math.abs(angle || 0) * Math.PI / 180, Math.PI * 2);
+                if (ch < 1e-9 || th < 1e-9) { prev = op; return; }
+                const r = ch / (2 * Math.sin(th / 2));
+                const mx = (prev.x + op.x) / 2, my = (prev.y + op.y) / 2;
+                const nx = -(op.y - prev.y) / ch, ny = (op.x - prev.x) / ch;
+                const hh = Math.sqrt(Math.max(0, r * r - (ch / 2) * (ch / 2)));
+                const sign = (angle >= 0) ? 1 : -1;
+                const cx = mx + nx * hh * sign, cy = my + ny * hh * sign;
+                const a0 = Math.atan2(prev.y - cy, prev.x - cx);
+                const sweep = sign * th;
+                const N = Math.max(2, Math.min(12, Math.ceil(Math.abs(sweep) / STEP)));
+                let ax = prev.x, ay = prev.y;
+                for (let k = 1; k <= N; k++) {
+                    const a = a0 + sweep * (k / N);
+                    const qx = cx + r * Math.cos(a), qy = cy + r * Math.sin(a);
+                    prims.push({
+                        id: `Y${i}_${si++}`, src: p, layers, shape: 'line',
+                        x1: ax, y1: ay, x2: qx, y2: qy, w, net: '', isFlying: false
+                    });
+                    ax = qx; ay = qy;
+                }
+                prev = op;
+            });
+        };
+
         const addPolygon = (arr, prefix, key) => {
             (arr || []).forEach((p, i) => {
                 if (!netIsCopperLayer(p.layerId)) return;
+                if (p.isStroke) { pushStrokePoly(p, i); return; }   // 描边折线：按线段入图
                 const v = netPathToVertices(p.path);
                 if (v.length < 3) return;
                 prims.push({
