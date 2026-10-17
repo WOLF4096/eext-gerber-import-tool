@@ -122,7 +122,7 @@
 - **阻焊 / 助焊扩展**：自动计算焊盘的阻焊与钢网扩展量（含宏光圈焊盘）。
 - **坐标精度**：可手动调整整数位与小数位，解决 Gerber 导入比例错误。
 - **飞针标注**：导入的压缩包若含 `FlyingProbeTesting.json`，可在画布叠加显示**引脚编号**、**网络名称**与**元件位号**（前两者仅显示，「元件位号」勾选后可写入装配层文字）。
-- **FPC 补强（Stiffener）**：自动识别 `*StiffenerLayer_*` 文件并归入补强层（58 / 59），从文件名解析材料（Polyimide / FR4 / Stainless Steel / TESA8854 / EMI Shielding Film）与厚度，生成带材料属性的 `FPC_FILL` 图元，同时把板类型切为 FPC。
+- **FPC 补强（Stiffener）**：自动识别 `*StiffenerLayer_*` 文件并归入补强层（58 / 59），从文件名解析材料（Polyimide / FR4 / Stainless Steel / TESA8854 / EMI Shielding Film）与厚度，生成带材料属性的 `FPC_FILL` 图元，同时把板类型切为 FPC。画布上会在每块补强中心标注「材料简称 + 厚度」（PI / FR4 / 钢片 / 双面胶 / 电磁屏蔽膜，颜色 `#193366`），该标注可在图层面板的「补强名称」行单独关闭。
 - **专业版 V4 写入**：在 4.x 客户端里使用「通过源码导入」时，自动按 V4 文档头（含 `LAYER_PHYS`、`D3_ATTRIBUTE` 与新增显示配置）生成源码；图元行与 V3 完全一致。仅支持写入当前画布，不产出 V4 工程文件。
 
 ---

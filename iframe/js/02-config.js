@@ -92,13 +92,29 @@
         //     不对应任何 Gerber 文件、也不参与导入。前两个只显示，元件位号勾选后才会导出。
         ["LAYER",2001, "PAD_NUMBER", "引脚编号", 3, "#ffffff", 1, "#7f2a2a", 0.5],
         ["LAYER",2002, "NET_NAME",   "网络名称", 3, "#ffffff", 1, "#196f7f", 0.5],
-        ["LAYER",2003, "REFDES",     "元件位号", 3, "#00ffff", 1, "#7f226f", 0.5]
+        ["LAYER",2003, "REFDES",     "元件位号", 3, "#00ffff", 1, "#7f226f", 0.5],
+        // --- [新增] FPC 补强标注层（2004）：显示「材料简称 + 厚度」，数据来自补强层
+        //     Gerber 的文件名（材料/厚度）。同样只做画布标注，不参与导入导出。
+        ["LAYER",2004, "STIFFENER_LABEL", "补强名称", 3, "#193366", 1, "#0d1f3d", 0.5]
     ];
 
     // 飞针标注层 id 常量（与上面的 rawLayerData 一一对应）
-    const FLYING_LAYER = { PAD_NUMBER: 2001, NET_NAME: 2002, REFDES: 2003 };
-    const FLYING_LAYER_IDS = [FLYING_LAYER.PAD_NUMBER, FLYING_LAYER.NET_NAME, FLYING_LAYER.REFDES];
+    const FLYING_LAYER = { PAD_NUMBER: 2001, NET_NAME: 2002, REFDES: 2003, STIFFENER: 2004 };
+    // 依赖飞针文件的三层（没有 FlyingProbeTesting.json 时不显示）
+    const FLYING_PIN_LAYER_IDS = [FLYING_LAYER.PAD_NUMBER, FLYING_LAYER.NET_NAME, FLYING_LAYER.REFDES];
+    // 全部标注层（含补强）：用于 isFlyingLayer 判定与图层行渲染
+    const FLYING_LAYER_IDS = FLYING_PIN_LAYER_IDS.concat([FLYING_LAYER.STIFFENER]);
     const isFlyingLayer = (id) => FLYING_LAYER_IDS.indexOf(id) >= 0;
+
+    // FPC 补强材料 → 画布显示名（画布空间有限，用简称；厚度另起一行）。
+    // 未列出的材料直接显示原名（例如 pst_/psb_ 解析出的 TESA 型号以外的值）。
+    const STIFFENER_LABEL = {
+        'Polyimide': 'PI',
+        'FR4': 'FR4',
+        'Stainless Steel': '钢片',
+        'TESA8854': '双面胶',
+        'EMI Shielding Film': '电磁屏蔽膜'
+    };
 
     // 元件位号字高：
     //   · 导出（装配层文字）—— 24 mil
@@ -109,6 +125,9 @@
     // 引脚编号 / 网络名称的文字上限（px）；低于下限说明焊盘实在装不下，直接隐藏
     const FLYING_LABEL_MAX_FONT = 12;
     const FLYING_LABEL_MIN_FONT = 4;
+    // FPC 补强标注：排布规则与引脚标注相同（两行、各占半高、字号自适应），
+    // 但补强区域通常比焊盘大得多，沿用 12px 上限会让文字显得过小，这里单独放宽。
+    const FLYING_STIFFENER_MAX_FONT = 24;
 
     // 添加自定义层 (71-100)
     for(let i=71; i<=100; i++) {

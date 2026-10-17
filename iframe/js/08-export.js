@@ -485,6 +485,14 @@
         const copperCount = copperCountEl ? (parseInt(copperCountEl.value) || 2) : 2;
         const neededInner = Math.max(0, copperCount - 2);
 
+        // 本次导入是否含 FPC 补强层（58 顶部 / 59 底部）。
+        // 模板取自「空白 PCB」，这两层默认 use=false / show=false；若不在这里打开，
+        // FPC_FILL 图元写进去了也会因为图层被禁用而不可见（对比官方空白 FPC 源码，
+        // 它与空白 PCB 源码的唯一结构差异就是这两行的 use/show）。
+        const needStiffener = (typeof loadedFiles !== 'undefined' && loadedFiles)
+            ? loadedFiles.some(f => f.layerId === 58 || f.layerId === 59)
+            : false;
+
         const getLyrIdx = (id) => {
             if (id === 1) return 1;
             if (id === 2) return copperCount; 
@@ -566,6 +574,14 @@
                                 isModified = true;
                             }
                         }
+                        // FPC 补强层：含补强数据时强制启用（模板里默认是禁用的）
+                        if (needStiffener && (content.layerId === 58 || content.layerId === 59)) {
+                            if (content.use !== true || content.show !== true) {
+                                content.use = true;
+                                content.show = true;
+                                isModified = true;
+                            }
+                        }
                     }
 
                     // B. 修改埋盲孔规则
@@ -626,6 +642,10 @@
                         const isEnabled = innerIndex <= neededInner;
                         arr[4] = isEnabled ? 3 : 0; 
                         return JSON.stringify(arr);
+                    }
+                    // FPC 补强层（58/59）：V2 的 LAYER[4] 是启用标记，0=禁用 / 3=启用
+                    if (needStiffener && (id === 58 || id === 59)) {
+                        if (arr[4] !== 3) { arr[4] = 3; return JSON.stringify(arr); }
                     }
                 }
 
@@ -1309,8 +1329,8 @@
 
     // 标准版图层表 / 对象表 / 设计规则（照抄参考文件，保证与官方模板一致）
     const STD_LAYERS = [
-        '1~TopLayer~#FF0000~true~false~true~',
-        '2~BottomLayer~#0000FF~true~false~true~',
+        '1~TopLayer~#cc6633~true~false~true~',
+        '2~BottomLayer~#6699ff~true~false~true~',
         '3~TopSilkLayer~#FFCC00~true~false~true~',
         '4~BottomSilkLayer~#66CC33~true~false~true~',
         '5~TopPasteMaskLayer~#808080~true~false~true~',
@@ -1324,10 +1344,10 @@
         '13~TopAssembly~#33CC99~false~false~false~',
         '14~BottomAssembly~#5555FF~false~false~false~',
         '15~Mechanical~#F022F0~false~false~false~',
-        '19~3DModel~#66CCFF~false~false~false~',
+        '19~3DModel~#ffffff~false~false~false~',
         '21~Inner1~#999966~false~false~false~~',
-        '22~Inner2~#008000~false~false~false~~',
-        '23~Inner3~#00FF00~false~false~false~~',
+        '22~Inner2~#0099cc~false~false~false~~',
+        '23~Inner3~#339999~false~false~false~~',
         '24~Inner4~#BC8E00~false~false~false~~',
         '25~Inner5~#70DBFA~false~false~false~~',
         '26~Inner6~#00CC66~false~false~false~~',
@@ -1712,6 +1732,10 @@
 
         // ---------- 4. 折线 / 覆铜 / 板框 ----------
         (uni.polys || []).forEach(p => {
+            // 标准版没有 FPC 补强层：58/59 的图元一律跳过。
+            // （STD_LAYER 对未知 id 会兜底到 Document(12)，不跳过就会把补强轮廓
+            //  错误地画到文档层上。）
+            if (p.layerId === 58 || p.layerId === 59) return;
             const pts = stdFlattenPath(p.path, 6);
             if (pts.length < 2) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
@@ -1735,6 +1759,8 @@
 
         // ---------- 5. 填充区域（含铜层覆铜，统一走 SOLIDREGION） ----------
         (uni.fills || []).forEach(f => {
+            // 标准版不支持 FPC 补强层（58/59），直接跳过
+            if (f.layerId === 58 || f.layerId === 59) return;
             const pts = stdFlattenPath(f.path, 6);
             if (pts.length < 3) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
@@ -1743,6 +1769,8 @@
 
         // ---------- 6. 图片（轮廓填充） ----------
         (uni.images || []).forEach(img => {
+            // 标准版不支持 FPC 补强层（58/59），直接跳过
+            if (img.layerId === 58 || img.layerId === 59) return;
             const pts = stdFlattenPath(img.path, 6);
             if (pts.length < 3) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));

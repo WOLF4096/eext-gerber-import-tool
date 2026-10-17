@@ -31,7 +31,9 @@
     const flyingOverlayVisible = {
         [FLYING_LAYER.PAD_NUMBER]: true,
         [FLYING_LAYER.NET_NAME]: true,
-        [FLYING_LAYER.REFDES]: true
+        [FLYING_LAYER.REFDES]: true,
+        // FPC 补强「材料 + 厚度」标注，同样默认显示
+        [FLYING_LAYER.STIFFENER]: true
     };
     // 标注数据缓存：{ pads:[{x,y,num,net}], comps:[{x,y,ref}] }。导入/重载时置空重建，
     // 避免在 drawCanvas（跟随平移缩放高频调用）里重复做 extractRawData + consolidate。

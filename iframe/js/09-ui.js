@@ -141,14 +141,18 @@
     }
 
     /**
-     * 渲染飞针标注层行：引脚编号 / 网络名称 / 元件位号。
-     * 这三层没有对应的输入文件，数据全部来自飞针测试文件；没有飞针文件时不显示。
-     * 「引脚编号」「网络名称」只做画布标注，不参与导入；「元件位号」勾选后才随导出写入。
+     * 渲染标注层行：引脚编号 / 网络名称 / 元件位号 / 补强名称。
+     * 前三层需要飞针文件；「补强名称」只要有补强层（58/59）就显示 —— 两者独立判断。
+     * （早先这里一进来就判断飞针文件，导致 FPC 板通常没有飞针文件时，补强行根本不出现。）
+     * 这些层都没有对应的输入文件；前三层只做画布标注，「元件位号」勾选后才随导出写入。
      */
     function renderFlyingLayerRows(container) {
-        if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return;
+        const hasFlying = (typeof flyingProbeData !== 'undefined' && !!flyingProbeData);
+        const hasStiff = (typeof loadedFiles !== 'undefined' && loadedFiles)
+            ? loadedFiles.some(f => f.layerId === 58 || f.layerId === 59) : false;
+        if (!hasFlying && !hasStiff) return;
 
-        // 并入「自定义/特殊」分组：找到该分组的最后一行，把飞针标注行紧接其后插入；
+        // 并入「自定义/特殊」分组：找到该分组的最后一行，把标注行紧接其后插入；
         // 若当前没有任何「自定义/特殊」文件，则先补一个分组标题（无文件时该组没有复选框行）。
         const customGid = uiGroups[4].id;
         let anchor = null;
@@ -163,8 +167,12 @@
             anchor = head;
         }
 
+        const ids = [];
+        if (hasFlying) ids.push(...FLYING_PIN_LAYER_IDS);
+        if (hasStiff) ids.push(FLYING_LAYER.STIFFENER);
+
         let insertAfter = anchor;
-        FLYING_LAYER_IDS.forEach(id => {
+        ids.forEach(id => {
             const def = layerDefs[id];
             if (!def) return;
             const row = document.createElement('div');
@@ -689,9 +697,40 @@
      */
     function ensureFlyingLabels() {
         if (flyingLabelCache !== null) return flyingLabelCache;
-        flyingLabelCache = { pads: [], comps: [] };
-        if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return flyingLabelCache;
+        flyingLabelCache = { pads: [], comps: [], stiffeners: [] };
         if (!loadedFiles || loadedFiles.length === 0) return flyingLabelCache;
+
+        // extractRawData 在大板上开销不小，而补强与飞针都要用同一份数据 → 只取一次
+        let rawCache = null;
+        const getRaw = () => {
+            if (!rawCache) rawCache = PadTool.extractRawData(loadedFiles.slice());
+            return rawCache;
+        };
+
+        // ① FPC 补强标注：材料 + 厚度，与飞针无关，只要有补强填充就构建。
+        //    位置取补强区域的包围盒中心，尺寸用于字号自适应（与焊盘标注同一套 fitFont 规则）。
+        try {
+            (getRaw().rawFills || []).forEach(f => {
+                if ((f.layerId !== 58 && f.layerId !== 59) || !f.stiffener) return;
+                let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+                (f.path || []).forEach(op => {
+                    if (typeof op.x !== 'number' || !isFinite(op.x)) return;
+                    if (typeof op.y !== 'number' || !isFinite(op.y)) return;
+                    if (op.x < x0) x0 = op.x; if (op.x > x1) x1 = op.x;
+                    if (op.y < y0) y0 = op.y; if (op.y > y1) y1 = op.y;
+                });
+                if (!isFinite(x0) || !(x1 > x0) || !(y1 > y0)) return;
+                flyingLabelCache.stiffeners.push({
+                    x: (x0 + x1) / 2, y: (y0 + y1) / 2,
+                    bw: x1 - x0, bh: y1 - y0,
+                    material: f.stiffener.material,
+                    thickness: f.stiffener.thickness
+                });
+            });
+        } catch (e) { console.error('补强标注构建失败:', e); }
+
+        // ② 飞针标注：没有飞针文件时到此为止（补强标注已经构建好了）
+        if (typeof flyingProbeData === 'undefined' || !flyingProbeData) return flyingLabelCache;
 
         const index = buildFlyingPinIndex(flyingProbeData);
         // 孤立焊盘的占位名（PAD / PAD1 / PAD23…）不作为位号显示
@@ -700,11 +739,11 @@
 
         try {
             // 用全部已加载文件（不按勾选过滤）：标注层的显隐应独立于铜层勾选状态
-            const rawData = PadTool.extractRawData(loadedFiles.slice());
+            const rd = getRaw();
             const uni = PadTool.consolidate(
-                rawData.rawPads || [], rawData.rawVias || [], rawData.rawTracks || [],
-                rawData.rawPolys || [], rawData.rawFills || [], rawData.drills || [],
-                rawData.rawImages || [], rawData.rawTextLines || [], rawData.rawCoppers || []
+                rd.rawPads || [], rd.rawVias || [], rd.rawTracks || [],
+                rd.rawPolys || [], rd.rawFills || [], rd.drills || [],
+                rd.rawImages || [], rd.rawTextLines || [], rd.rawCoppers || []
             );
             (uni.unifiedPads || []).forEach(pad => {
                 const prim = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
@@ -739,18 +778,21 @@
         const showNum = !!flyingOverlayVisible[FLYING_LAYER.PAD_NUMBER];
         const showNet = !!flyingOverlayVisible[FLYING_LAYER.NET_NAME];
         const showRef = !!flyingOverlayVisible[FLYING_LAYER.REFDES];
-        if (!showNum && !showNet && !showRef) return;
+        const showStiff = !!flyingOverlayVisible[FLYING_LAYER.STIFFENER];
+        if (!showNum && !showNet && !showRef && !showStiff) return;
 
         const labels = ensureFlyingLabels();
         const wantPad = (showNum || showNet) && labels.pads.length > 0;
         const wantRef = showRef && labels.comps.length > 0;
-        if (!wantPad && !wantRef) return;
+        const wantStiff = showStiff && labels.stiffeners.length > 0;
+        if (!wantPad && !wantRef && !wantStiff) return;
 
         const s = viewState.scale || 1;
         const cssW = mainCanvas.width / dpr; const cssH = mainCanvas.height / dpr;
         const numCol = (layerDefs[FLYING_LAYER.PAD_NUMBER] || {}).color || '#ff5555';
         const netCol = (layerDefs[FLYING_LAYER.NET_NAME] || {}).color || '#33e0ff';
         const refCol = (layerDefs[FLYING_LAYER.REFDES] || {}).color || '#ff44dd';
+        const stiffCol = (layerDefs[FLYING_LAYER.STIFFENER] || {}).color || '#193366';
 
         ctx.save();
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);   // 只保留屏幕 DPR，坐标=CSS 像素
@@ -767,13 +809,14 @@
         };
         const setFont = (px) => { ctx.font = px + 'px Consolas, "Courier New", monospace'; };
         /** 在 maxW × maxH 的像素框内，text 能用的最大字号（0 = 放不下） */
-        const fitFont = (text, maxW, maxH) => {
+        const fitFont = (text, maxW, maxH, maxFont) => {
             if (maxW <= 1 || maxH <= 1) return 0;
             const probe = 10;
             setFont(probe);
             const w = ctx.measureText(text).width;
             if (!(w > 0)) return 0;
-            return Math.min(probe * maxW / w, maxH, FLYING_LABEL_MAX_FONT);
+            const cap = (maxFont > 0) ? maxFont : FLYING_LABEL_MAX_FONT;
+            return Math.min(probe * maxW / w, maxH, cap);
         };
 
         if (wantPad) {
@@ -822,6 +865,40 @@
             labels.comps.forEach(c => {
                 const pt = project(c.x, c.y, 60);
                 if (pt) ctx.fillText(String(c.ref), pt.x, pt.y);
+            });
+        }
+
+        // FPC 补强：材料名在上、厚度在下，与「引脚编号 / 网络名称」完全同一套排布与字号规则
+        if (wantStiff) {
+            labels.stiffeners.forEach(st => {
+                const pt = project(st.x, st.y, 60);
+                if (!pt) return;
+                const boxW = (st.bw || 0) * s - 2;
+                const boxH = (st.bh || 0) * s - 2;
+                if (boxW <= 1 || boxH <= 1) return;      // 补强区域太小 → 不显示
+
+                const nameTxt = STIFFENER_LABEL[st.material] || st.material || '';
+                const thTxt = (st.thickness !== null && st.thickness !== undefined && isFinite(st.thickness))
+                    ? String(st.thickness) + 'mm' : '';
+
+                // ① 两行：材料在上、厚度在下，各占半高
+                if (nameTxt && thTxt) {
+                    const fName = fitFont(nameTxt, boxW, boxH / 2, FLYING_STIFFENER_MAX_FONT);
+                    const fTh = fitFont(thTxt, boxW, boxH / 2, FLYING_STIFFENER_MAX_FONT);
+                    if (fName >= FLYING_LABEL_MIN_FONT && fTh >= FLYING_LABEL_MIN_FONT) {
+                        const half = boxH / 4;
+                        setFont(fName); ctx.fillStyle = stiffCol; ctx.fillText(nameTxt, pt.x, pt.y - half);
+                        setFont(fTh); ctx.fillStyle = stiffCol; ctx.fillText(thTxt, pt.x, pt.y + half);
+                        return;
+                    }
+                }
+                // ② 单行兜底：优先材料名，放不下才轮到厚度
+                const single = nameTxt || thTxt;
+                if (!single) return;
+                const f = fitFont(single, boxW, boxH, FLYING_STIFFENER_MAX_FONT);
+                if (f >= FLYING_LABEL_MIN_FONT) {
+                    setFont(f); ctx.fillStyle = stiffCol; ctx.fillText(single, pt.x, pt.y);
+                }
             });
         }
         ctx.restore();

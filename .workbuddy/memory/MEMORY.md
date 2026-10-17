@@ -213,3 +213,40 @@ EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外�
 - `08-export.js`：`isV3`（严格 V3，仅用于 .epru 打包）+ `isLineFormat = isV3 || isV4`（源码拼接 / configureHeader / generatePrimitives 共用）。
 - `calculateMaxId` 的 V3 分支扩展到 V4（同样的 ticket/id 正则）。
 - ⚠️ V4 的 `ticket/id` 起始值比 V3 大（头部行更多）→ 对比 V3/V4 源码时要归一化编号再比。
+
+### V4 模板的三个坑（2026-10-17 修正，V3.9.1）
+- **转义**：模板字面量里 JSON 的 `\"` 必须写成 `\\"`（源文件 1 个反斜杠 → 模板里 2 个）。
+  少一层就会在运行时被吃掉，`LAYER` 行变成 `"id":"["LAYER",1]"` 非法 JSON（**60 行全废，
+  浏览器里同样失败**，不是 Node 的锅）。
+- **末行不留竖线**：EDA 源码每行以 `|` 结尾，但**最后一行不能有**。拼接图元用的是 `"|\n"`，
+  末行自带竖线会形成 `}||`，body 尾部残留 `|` → JSON 非法。
+- **模板来源**：以官方 4.x 导出的空白源码为准。4.1.78 导出的 `DOCHEAD` **没有 `editVersion`**，
+  新版 `LAYER` 行**带 `layerId`**；不要按旧模板补猜字段。
+- 生成脚本 `Temp/rebuild_v4_template.js`：源文件 → 逐行 JSON 解析 → 颜色对齐 V3 → 转义 → 写回 →
+  **运行时复核**（`new Function` 取回后逐行 JSON.parse）。复核必须跑，否则静默写出坏模板。
+
+### 颜色统一与 FPC 层启用（2026-10-17，V3.9.1）
+- 四套源码颜色以 **V3 模板**为基准：V2 本就一致（0 差异）；V4 模板 60 个图层的
+  `activeColor/inactiveColor/activateTransparency/inactiveTransparency` 已全部对齐；
+  标准版 `STD_LAYERS` 按**语义**映射对齐 —— 标准版图层 id 与内部编号不是一套
+  （5=锡膏 / 7=阻焊 / 10=板框 / 11=Multi / 12=Document / 15=Mechanical / 21-52=Inner1-32 /
+  99=零件形状 / 100=引脚 / 101=标记 / Hole），不能按 id 硬对。
+- **FPC 层启用**：`configureHeader` 用 `needStiffener`（loadedFiles 是否含 58/59）判断；
+  V3/V4 把 `use/show` 置 true，V2 把 `LAYER[4]` 置 3。模板来自空白 PCB，这两层默认禁用，
+  不打开的话 `FPC_FILL` 写进去也看不见。
+- **标准版不支持 FPC**：`buildStandardSource` 的 polys/fills/images 跳过 58/59。
+  否则 `STD_LAYER(58)` 兜底返回 12（Document），补强会画到文档层上。
+- 官方空白 PCB 与空白 FPC 源码的**唯一结构差异**就是 `LAYER:58/59` 的 `use/show`
+  （其余 141 行一致，DOCHEAD 仅 client/updateTime/version 不同）。
+
+### FPC 补强画布标注（2026-10-17，V3.9.2）
+- 补强区域中心画两行：**材料简称在上、厚度在下**（`0.2mm`），与引脚编号/网络名称同一套
+  `fitFont` 排布（各占半高、`half = boxH/4`、居中、随缩放）。颜色 `#193366`。
+- 材料简称表 `STIFFENER_LABEL`（02-config）：PI / FR4 / 钢片 / 双面胶 / 电磁屏蔽膜；
+  未收录材料显示原名。字号上限 `FLYING_STIFFENER_MAX_FONT=24`（引脚是 12）。
+- 新增标注层 2004「补强名称」，`FLYING_LAYER.STIFFENER`，并入「自定义/特殊」分组、默认勾选。
+  `flyingOverlayVisible` 加一项；`toggleOverlay` 直接复用。
+- ⚠️ `renderFlyingLayerRows` 原来第一行就 `if (!flyingProbeData) return` —— FPC 板通常没有飞针文件，
+  导致补强行根本不出现。现在拆成 `hasFlying` / `hasStiff` 两个独立条件，
+  用 `FLYING_PIN_LAYER_IDS`（前三层）与 `FLYING_LAYER.STIFFENER` 分别渲染。
+- `ensureFlyingLabels` 里 `extractRawData` 抽成 `getRaw()` 只调一次，补强与飞针共用（大板开销大）。
