@@ -253,9 +253,14 @@
                 
                 // 恢复图层可见性
                 loadedFiles.forEach((f, i) => f.visible = savedState.visibility[i]);
-                
-                // 重绘
-                drawCanvas();
+
+                // 恢复画布尺寸 + 重绘。
+                // ⚠️ 必须走 resizeCanvas()，不能只赋 width/height：给 canvas.width 赋值会
+                //    把 context 变换重置成单位矩阵，dpr 缩放随之丢失。实测后果是「导出过 PDF
+                //    之后，高 DPI 屏上图形按设备像素绘制（缩小 dpr 倍、偏左上），而标注文字
+                //    仍按绝对 dpr 绘制」—— 即用户看到的图形与文字 DPI 不一致。
+                //    resizeCanvas 会重新按 dpr 设置尺寸、scale 并 requestDraw。
+                resizeCanvas();
             }
             overlay.style.display = 'none';
         }
@@ -1713,6 +1718,16 @@
 
         // ---------- 3. 导线 / 圆弧 ----------
         const tracks = uni.tracks || [];
+        // 合并用收集器：所有「直线段」（导线 + 折线的相邻点）先收进来，
+        // 最后按 (层, 线宽, 网络) 做链式合并，输出成一条多点 TRACK。
+        // 标准版没有折线图元，相邻导线合并能显著减少图元数（官方导出也是这么做的）。
+        const stdTrackSegs = [];
+        const pushSeg = (layerId, width, net, ax, ay, bx, by) => {
+            if (typeof ax !== 'number' || !isFinite(ax) || typeof ay !== 'number' || !isFinite(ay)) return;
+            if (typeof bx !== 'number' || !isFinite(bx) || typeof by !== 'number' || !isFinite(by)) return;
+            if (Math.abs(ax - bx) < 1e-9 && Math.abs(ay - by) < 1e-9) return;   // 退化段
+            stdTrackSegs.push({ layerId: layerId, width: width, net: net, a: [ax, ay], b: [bx, by] });
+        };
         // 圆弧 → 标准版 ARC 图元： d = "M sx,sy A r,r 0 <largeArc> <sweep> ex,ey"
         // 扫描方向与参考文件一致：Gerber G03（逆时针，角度为正）→ sweep-flag 0，G02 → 1。
         const svgArcD = (sx, sy, ex, ey, r, sweepDeg) => {
@@ -1729,9 +1744,8 @@
             const sw = stdU(t.width || 0.15);
             const gid = nextGid();
             if (t.type !== 'ARC') {
-                grow(stdX(t.x1), stdY(t.y1)); grow(stdX(t.x2), stdY(t.y2));
-                // [3] = 网络名（TRACK 7 字段布局：TRACK~sw~layer~net~points~gid~locked）
-                shapes.push(['TRACK', sw, layer, stdNet(t), stdX(t.x1) + ' ' + stdY(t.y1) + ' ' + stdX(t.x2) + ' ' + stdY(t.y2), gid, 0].join('~'));
+                // 直线段：交给链式合并（层 / 线宽 / 网络任一不同都不会并到一起）
+                pushSeg(t.layerId, t.width || 0.15, stdNet(t), t.x1, t.y1, t.x2, t.y2);
                 continue;
             }
             // 360° 整圆在提取阶段已拆成「两段对向的 180° 半圆」——
@@ -1772,21 +1786,17 @@
             if (p.layerId === 58 || p.layerId === 59) return;
             const pts = stdFlattenPath(p.path, 6);
             if (pts.length < 2) return;
-            pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
-            if (p.layerId === 11) {
-                // 板框：标准版用 BoardOutLine 层上的闭合 TRACK 折线承载（板框不属于任何网络）
-                shapes.push(['TRACK', stdU(p.width || 0.254), 10, '', stdPointStr(pts), nextGid(), 0].join('~'));
-            } else {
-                // 【2026-10-17】标准版**没有折线（POLY）图元**，折线一律转成带线宽的多点 TRACK：
-                // 一条 POLY = 一条多段 TRACK，不拆散。TRACK 允许出现在非铜层
-                // （丝印 / 文档 / 机械 / 装配），标准版打开后就是对应的「走线」。
-                //
-                // 这里不再区分铜层：以前铜层的非描边 POLY 走 SOLIDREGION（实心区域），
-                // 但 POLY 本身是「折线」语义（可能开口、可能只表示轮廓），
-                // 转成 SOLIDREGION 会被当闭合填充 —— 0.2mm 的描边铜直接变成零宽/实心块，
-                // 几何与原意都不对。实心铜的真身在 uni.fills（下面的 FILLS 段），
-                // 由 stdSolidRegion 输出，不受此处影响。
-                shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), stdNet(p), stdPointStr(pts), nextGid(), 0].join('~'));
+            // 标准版**没有折线（POLY）图元**，折线一律转成带线宽的多点 TRACK，
+            // 允许落在非铜层（丝印 / 文档 / 机械 / 装配）。
+            //
+            // 这里把折线**拆成相邻段**交给统一的链式合并（而不是每条折线直接输出一条 TRACK）：
+            // 这样「折线接导线」「折线接折线」也能串成一条，与官方导出的形态一致。
+            // 不修改几何：合并只按端点拼接，输出的点列就是原来的端点序列。
+            // 板框（11）走 BoardOutLine 层、网络为空，也不参与铜层网络。
+            const pw = p.width || (p.layerId === 11 ? 0.254 : 0.15);
+            const pnet = (p.layerId === 11) ? '' : stdNet(p);
+            for (let k = 1; k < pts.length; k++) {
+                pushSeg(p.layerId, pw, pnet, pts[k - 1].x, pts[k - 1].y, pts[k].x, pts[k].y);
             }
         });
 
@@ -1809,6 +1819,87 @@
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
             shapes.push(stdSolidRegion(STD_LAYER(img.layerId), stdPathStr(pts, true), nextGid(), stdNet(img)));
         });
+
+        // ---------- 6.5 合并相邻导线 → 单条多点 TRACK ----------
+        // 规则：同层 + 同线宽 + 同网络 + 端点重合（0.001mm 量化）→ 串成一条链。
+        // 链在「端点（度 1）」与「分叉（度 > 2）」处断开 —— 分叉会拆成多条链各自输出，
+        // 因此**拓扑与几何都不变**，只是把首尾相接的多段并成一条（图元数显著减少）。
+        // 纯环（每个点度都是 2）单独处理，输出首尾闭合的点列。
+        // 注意：圆弧（ARC）不参与合并 —— 标准版的 ARC 是曲线图元，并进 TRACK 会变直。
+        if (stdTrackSegs.length) {
+            const QUANT = (v) => Math.round(v * 1000);          // 0.001 mm
+            const pk = (p) => QUANT(p[0]) + ',' + QUANT(p[1]);
+            const groups = new Map();
+            stdTrackSegs.forEach(s => {
+                const k = STD_LAYER(s.layerId) + '|' + s.width.toFixed(4) + '|' + s.net;
+                const arr = groups.get(k);
+                if (arr) arr.push(s); else groups.set(k, [s]);
+            });
+            let mergedChains = 0, totalChains = 0;
+            groups.forEach((segs, gk) => {
+                const parts = String(gk).split('|');
+                const layer = parseInt(parts[0], 10);
+                const width = parseFloat(parts[1]);
+                const net = parts.slice(2).join('|');
+                const adj = new Map();
+                const addAdj = (p, i, end) => {
+                    const k = pk(p);
+                    const arr = adj.get(k);
+                    if (arr) arr.push({ i: i, end: end });
+                    else adj.set(k, [{ i: i, end: end }]);
+                };
+                segs.forEach((s, i) => { addAdj(s.a, i, 'a'); addAdj(s.b, i, 'b'); });
+                const used = new Array(segs.length).fill(false);
+                const emit = (pts) => {
+                    if (pts.length < 2) return;
+                    pts.forEach(q => grow(stdX(q[0]), stdY(q[1])));
+                    const ptStr = pts.map(q => stdX(q[0]) + ' ' + stdY(q[1])).join(' ');
+                    shapes.push(['TRACK', stdU(width), layer, net, ptStr, nextGid(), 0].join('~'));
+                    totalChains++;
+                    if (pts.length > 2) mergedChains++;
+                };
+                const walk = (startIdx, startEnd) => {
+                    const pts = [];
+                    const pushPt = (p) => {
+                        const last = pts[pts.length - 1];
+                        // 只跳过「与上一个点重合」的点；环回到起点时要保留，否则闭合链缺一段
+                        if (last && pk(last) === pk(p)) return;
+                        pts.push(p);
+                    };
+                    let idx = startIdx, end = startEnd;
+                    const s0 = segs[idx];
+                    pushPt(end === 'a' ? s0.a : s0.b);
+                    while (true) {
+                        if (used[idx]) break;
+                        used[idx] = true;
+                        const s = segs[idx];
+                        const far = (end === 'a') ? s.b : s.a;
+                        pushPt(far);
+                        const cand = (adj.get(pk(far)) || []).filter(e => !used[e.i]);
+                        if (cand.length !== 1) break;   // 0 = 到头；>1 = 分叉，都停
+                        idx = cand[0].i;
+                        end = cand[0].end;
+                    }
+                    return pts;
+                };
+                // 先从端点(度 1)与分叉(度 > 2)起步，保证分叉处断开成多条
+                adj.forEach((list) => {
+                    if (list.length === 2) return;
+                    for (const e of list) {
+                        if (used[e.i]) continue;
+                        emit(walk(e.i, e.end));
+                    }
+                });
+                // 剩下的必然是环
+                for (let i = 0; i < segs.length; i++) {
+                    if (used[i]) continue;
+                    emit(walk(i, 'a'));
+                }
+            });
+            if (mergedChains) {
+                console.log(`标准版导线：${stdTrackSegs.length} 段 → ${totalChains} 条 TRACK（其中 ${mergedChains} 条为多段合并）`);
+            }
+        }
 
         // ---------- 7. 元件位号 → TEXT 图元（必须自带字形轮廓） ----------
         // 标准版没有「折线文字」这种表达：文字要么是 TEXT 图元（自带轮廓 path），
@@ -1833,8 +1924,10 @@
                 const capMil = (typeof FLYING_REFDES_HEIGHT_MIL === 'number') ? FLYING_REFDES_HEIGHT_MIL : 30;
                 const emStd = fontEmForCapHeight(capMil) / 10;    // 标准版单位 = 10 mil
                 const capStd = capMil / 10;
-                // 位号固定在文档层（标准版 Document = 12）
-                const txtLayer = 12;
+                // 位号固定在文档层：**只有**标准版导出写文档层
+                // （标准版层号 12 = Document Layer）。专业版走 05-pad-tool.js，
+                // 位号按元件所在面写顶层/底层装配层。
+                const txtLayer = (typeof FLYING_REFDES_LAYER_STD === 'number') ? FLYING_REFDES_LAYER_STD : 12;
                 const cFields = flyingProbeData.components.fields || [];
                 const ciName = cFields.indexOf('COMPONENT_NAME');
                 const ciX = cFields.indexOf('X_COORDINATE');

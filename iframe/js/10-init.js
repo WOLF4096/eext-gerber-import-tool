@@ -317,6 +317,8 @@
     });
 
     window.addEventListener('resize', resizeCanvas);
+    // 多显示器拖动时 dpr 会变但不一定触发 resize —— 单独监听，避免图形与文字 DPI 不一致
+    if (typeof watchDprChanges === 'function') watchDprChanges();
 
     // 启动时立即执行：调整画布大小。
     resizeCanvas();

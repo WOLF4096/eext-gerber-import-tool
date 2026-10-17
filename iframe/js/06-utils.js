@@ -1518,6 +1518,21 @@
         return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) && ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
     }
 
+    /**
+     * 两条线段之间的最近距离平方（相交返回 0）。
+     * 用于「导线端点正好搭在焊盘边界上」的判定：严格相交对这种情况返回 false，
+     * 单查顶点距离又太远（半个焊盘尺寸），必须比较「线段到线段」的距离。
+     */
+    function netSegSegDist2(ax, ay, bx, by, cx, cy, dx, dy) {
+        if (netSegmentsIntersect(ax, ay, bx, by, cx, cy, dx, dy)) return 0;
+        return Math.min(
+            netDistPointSeg2(ax, ay, cx, cy, dx, dy),
+            netDistPointSeg2(bx, by, cx, cy, dx, dy),
+            netDistPointSeg2(cx, cy, ax, ay, bx, by),
+            netDistPointSeg2(dx, dy, ax, ay, bx, by)
+        );
+    }
+
     function netPointInPoly(px, py, vertices) {
         let inside = false;
         for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
@@ -1652,6 +1667,21 @@
                 const lim2 = (((other.w || 0) / 2) ** 2);
                 for (const v of poly.vertices) {
                     if (netDistPointSeg2(v.x, v.y, other.x1, other.y1, other.x2, other.y2) <= lim2) return true;
+                }
+                // 线段到多边形**边**的距离 ≤ 线宽/2。
+                // 这条专门补「矩形/异形焊盘 + 导线端点正好搭在焊盘边界上」：
+                //   ① 严格相交对「端点落在边上」返回 false；
+                //   ② 端点是否在内部（ray casting）对边界点也不可靠；
+                //   ③ 多边形顶点到线段的距离 ≈ 半个焊盘尺寸，远大于 w/2。
+                // 三条都判不出来 → 导线与焊盘各成孤岛 → 同一网络分裂成两个名字（用户看到的
+                // 「焊盘A=NET1、焊盘B=NET2、导线=NET2」就是这条路）。圆形焊盘走的是
+                // 「圆心到线段距离 ≤ r + w/2」，本来就没有这个问题，所以只有矩形/异形盘暴露。
+                if (poly.vertices.length >= 2) {
+                    const vs = poly.vertices;
+                    for (let i = 0; i < vs.length; i++) {
+                        const p0 = vs[i], p1 = vs[(i + 1) % vs.length];
+                        if (netSegSegDist2(p0.x, p0.y, p1.x, p1.y, other.x1, other.y1, other.x2, other.y2) <= lim2) return true;
+                    }
                 }
             } else if (netPointInPoly(other.x, other.y, poly.vertices)) return true;
             // ③ 反向包含
@@ -1868,13 +1898,19 @@
      * 生成网络分配表。
      * @param {object} data { unifiedPads, remainingVias, tracks, polys, fills }
      * @param {object} opts { padNet:Map<pad,string>, innerCopperLayers:number[] }
-     * @returns {{netOf:Map<object,string>, stats:object}} netOf 以「原始图元对象」为键
+     * @returns {{netOf:Map<object,string>, renamed:Set<object>, stats:object}}
+     *   · netOf   以「原始图元对象」为键的网络名表
+     *   · renamed 因「两个不同网络名被连在一起」而**整块改名**的图元集合。
+     *     焊盘在图元生成时默认优先沿用飞针文件的 NET_NAME（飞针才是名字来源），
+     *     只有这些图元必须反过来以 netOf 为准，否则会出现
+     *     「焊盘 NET_4 / 焊盘 NET_2 / 中间导线 NET1」—— 同一个网络三个名字。
      */
     function buildNetAssignments(data, opts) {
         const prims = netBuildPrims(data, opts || {});
         const stats = { prims: prims.length, clusters: 0, named: 0, generated: 0, reused: 0, mixedClusters: 0, ambiguousClusters: 0, rejectedMerges: 0, renamedMerges: 0, renamedClusters: 0 };
         const netOf = new Map();
-        if (!prims.length) return { netOf, stats };
+        const renamed = new Set();
+        if (!prims.length) return { netOf, renamed, stats };
 
         // ① 空间网格求候选对（网格 5mm，另加 1mm 余量；坐标单位是 mm）
         const GRID = 5, PAD = 1;
@@ -1969,8 +2005,14 @@
             stats.clusters++;
 
             let target;
-            if (conflictRoots.has(root)) {
-                // 该分量发生过「两个不同已知网络被连在一起」的冲突合并。
+            let isRenamed = false;
+            // 需要改名的两种情况：
+            //   ① 该分量发生过「两个不同已知网络被直接连上」的冲突合并（conflictRoots）；
+            //   ② 分量内**本来就混着**多个不同的已知网络名 —— 两个网络的焊盘通过一段
+            //      无名导线/覆铜连到一起时，union 阶段不会触发冲突检测（中间图元没有网络名），
+            //      只有到这里看 votes 才能发现。这种情况同样是「两个不同网络连在一起」，
+            //      必须改名，否则会按票数静默沿用其中一个。
+            if (conflictRoots.has(root) || votes.size > 1) {
                 // 两个名字里必有一个是错的，沿用任何一个都会误导，所以**整块换成一个未使用的新名**：
                 // 新名一眼可见「这块需要人工核对」，而两个原网络名都从这张表里消失，
                 // 不会出现「同一个网络落在两个互不相连的分量上」的飞线。
@@ -1981,6 +2023,7 @@
                 stats.renamedClusters++;
                 if (votes.size > 1) stats.mixedClusters++;
                 stats.generated++;
+                isRenamed = true;
             } else if (votes.size) {
                 if (votes.size > 1) stats.mixedClusters++;
                 // ⚠️ 必须按「票数」定名，**不能按名字长短**：分量里常混进少量被误连的异物
@@ -2007,9 +2050,12 @@
                 stats.generated++;
             }
             stats.named++;
-            group.forEach(p => netOf.set(p.src, target));
+            group.forEach(p => {
+                netOf.set(p.src, target);
+                if (isRenamed) renamed.add(p.src);
+            });
         }
-        return { netOf, stats };
+        return { netOf, renamed, stats };
     }
 
 

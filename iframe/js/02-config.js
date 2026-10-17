@@ -116,15 +116,19 @@
         'EMI Shielding Film': '电磁屏蔽膜'
     };
 
-    // 元件位号字高：
-    //   · 导出（装配层文字）—— 24 mil
-    //   · 画布显示        —— 16 mil（画布按世界尺寸随缩放变化，字高比导出的略小些更好看）
-    // 元件位号：导出的字高（mil，指字符实高 cap height，不是 em）、画布显示字号
-    // 【2026-10-17】按需求改为 30mil，并统一写到**文档层**（源码通道 STRING + 标准版 TEXT）。
+    // 元件位号字高（mil，指字符实高 cap height，不是 em）：
+    //   · 导出 → 30 mil
+    //   · 画布显示 → 16 mil（画布按世界尺寸随缩放变化，字高比导出的略小些更好看）
     const FLYING_REFDES_HEIGHT_MIL = 30;
     const FLYING_REFDES_CANVAS_MIL = 16;
-    // 位号导出到的内部图层 id（Document）。标准版对应 12，源码通道直接用这个 id。
-    const FLYING_REFDES_LAYER = 13;
+    // 位号导出图层（**两套通道规则不同**，2026-10-17 按需求区分）：
+    //   · 标准版导出（08-export.js buildStandardSource 的 TEXT）→ **文档层**（标准版层号 12）
+    //   · 专业版（源码导入 / 图元导入 → 05-pad-tool.js 的 STRING）→ **装配层**，
+    //     顶层位号进「顶层装配」(9)、底层位号进「底层装配」(10)；
+    //     不能再统一写文档层 —— 装配图/钢网图要能单独按面看到位号。
+    const FLYING_REFDES_LAYER_STD = 12;          // 标准版：文档层
+    const FLYING_REFDES_LAYER_TOP = 9;           // 专业版：顶层装配
+    const FLYING_REFDES_LAYER_BOTTOM = 10;       // 专业版：底层装配
 
     // 引脚编号 / 网络名称的文字上限（px）；低于下限说明焊盘实在装不下，直接隐藏
     const FLYING_LABEL_MAX_FONT = 12;

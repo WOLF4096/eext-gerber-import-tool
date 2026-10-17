@@ -1155,6 +1155,8 @@
             // NET_NAME**（飞针网络名 > 其余已有名 > 新分配的 NET{n}）。算法见 06-utils.js
             // 的 buildNetAssignments（移植自 Temp/生成网络/GenerateNet.html）。
             let netOf = null;
+            /** 因「两个不同网络名被连在一起」而整块改名的图元（见 buildNetAssignments 注释） */
+            let netRenamed = null;
             if (config && config.tryNetlist) {
                 try {
                     const padNet = new Map();
@@ -1168,6 +1170,7 @@
                     const innerCopper = [...new Set(loadedFiles.map(f => f.layerId).filter(id => id >= 15 && id <= 46))];
                     const res = buildNetAssignments(data, { padNet, innerCopperLayers: innerCopper });
                     netOf = res.netOf;
+                    netRenamed = res.renamed || null;
                     const st = res.stats;
                     console.log(`物理网络：铜层图元 ${st.prims} → 连通分量 ${st.clusters}`
                         + `（沿用已有网络名 ${st.reused} 个 / 新分配 NET 名 ${st.generated} 个 / 共命名 ${st.named}）`
@@ -1178,10 +1181,13 @@
                 } catch (e) {
                     console.error('物理网络生成失败：', e);
                     netOf = null;
+                    netRenamed = null;
                 }
             }
             /** 取图元对应的网络名（未生成网络时恒为空串） */
             const netNameOf = (obj) => (netOf && obj) ? (netOf.get(obj) || '') : '';
+            /** 该图元所在分量是否因「两个不同网络名被连在一起」而整块改名 */
+            const isNetRenamed = (obj) => !!(netRenamed && obj && netRenamed.has(obj));
 
             const getCornerObj = (prim) => {
                 if (prim && prim.shape === 'RECT' && prim.radiusRatio > 0) return ["ROUND", prim.radiusRatio, prim.radiusRatio];
@@ -1258,8 +1264,16 @@
                         if (cName && compCounts[cName] > 1) groupId = cName;
                     }
                 }
-                // 没有飞针网络名时，用连通分量算出来的网络
-                if (!netName) netName = netNameOf(pad);
+                // 焊盘名的优先级：
+                //   ① 所在分量被判为「两个不同网络名被连在一起」→ **以连通分量结果为准**
+                //      （两个原名都已作废，整块改成了新的 NET*）。此时若还沿用飞针名，
+                //      就会出现「焊盘 NET_4 / 焊盘 NET_2 / 中间导线 NET1」——
+                //      同一个网络三个名字，导入 EDA 后网络表直接错乱。
+                //   ② 其余情况飞针名优先（飞针文件才是名称来源，连通分量只做补名）。
+                //   ③ 都没有时退回连通分量算出来的名字。
+                const geoNet = netNameOf(pad);
+                if (isNetRenamed(pad) && geoNet) netName = geoNet;
+                else if (!netName) netName = geoNet;
 
                 const targets = [];
                 
@@ -1766,14 +1780,15 @@
                             const y = parseFloat(row[idxY]); 
                             const angle = parseFloat(row[idxAngle] || 0);
 
-                            // 【2026-10-17】位号统一写到**文档层**（13），不再写装配层：
-                            // 文档层不属于顶/底任意一面，位号在两面视图里都能看到，
-                            // 也不会被「装配层默认隐藏」吞掉。底层保留镜像标记。
-                            let layerId = (typeof FLYING_REFDES_LAYER === 'number') ? FLYING_REFDES_LAYER : 13;
-                            let isMirror = 0; 
-                            if (layerStr === "B") { 
-                                isMirror = 1; 
-                            }
+                            // 【2026-10-17】专业版一律写**装配层**，按元件所在面分开：
+                            //   顶层位号 → 顶层装配(9)，底层位号 → 底层装配(10) + 镜像。
+                            // 不再统一写文档层（文档层不分正反面，装配图/钢网图按面看时看不到）。
+                            // 标准版走的是另一条通道（08-export.js 的 TEXT），仍是文档层。
+                            const isBottom = (layerStr === "B");
+                            const layerId = isBottom
+                                ? ((typeof FLYING_REFDES_LAYER_BOTTOM === 'number') ? FLYING_REFDES_LAYER_BOTTOM : 10)
+                                : ((typeof FLYING_REFDES_LAYER_TOP === 'number') ? FLYING_REFDES_LAYER_TOP : 9);
+                            const isMirror = isBottom ? 1 : 0;
 
                             let groupId = 0; 
                             if (compCounts[name] && compCounts[name] > 1) { 

@@ -1,314 +1,178 @@
 # 项目长期记忆 — eext-gerber-import（Gerber 转 PCB）
 
-## 项目本质
-嘉立创EDA专业版扩展。真正产品是 `iframe/` 下的单页应用；`src/index.ts` 只是壳
-（`eda.sys_IFrame.openIFrame('/iframe/ImportGerber.html', …)`）。改功能只改 `iframe/`，
-`npm run build` 只负责打包（`.edaignore` 排除 src/ build/ config/ .workbuddy/ Temp/）。
+> 2026-10-17 整理：合并去重、删掉已被后续版本推翻的旧结论。细节变更历史见 CHANGELOG.md。
 
-## iframe 结构（数字前缀=加载顺序，不可调；用经典 <script>，禁止 type=module）
-`ImportGerber.html` 骨架 / `css/style.css` / `js/`：
-01-templates(模板) 02-config(DEBUG/图层定义) 03-state(状态+画布+协议弹窗) 04-gerber-parser(GerberParser)
-05-pad-tool(PadTool 逆向还原) 06-utils(工具) 07-file-io(导入调度) 08-export(导出)
-09-ui(渲染交互) 10-init(初始化) + clipper.js(6.4.2 布尔运算) + jszip/jspdf
-`processors/`：registry + industry-common + industry-rs274x + jlc-internal。
+## 1. 项目本质与结构
+嘉立创EDA**专业版**扩展。真正产品是 `iframe/` 下的单页应用；`src/index.ts` 只是壳
+（`eda.sys_IFrame.openIFrame('/iframe/ImportGerber.html', …)`）。改功能只改 `iframe/`。
 
-铁律：脚本放 `</body>` 前；引用用绝对路径 `/iframe/...`；`.js`/`.css` 带 UTF-8 BOM；
-不要反缩进（模板字面量对空白敏感）；新功能别内联回 HTML。
+- `iframe/js/`（数字前缀 = 加载顺序，不可调；**经典 `<script>`，禁止 type=module**）：
+  01-templates 02-config 03-state 04-gerber-parser 05-pad-tool 06-utils 07-file-io
+  08-export 09-ui 10-init 11-font-outline + clipper.js(6.4.2) + jszip/jspdf
+- `iframe/js/processors/`：registry + industry-common + industry-rs274x + jlc-internal
+- 铁律：脚本放 `</body>` 前；引用用绝对路径 `/iframe/...`；`.js`/`.css` 带 **UTF-8 BOM**；
+  不要反缩进（模板字面量对空白敏感）；新功能别内联回 HTML。
+- 版本以 `extension.json` 为准（`package.json` 同步），`npm run build` → `build/dist/*.eext`。
+  临时文件一律放 `Temp/`（gitignore + edaignore）。当前 **V3.9.9**。
 
-## 版本与打包
-版本以 `extension.json` 为准（`package.json` 同步），打包 `npm run build` → `build/dist/*.eext`。
-临时文件一律放 `Temp/`（gitignore + edaignore）。
-
-## 处理模式（仅两项）
+## 2. 处理模式（仅两项）
 下拉 `#cfg-source-type`：`easyedapro`（嘉立创内部）/ `rs274x`（通用）。
-X2 / X3 / RS-274D / 兼容 / 保底 已删。新增处理器要同步改三处（HTML option+script、resetConfig）。
+X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML option + script、resetConfig）。
 
-## 业务铁律（踩过的坑）
-- 坐标 vs 光圈参数单位不同：坐标用 `mmOf()`，光圈/宏参数用 `toMM()`；混用英寸文件偏 25.4 倍。
-- `extractRawData` 依赖嘉立创私有 `G04` 段标记；无标记来源靠 `hasSectionMarkers` 分支按层+指令推断。
+## 3. 单位 / 坐标（混用必错 25.4 倍）
+- 坐标用 `mmOf()`，光圈与宏参数用 `toMM()`。
+- 标准版导出：1 单位 = 10 mil = 0.254 mm；`X=4020+mmX/0.254`，`Y=3560.5-mmY/0.254`。
+- ⚠️ `stdX`/`stdY` **返回字符串**，算术前必须先 `parseFloat`（`"3521.12"+1.5` → 拼串 → 坐标归零）。
+
+## 4. Gerber 解析铁律
+- `extractRawData` 依赖嘉立创私有 `G04` 段标记；无标记靠 `hasSectionMarkers` 分支按层+指令推断。
 - 无 D 码坐标行沿用模态操作码 `state.dCode`；位置未定义的裸 `D2*` 不写包围盒。
 - 跨文件配点必须容差（0.05mm 栅格归并）；`toFixed(3)` 精确键会让过孔/钻孔大面积配不上。
-- 焊盘去重必须带 `layerId` 限定（`rawPads` 是所有层公共数组）。
+- 焊盘去重必须带 `layerId`（`rawPads` 是所有层公共数组）。
 - 过孔 vs 插件盘：钻孔≥0.6mm 且铜环≥0.25mm → 插件焊盘（THT_DRILL_MIN/THT_RING_MIN）。
+- 宏基元 6/7 未绘制；`%SR` 未处理；真彩图片离线无解（见 `Temp/FCTS_解析报告.md`）。
+- ⚠️ 测试坑：`rawFilesCache` / `loadedFiles` 是 03-state 的顶层 `let`，页面里必须**裸赋值**；
+  写 `window.rawFilesCache = …` 只会加 window 属性 → `hasSectionMarkers` 判 false → 静默测错版本。
+
+## 5. 图元生成（05-pad-tool / Clipper）
 - LPC（清除极性）不能整体丢：负片覆铜 = 暗区 + 清区（区域/闪绘/线段都要收集）。
-- 负片转正片：Clipper 差集 → 对残留孔洞开 0.01mm keyhole 缝 → 只输出外边界，每块一个 FILL。
-  （`createComplexPolygon` 是「多块独立多边形」，不做布尔差。）
-- FILL 创建 API：单环用平铺 `createPolygon(平铺)`；`createComplexPolygon` 入参是「多块数组」，
-  单元素嵌套 `[[ring]]` 会被当平铺解析 → 返回 undefined → 填充静默消失。用「平铺优先+多重兜底」。
-- 整圆：CIRCLE 导出成起点=终点 360° 弧；画布先 moveTo 再画 0~2π，导出拆两段 180° 半圆。
+- 负片转正片：Clipper 差集 → 残留孔洞开 0.01mm keyhole 缝 → 只输出外边界，每块一个 FILL。
+  `createComplexPolygon` 是「多块独立多边形」，不做布尔差。
+- FILL 创建：单环用平铺 `createPolygon(平铺)`；`createComplexPolygon` 入参是**多块数组**，
+  单元素嵌套 `[[ring]]` 会被当平铺解析 → 返回 undefined → 填充静默消失。用「平铺优先 + 多重兜底」。
+- 整圆：CIRCLE 导出成起点=终点 360° 弧；画布 moveTo 后画 0~2π，导出拆两段 180° 半圆。
+  折线通道的整圆按对径点（`2c-起点`）拆，不能照搬 TRACK 的 px/qx 拆法（路径会断）。
 - 宏光圈焊盘 w=h=0，`calcExp` 用 path 包围盒算阻焊扩展。
+- **宏基元必须做布尔并集**：`RoundRect` = 4 圆 + 4 边 + 1 外框，语义是并集；旧做法塞一条路径 +
+  `fill('evenodd')` → 重叠区被 XOR 成孔（每个焊盘带楔形缺口）。修复：`macroBuildRings()`
+  （Clipper 暗并集 − 清差集）+ `macroPrimRing/macroCircleRing/macroTreeToRings`，
+  `macroPrimsToPath()` 为对外入口（无 Clipper 回退 `macroPrimsToPathNaive`），按光圈缓存 `_macroRingCache`。
+  ⚠️ Clipper 方向坑：同批 subject 里方向相反会被当孔洞 → 先统一方向（`fillRingArea<0` 就 reverse）。
+- **Copper 段描边铜**（`G04 Copper Start/End` 里 G36 之外的 D01/弧，0.2mm 光圈描轮廓）：
+  走 `tempPolySegments → flushPoly → mergeSegments → rawPolys`，标记 `isStroke=true`；
+  `Track Start/End` 仍是真走线（`rawTracks`）。标准版导出 `isStroke` 的铜层 POLY → 带线宽多点 TRACK
+  （落 SOLIDREGION 会变零宽）。网络里走 `pushStrokePoly`（按线段，弧 ≤22.5° 离散，src 指向 POLY 本体）。
+- **标准版 Gerber 区域环「零长首段 + 未闭合」**（只有标准版来源会「渲染对、导入错」，填充全丢）：
+  `fillNormalizeFlatRing(flat, tol)`（06-utils）去零长边 + 补闭合，`05-pad-tool` 生成 FILL 时对
+  `singlePath` 和每个 `holes` 环都过一遍；`08-export` 的 `stdFlattenPath` 出口去掉相邻重复点。
+  判据：**无退化边 + 显式闭合**，否则 EDA 面多边形校验会拒整块。脚本：`Temp/fill_*_check.js`。
 
-## 嘉立创标准版导出格式（08-export.js）
-1 单位 = 10 mil = 0.254 mm；`X=4020+mmX/0.254`，`Y=3560.5-mmY/0.254`。
-字段：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10 / TEXT 17。**没有 POLY**。
-区域类一律 SOLIDREGION（不要 COPPERAREA）。槽孔必须同时给 `holeLength` + `slotPointArr`。
-图层 ID 与内部编号顺序不同（阻焊/锡膏/装配需换算）。
-- **折线全转 TRACK**（V3.9.6）：`polys` 无论铜层/非铜层一律 `['TRACK', 线宽, STD_LAYER, net, 点列, gid, 0]`，
-  不再把铜层非描边 POLY 转 SOLIDREGION（折线是「线」语义，转实心会让 0.2mm 描边铜变零宽块）。
-  实心铜在 `uni.fills`，仍走 stdSolidRegion。
-- **文字只能用 TEXT**：`TEXT~L~x~y~0.8~0~0~<layer>~~<em>~文本~path~~ggeID~字体名~0~pinpart`（17 字段）。
-  `path` **必须自带字形轮廓且每条子路径显式闭合**（官方样例都以 Z 结尾，不闭合会按折线渲染）。
-  见下方「内置字体轮廓」。
-- ⚠️ **`stdX`/`stdY` 返回字符串**（stdNum 格式化结果），参与算术会变字符串拼接
-  （`"3521.12"+1.5 → "3521.121.5"`）→ 坐标归零。必须先 `parseFloat`。
+## 6. 标准版导出格式（08-export.js `buildStandardSource`）
+- 字段数：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10 / TEXT 17。**没有 POLY**。
+- 区域类一律 SOLIDREGION（不要 COPPERAREA）；槽孔必须同时给 `holeLength` + `slotPointArr`。
+- 图层 ID 与内部编号不是一套（5=锡膏 / 7=阻焊 / 10=板框 / 11=Multi / 12=Document / 15-46=Inner1-32），
+  阻焊/锡膏/装配需按**语义**映射，不能按 id 硬对。
+- **折线全转 TRACK**（V3.9.6）：`polys` 无论铜层/非铜层一律收集成段参与合并；实心铜走 `uni.fills`。
+- **相邻 TRACK 链式合并**（V3.9.7）：同层+同线宽+同网络+端点相接（0.001mm 量化）→ 一条多点 TRACK；
+  链在端点（度1）与分叉（度>2）处断开，分叉拆多条；纯环输出闭合点列；**ARC 不参与合并**（并进 TRACK 会变直）。
+- 标准版不支持 FPC：polys/fills/images 跳过 58/59（`STD_LAYER(58)` 兜底会落到文档层）。
+- 标准版不导出埋盲孔。
 
-## 内置字体轮廓（V3.9.6）
-浏览器/EDA iframe 拿不到字体矢量路径（canvas 只能画、不能导出 path），所以**离线**提取、随包内置：
-- 数据：`iframe/js/11-font-outline.js`（`FONT_OUTLINE_DATA` + `fontTextToPath` / `fontEmForCapHeight`），
-  默认 ASCII 0x20–0x7E 共 94 字形，42KB。字体名写 `NotoSansCJKsc-DemiLight`（与 EDA 源码一致）。
-- 工具：`tools/font-outline.js`（不进包，`.edaignore` 已排除）：
+## 7. 内置字体轮廓（V3.9.6）
+浏览器 / EDA iframe 拿不到字体矢量路径（canvas 只能画、不能导出 path）→ 离线提取、随包内置：
+- `iframe/js/11-font-outline.js`：`FONT_OUTLINE_DATA` + `fontTextToPath` / `fontEmForCapHeight`，
+  默认 ASCII 0x20–0x7E 共 94 字形。字体名写 `NotoSansCJKsc-DemiLight`（与 EDA 源码一致）。
+- 工具 `tools/font-outline.js`（不进包，edaignore 已排除）：
   `npm i opentype.js --prefix Temp/fonttest --no-save` →
   `NODE_PATH=Temp/fonttest/node_modules node tools/font-outline.js --font <ttf> [--extra "字符"] [--range 0x4E00-0x9FA5]`
-- 字体来源：`C:/Windows/Fonts/NotoSansSC-VF.ttf` 是可变字体（默认 wght=100 Thin！），
-  opentype.js 的 `variation.set` **不会**改轮廓 → 先用 fontTools 实例化：
-  `python -m fontTools.varLib.instancer <VF.ttf> wght=350 -o Temp/NotoSansSC-DemiLight.ttf`（已验证，cap/em=0.732）。
-- 字高约定：PCB 说的「字高」= cap height。`em = capMil / (capHeight/upem)`，
-  本字体 30mil → em≈41.0mil ≈ 4.098 标准版单位。
-- 缺字（不在字符集里）跳过并在运行日志列出，绝不用近似字形顶替。
+- `C:/Windows/Fonts/NotoSansSC-VF.ttf` 是**可变字体**（默认 wght=100 Thin），opentype.js 的
+  `variation.set` 不改轮廓 → 先 `python -m fontTools.varLib.instancer <VF> wght=350 -o Temp/NotoSansSC-DemiLight.ttf`
+  （已验证 cap/em = 0.732）。
+- 字高约定：PCB 说的「字高」= **cap height**。`em = capMil / (capHeight/upem)`；30mil → em ≈ 41.0mil ≈ 4.098 标准版单位。
+- 缺字跳过并记日志，绝不用近似字形顶替。
 
-## 飞针标注层
-虚拟层 id 2001 引脚编号 / 2002 网络名称 / 2003 元件位号（有 `FlyingProbeTesting.json` 才出现）。
-匹配统一在 06-utils（`buildFlyingPinIndex`/`padMatchBoxMM`/`flyingPinAt`），画布与导出共用。
-单位 mil。引脚编号/网络名称仅显示不导出；位号勾选后写**文档层**（`FLYING_REFDES_LAYER=13`）文字，
-字高 `FLYING_REFDES_HEIGHT_MIL=30`（cap height），画布显示用 `FLYING_REFDES_CANVAS_MIL=16`。
+## 8. 物理网络生成（06-utils `buildNetAssignments`）
+开关：`config.tryNetlist`（复选框 `#cfg-netlist`，默认勾选）→ `05-pad-tool generatePrimitives`
+与 `08-export buildStandardSource` 各自调用。算法：铜层图元 → 空间网格（5mm + 1mm 余量）求候选对
+→ `netConnected()` 几何判定 → 并查集 → 分量命名 → 回填。
+- 通道：源码导入 / 图元导入 / 导出专业版 V2、V3、V4 / 导出标准版。标准版网络字段位置：
+  `TRACK[3] / ARC[3] / CIRCLE[8] / SOLIDREGION[2] / PAD[7] / VIA[4]`；HOLE 无网络字段；
+  板框 TRACK 与非铜层留空。未勾选时全写空串，输出与改动前逐字段一致。
+- **定名规则**（不能按名字长短，参考实现就是错的）：① 票数多者优先 ② 真实名 > 通用 `NET*`
+  ③ 短名 ④ 字典序。
+- **几何判定**（误连/漏连的真正来源）：
+  - 圆用**内接正十二边形**（旧用包围盒四边，方角远 √2 倍 → 误判相接）。
+  - 矩形 / 长圆 / 异形用**真实轮廓** `netPadOutline`（旧用最短边内切圆 → 导线连不上焊盘 → 拆孤岛）。
+  - 圆弧按 **≤22.5° 离散**（只影响连通图，不改生成图元）；旧只取弦，差一个矢高。
+  - 导线端点正好搭在焊盘边界：补 `netSegSegDist2`「线段到多边形**边**距离 ≤ 线宽/2」
+    （严格相交判端点=false、ray casting 边界不可靠、顶点距离≈半个焊盘）。圆形焊盘本就没这问题。
+- **两个不同已知网络落到同一连通块 → 整块改名未占用的 `NET*`**。触发两条：
+  ① `tryUnion` 时两边 label 无交集（`stats.renamedMerges`，标记传播到新根 `conflictRoots`）；
+  ② 定名阶段 `votes.size > 1`（两个网络的焊盘通过**无名**导线/覆铜连上，union 阶段看不见）。
+  新名 `while (used.has('NET'+c)) c++`，两个原名都不出现。`stats.renamedClusters` / `mixedClusters`。
+- ⚠️ **改名同时必须改焊盘**（V3.9.9）：`buildNetAssignments` 返回 `renamed`（Set，冲突改名的图元），
+  焊盘取值时 `isNetRenamed(pad) → netName = netOf.get(pad)`；否则焊盘沿用自己的飞针名，
+  出现「焊盘 NET_4 / 焊盘 NET_2 / 中间导线 NET1」。**焊盘编号与 groupId 不受影响**（来自飞针匹配）。
+  正常分量仍**飞针名优先**（飞针文件才是名字来源）。
+- 健康度指标（`Temp/net_health.js`）：`mixedClusters`（分量混多网络）与「同名多岛」（= 飞线）。
+  6 个样本全部 0/0/0，网络名数 = 分量数 1:1。PCB1_2026-10-15：GND 2645 图元 / DP 35 图元 / 22 块覆铜归 GND。
+- 校验脚本：`Temp/net_conflict_probe.js`、`Temp/fix_check.js`、`Temp/fix_regress.js`。
 
-## 已知缺口
+## 9. 飞针标注 / 位号 / 补强标注
+- 虚拟层：2001 引脚编号 / 2002 网络名称 / 2003 元件位号（有 `FlyingProbeTesting.json` 才出现）/
+  2004 补强名称。三层引脚类并入「自定义/特殊」分组、**默认全勾选**；位号颜色 `#00ffff`，其余 `#ffffff`。
+- 匹配统一在 06-utils（`buildFlyingPinIndex` / `padMatchBoxMM` / `flyingPinAt`）：① 中心 2.5mil 内
+  ② 否则取落在焊盘包围盒内离中心最近的引脚（异形盘锚点常偏 27mil，只用中心匹配会整批丢编号）。
+- 字高：`FLYING_REFDES_HEIGHT_MIL=30`（导出，cap height）、`FLYING_REFDES_CANVAS_MIL=16`（画布）；
+  补强 `FLYING_STIFFENER_MAX_FONT=24`，引脚 `FLYING_LABEL_MAX_FONT=12`。
+- **位号图层（V3.9.9 起按通道区分）**：
+  - 专业版（源码/图元 → 05-pad-tool 的 STRING）：**装配层**，顶层 `9`、底层 `10` + `mirror`。
+  - 标准版（08-export 的 TEXT）：**文档层**（层号 `12`）。
+  - 常量：`FLYING_REFDES_LAYER_STD=12` / `_TOP=9` / `_BOTTOM=10`。
+- 引脚编号 / 网络名称仅显示不导出；位号勾选后才随导出写文字。
+- 单位 mil。孤立焊盘占位名（PAD / PAD1 / PAD23）一律跳过（`isFlyingPadPlaceholder`）。
+- 补强画布标注：材料简称在上、厚度在下（`0.2mm`），行距 `half = min(boxH/4, 0.72×字号)`，色 `#193366`；
+  `STIFFENER_LABEL`：PI / FR4 / 钢片 / 双面胶 / 电磁屏蔽膜。
+  ⚠️ `renderFlyingLayerRows` 曾因 `if (!flyingProbeData) return` 让 FPC 板（无飞针文件）不显示补强行，
+  已拆成 `hasFlying` / `hasStiff` 两个独立条件。
+
+## 10. FPC 补强（Stiffener）
+- 文件名 `Gerber_<Top|Bottom>StiffenerLayer_<材料码>_<厚度>.GTSL/.GBSL`，顶层 58 / 底层 59。
+- 材料码两套：顶 `pit/fr4t/gpt/csa`，底 `pib/fr4b/gpb/ssa`；`pst_/psb_<型号>` 取型号大写
+  （`pst_tesa8854 → TESA8854`，默认 0.1mm）。未知材料码 → 材料不写、几何保留，**绝不猜材料名**。
+- `FPC_FILL`：V2 `["FPC_FILL", id, 0, layer, material, thickness, path, 0]`；
+  V3/V4 `{"type":"FPC_FILL"}||{layerId, material, thickness, path, locked, zIndex}`。
+  `path` 是路径对象数组（mil；thickness 单位 mm）：矩形快捷 `[["R",x,y,w,h,0,0]]`（x/y = 左上），
+  通用 `[[x0,y0,"L",x1,y1,…,"ARC",扫角,x,y,…]]`。`fpcRectOf()` 命中 4 顶点才用 R 式。
+- **补强只能「通过源码导入」**：`pcb_PrimitiveFill.create(58/59,…)` 实测无效（即便先 `setPcbType(2)`）。
+  图元模式遇到 `FPC_FILL` / 58-59 层 FILL 直接跳过 + 计数 + 吐司，且**不再调 setPcbType**。
+- 板类型自动切 FPC：`autoDetectSettings` 的 `hasStiffener`（58/59）。
+- `configureHeader` 用 `needStiffener` 打开 58/59 的 `use/show`（V2 置 `LAYER[4]=3`），否则看不见。
+
+## 11. 专业版 V4
+- `getEnvInfo()`：`getEditorCurrentVersion()` 首字符 2→pro_v2 / 3→pro_v3 / 4→pro_v4。
+- V4 图元行与 V3 **逐字节同构**，只有文档头不同（多 `META`/`LAYER_PHYS`/`D3_ATTRIBUTE`/`RULE:CREEPAGE`
+  与一批显示配置 PRIMITIVE；`DOCHEAD` 多 `editVersion`/`user`；`CANVAS` 多 `layerBrightness`）。
+  模板 `LCEDA_V4_Head_Source` 取自官方 4.1.78 空白 `.epru`，生成脚本 `Temp/rebuild_v4_template.js`。
+- 三个坑：① 模板字面量里 JSON 的 `\"` 要写成 `\\"`（少一层 → `LAYER` 行非法 JSON，60 行全废）；
+  ② 末行**不能**以 `|` 结尾（否则 `}||`）；③ 以官方导出为准，别按旧模板补猜字段。
+- `isV3`（严格 V3，仅 .epru 打包）/ `isLineFormat = isV3 || isV4`；`calculateMaxId` V3 分支扩到 V4。
+- V4 的 `ticket/id` 起始值比 V3 大，对比源码要先归一化编号。
+- 四套源码颜色以 **V3 模板**为基准（V2/V4 已对齐；标准版按语义映射）。
+
+## 12. 渲染 / 交互 / 门控
+- **高 DPI**（V3.9.7）：给 `canvas.width` 赋值会把变换重置成单位矩阵。`drawCanvas` 进入时无条件
+  `ctx.setTransform(dpr,0,0,dpr,0,0)`（幂等自愈），结尾补 `ctx.restore()`；PDF 恢复现场改调 `resizeCanvas()`。
+  `watchDprChanges()` 用 `matchMedia('(resolution: Ndppx)')` 监听并**重新挂载**。
+  验证口径：dpr=2 的物理尺寸必须是 dpr=1 的 2 倍（`Temp/dpr_fix_check.js`，必须跨 dsf 比较）。
+- **PCB 画布门控**：`detectPcbCanvasContext()` —— `getDocumentSource()` 读不到 = 不在画布；
+  读到非 PCB 源码 = 不在；源码为空时用 `documentType === 3` 交叉确认（空白 PCB 源码可能为空）。
+  按钮加 `pcb-gated` + `confirmPcbAction()`；`.is-off-canvas` 只灰显、保留 pointer-events（否则点不到弹不出提示）。
+  `refreshPcbContext()` 在 focus / visibilitychange 重测；`isOnPcbCanvas === null` 表示检测中。
+- **用户协议**：复选框 `#cfg-agree`（`#agree-row`）；导入/导出五个按钮带 `agree-gated`，
+  未勾选 `is-locked` **只灰显、不加 disabled**；`confirmAction()` 校验，未勾选 → `shakeAgreement()`。
+- `showToast(msg, type)`：优先 `eda.sys_Message.showToastMessage` → 页面内 `.app-toast` → alert。
+- 「板子属性」新增 软件名称 / 导出时间：`detectEasyEdaSource()` 解析头部
+  `G04|; EasyEDA[ Pro][ Client] v<ver>, YYYY-MM-DD HH:MM:SS`，返回 `{software,time,raw}`；
+  时间读不到回退压缩包内 Gerber 的 mtime（JSZip `entry.date` 必须按 **UTC** 字段读）。
+  刷新点 `09-ui updateBoardStats()`。
+- 「关于」页 = `iframe/About.html` + `js/about.js`（自带 style，不引 style.css）。
+  菜单：`extension.json` 五个 headerMenus 各加 `{"id":"About","registerFn":"About"}`，
+  `registerFn` 必须与 `src/index.ts` 的导出函数同名。
+- `.modal-box` max-height = 72vh。
+
+## 13. 已知缺口
 宏基元 6/7 未绘制；`%SR` 未处理；`DEBUG` 硬编码 false；`LCEDA_STD_Head_Source` 空串；
-`importPrimitivesAPI(primitives, isV3)` 的 `isV3` 参数从未使用（api 模式强制 pro_v2）；
-PCB/FPC 手动开关只改 UI；标准版不导出埋盲孔；真彩图片离线无解（见 `Temp/FCTS_解析报告.md`）。
-
-## 标准版 Gerber 的区域环「零长首段 + 未闭合」（2026-10-16 修复）
-嘉立创EDA**标准版**（EasyEDA v6.x）导出的 Gerber，其 G36/G37 区域路径常写成
-「M 起点 → L 起点」的**零长首段**，且**不闭合**（实测 stm32 板 1153 块填充里
-879 块带零长首段、仅 24% 闭合；`Gerber_上.pcbdoc` 11/11 全中）。
-专业版（EasyEDA Pro）导出的区域本就干净闭合 → 所以只有标准版来源会「渲染对、导入错」。
-**症状：画布渲染正常，但导入 EDA 后填充区域全丢。**
-
-- 修复①（导入通道 / PRO 图元）：`06-utils.js` 新增 `fillNormalizeFlatRing(flat, tol)`——
-  去零长线段 + 末点未回首点时补一段闭合；在 `05-pad-tool.js` 的 FILL 生成处调用
-  （`singlePath` 与每个 `holes` 环都要过）。已是干净闭合的环**原样返回**（空操作）。
-- 修复②（标准版导出通道）：`08-export.js` 的 `stdFlattenPath()` 出口去掉相邻重复点
-  （闭合交给 `stdPathStr(pts, true)` 的 `Z`）。
-- 判据：填充环必须**无退化边（相邻点重合）+ 显式闭合**，否则 EDA 端多边形校验会拒绝整块图元。
-- 验证：严格 mock（复刻上述两条校验）下 stm32 的 FILL 由 **280 → 1159（全部）**；
-  7 个样本**丢弃 0 块**；专业版样本图元串**逐条完全一致**；标准版参考样本 ground truth
-  仍 9 图元逐字段一致。校验脚本：`Temp/fill_ring_check.js`、`Temp/fill_drop_check.js`、
-  `Temp/std_export_dump.js`。
-
-## 物理网络生成（2026-10-16 新增；2026-10-17 修正确性）
-复选框 `#cfg-netlist`（标签 `#generatenet`，位于「处理模式」下方，默认勾选）→ `config.tryNetlist`
-→ `05-pad-tool.js generatePrimitives` 里调用 `buildNetAssignments()`。
-
-- 算法（`06-utils.js`，移植自 `Temp/生成网络/GenerateNet.html`）：取铜层图元（焊盘 / 过孔 /
-  导线 / 圆弧 / 折线 / 填充）→ 空间网格（5mm，+1mm 余量）求候选对 → `netConnected()` 几何
-  连通判定 → 并查集 → 分量命名 → 回填到每个图元。
-- 已接入全部通道：通过源码导入 / 通过图元导入 / 导出专业版 V2、V3 / **导出标准版**。
-  标准版的网络字段位置（`08-export.js buildStandardSource`，对照官方导出实测）：
-  `TRACK[3]` / `ARC[3]` / `CIRCLE[8]` / `SOLIDREGION[2]` / `PAD[7]` / `VIA[4]`；
-  `HOLE` 无网络字段；板框 TRACK 与非铜层图元留空。字段总数不变
-  （PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10）。
-  未勾选「生成网络」时全部写空串，输出与改动前逐字段一致。
-
-### 2026-10-17 修复「GND 覆铜被命名成 DP」（参考实现同样存在）
-根因是**两条叠加缺陷**：
-1. **命名按「名字长短」定名**：分量里混进 1 个异物时短名胜出（GND 覆铜误连 1 个 DP 焊盘
-   → 整块报成 DP）。参考实现即 `sort((a,b)=>a.length-b.length||localeCompare)`。
-   → 改为 **① 票数多者优先 ② 真实名 > 通用 `NET*` ③ 短名 ④ 字典序**。
-2. **几何判定粗糙/自相矛盾**（真正的误连来源）：
-   - `netShapeEdges` 对圆用**包围盒四边**，方角比真实半径远 √2 倍 → 误判焊盘与覆铜相接
-     → 改为**内接正十二边形**。
-   - 焊盘一律按「最短边内切圆」→ 矩形焊盘算小 → 导线连不上焊盘（同网络拆成孤岛 → 飞线）
-     → 矩形 / 长圆 / 异形改用**真实轮廓**（`netPadOutline`）。
-   - **圆弧只取弦**（弦与真实弧差一个矢高，90° 弧 ≈ 0.29r）→ 相邻判不相接 / 隔开判相接。
-     实测这是「GND 走线与 GPIO7 走线中心线只差 0.0877mm」这类假接触的**主因**
-     → 在 `netBuildPrims` 里按 ≤22.5° 离散（只影响连通图，不改生成图元）。
-   - 导线端点「正好停在焊盘边界」判不出来 → 补「多边形顶点到线段距离 ≤ w/2」。
-3. ~~安全网：两个分量若各自带有不同的已知网络就禁止合并~~ → **V3.9.6 改为「合并 + 改名」**：
-   两个分量各带不同已知网络（飞针 NET_NAME）却被几何判相连 → 允许合并，
-   并整块改名为一个**未被占用**的 `NET*`（从 NET1 起，跳过 `used` 里已有的名字）。
-   实现：`tryUnion` 里检测 `la ∩ lb = ∅` → `stats.renamedMerges++` 且把 `conflictRoots` 标记
-   传播到合并后的新根；定名阶段 `if (conflictRoots.has(root))` 优先于「票数定名」。
-   为什么不用原名字：两个名字里必有一个是错的，沿用会误导；改名后两个原网络名都消失，
-   也不会出现「同一网络落在两个互不相连分量上」的飞线。
-   `stats` 新增 `renamedMerges` / `renamedClusters`，日志会打印「冲突改名 N」。
-
-**健康度指标**（`Temp/net_health.js`）：`mixedClusters`（一个分量混入多网络 = 错乱）
-与「同名多岛网络」（同一网络名落在多个互不相连分量 = 飞线）。
-修复后 6 个样本全部 **mixedClusters=0 / 多岛=0 / rejectedMerges=0**，且「网络名数 = 分量数」1:1。
-PCB1_2026-10-15 实测：GND 2645 图元、DP 35 图元，覆铜 22 块归 GND，132 个网络名全部来自飞针文件。
-
-## PCB 画布门控与「关于」页面（2026-10-17）
-「通过源码导入 / 通过图元导入」写的是**当前打开的 PCB 文档**，所以打开工具时先检测：
-`06-utils.js detectPcbCanvasContext()` —— ① `sys_FileManager.getDocumentSource()` 读不到
-→ 不在画布；② 读得到但非 PCB 源码（原理图/符号也能读到）→ 不在；③ 源码为空时用
-`dmt_SelectControl.getCurrentDocumentInfo().documentType === 3` 交叉确认
-（**空白 PCB 文档源码可能为空，不能误判**）。`isPcbDocumentSource()` 认
-V2 `["DOCTYPE","PCB",…]` / V3 `{"docType":"PCB",…}`。
-- UI：按钮加 `pcb-gated` 类 + onclick 用 `confirmPcbAction()`（顺序：不在画布 → 吐司中止；
-  在画布未勾选协议 → 震动）。`.pcb-gated.is-off-canvas` 只做灰显、保留 pointer-events
-  （点了要能弹提示）。`#pcb-context-hint` 显示原因；`refreshPcbContext()` 在窗口
-  focus / visibilitychange 时重测（`isOnPcbCanvas === null` 表示检测中，不锁）。
-- `showToast(msg, type)`（06-utils.js）：优先 `eda.sys_Message.showToastMessage`，
-  退回页面内 `.app-toast`，最后 alert。
-- 「关于」页 = `iframe/About.html` + `iframe/js/about.js`（**自带 style，不引 style.css**，
-  后者 body 是工具布局）。版本号取 `sys_FileSystem.getExtensionFile('/extension.json')`，
-  退回 `fetch('/extension.json')`。菜单：`extension.json` 五个 headerMenus 上下文各加
-  `{"id":"About","title":"关于","registerFn":"About"}`；入口 `src/index.ts export About()`。
-- `headerMenus` 的 `registerFn` 必须与 `src/index.ts` 的导出函数同名。
-
-## 前端交互约定（2026-10-16）
-- 用户协议确认 = 「处理模式」下方的复选框 `#cfg-agree`（容器 `#agree-row`）；点击
-  《用户协议与免责声明》文本弹窗查看，弹窗底部只有「关闭」。导入 / 导出嘉立创EDA 五个按钮
-  带 `agree-gated` 类，未勾选时 `is-locked` **只做灰显、不加 disabled 属性**
-  （加了就点不到、无法触发震动）；`confirmAction()` 统一校验，未勾选 → `shakeAgreement()`
-  让复选框左右震动（动画类 `agree-shake`，`animationend` 后移除以支持连点重放）。
-- 飞针标注三层并入「自定义/特殊」分组（不建独立分组标题），行内标签用 `.col-name` 与
-  「文件名」列对齐，不带「仅显示」「24mil」等后缀；颜色：引脚编号 / 网络名称 `#ffffff`、
-  元件位号 `#00ffff`；**三层默认全部勾选**（`flyingOverlayVisible` 全 true，
-  意味着位号默认会随导出写进装配层文字）。
-- 「导入参数 → 板子属性」新增 **软件名称 / 导出时间**（`prop-soft` / `prop-time`，行
-  `row-prop-soft` / `row-prop-time`）：由 `06-utils.js detectEasyEdaSource()` 从
-  `rawFilesCache` 头部注释解析 `G04|; EasyEDA[ Pro][ Client] v<ver>, YYYY-MM-DD HH:MM:SS`；
-  EasyEDA = 标准版、EasyEDA Pro = 专业版；版本尾部哈希段（`.832e02bb.70b181`）由
-  `trimVersionTail()` 去掉。**返回 `{software|null, time|null, raw}`**：
-  注释里读不到时间 → 回退取「压缩包内 Gerber 文件时间的最小值」（`07-file-io.js` 入队时
-  记录 `mtime`；压缩包条目用 `zipEntryStamp()`，**必须按 Date 的 UTC 字段读**，
-  JSZip 的 entry.date 是 `Date.UTC` 由 DOS 时间构造的，用本地字段读会偏一个时区）；
-  软件名称读不到保持 null → UI 隐藏该行。刷新点在 `09-ui.js updateBoardStats()`。
-- 元件位号字高拆成两个常量（`02-config.js`）：`FLYING_REFDES_HEIGHT_MIL = 24`
-  （导出装配层文字）、`FLYING_REFDES_CANVAS_MIL = 16`（画布显示）。
-- `.modal-box` max-height = 72vh（协议 7 节，太矮要频繁滚动）。
-
-## 宏基元绘制必须做布尔运算（2026-10-17 修复）
-EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外框矩形，**全部是暗基元**，
-语义是**并集**。旧实现把 9 个子路径塞进同一条路径 + `fill('evenodd')` → 重叠区域被 XOR 成
-孔洞，**每个焊盘都带楔形/圆角缺口**（阻焊层最明显）。修复见 `06-utils.js`：
-`macroBuildRings()`（Clipper「暗并集 − 清差集」）+ `macroPrimRing()` + `macroCircleRing()` +
-`macroTreeToRings()`，`macroPrimsToPath()` 为对外统一入口（Clipper 不可用回退
-`macroPrimsToPathNaive()`），结果按光圈缓存 `_macroRingCache`。
-- ⚠️ **Clipper 方向坑**：同一批 subject 里方向相反的多边形会被当成孔洞做减法；宏基元方向
-  随机（圆/矩形逆时针、线段四边形顺时针）→ 必须先统一方向（`fillRingArea(p) < 0` 就
-  `fillReverseRing`），否则圆角被整块挖掉。
-- 缓存键 = 光圈类型 + 参数 + 倍率；实测 48~61 条，整板 3473 flash 全量重绘 ≈ 40ms。
-
-## Copper 段描边铜 → 合并 POLY（2026-10-17，V3.8.2）
-- `G04 Copper Start/End` 段里 **G36 区域之外的 D01/弧**（EasyEDA 用 0.2mm 光圈描出的铜箔轮廓）
-  不再逐段进 `rawTracks`，改走与非铜层折线相同的 `tempPolySegments → flushPoly → mergeSegments → rawPolys`。
-- 标记：`rawPolys[i].isStroke = true`（由 `seg.stroke` 经 `mergeSegments` 透传）。
-  `Track Start/End` 段仍是真·走线，保持 `rawTracks`（`effMode === "TRACK"` 已与 COPPER 拆开）。
-- **标准版导出必须分流**：`isStroke` 的铜层 POLY → 带线宽的多点 TRACK；否则落 SOLIDREGION，
-  而 SOLIDREGION 只写中心线 → 0.2mm 描边铜变成零宽轮廓（几何全丢）。
-- **网络**：`netBuildPrims` 里 `isStroke` 的 POLY 走 `pushStrokePoly`，按线段（弧 ≤22.5° 离散）入图，
-  `src` 仍指向 POLY 本体 → 整条折线拿同一个网络名。不能走 `netPathToVertices`：它只取顶点，
-  2 点开口折线顶点数 < 3 会被跳过（没网络名），弧也被当弦。
-- 折线通道的 **360° 整圆**按对径点（`2c - 起点`）拆两段 180°；不能照搬 TRACK 通道的 px/qx 拆法，
-  那两段接不上路径起点，POLY 会断开。
-- 实测 pcb1（GTL/GBL/G1/GKO）：顶层 1421 段 → 37 条 POLY，长度 1193.294 vs 1193.241mm（0.004%）；
-  专业版图元 3592 → 1030（LINE 1529 + ARC 1607 → 462 + 0），网络名 127 个不变；标准版 3557 → 995。
-- g12（Copper 段无区外线）逐项零差异；V2/V3 输出一致；80 条描边 POLY 全部带网络名、78 条含 ARC。
-- 校验脚本：`Temp/copper_stroke_check.js`（12/12）、`Temp/copper_stroke_pro_check.js`（9/9）、
-  `Temp/copper_stroke_ab.js`（7/7，A/B 基线用 `git archive HEAD` 导出到 `Temp/old`）。
-- ⚠️ 测试坑：`rawFilesCache` / `loadedFiles` 是 03-state.js 的顶层 `let`，在页面里必须**裸赋值**
-  （`rawFilesCache = …`）；写成 `window.rawFilesCache = …` 只会加一个 window 属性，原变量仍是 `[]`，
-  于是 `hasSectionMarkers` 判为 false、全走推断分支，测试会静默测错版本。
-
-## FPC 补强 + 专业版 V4 写入（2026-10-17，V3.9.0）
-### FPC 补强（Stiffener）
-- 文件名：`Gerber_<Top|Bottom>StiffenerLayer_<材料码>_<厚度>.GTSL / .GBSL`。
-  顶层归 58、底层归 59；`.GTSL`/`.GBSL` 也进 extensionRules 兜底（02-config.js）。
-- **材料码是两套**（实测，不是简单 t→b）：顶层 `pit→Polyimide` / `fr4t→FR4` / `gpt→Stainless Steel`
-  / `csa→EMI Shielding Film`；底层 `pib / fr4b / gpb / ssa` 对应同样材料；
-  `pst_<型号>` / `psb_<型号>` 取型号大写为材料名（`pst_tesa8854 → TESA8854`，文件名不带厚度，默认 0.1mm）。
-- 未知材料码 → `parseStiffenerMeta` 返回 null → 补强形状仍生成普通 FILL（几何保留、材料不写），
-  日志统计数量。**绝不猜材料名**（写错比缺失更难发现）。
-- `FPC_FILL` 三种格式（V2/V3/V4 图元完全一致）：
-  V2 `["FPC_FILL", id, 0, layer, material, thickness, path, 0]`（8 字段）
-  V3/V4 `{"type":"FPC_FILL"}||{layerId, material, thickness, path, locked, zIndex}`
-  `path` 是**路径对象数组**，有两种等价写法（都是 `[[...]]`，单位 mil、thickness 单位 mm）：
-  ① `[["R", x, y, w, h, 0, 0]]` —— 矩形快捷式，x=左边界、y=上边界；
-  ② `[[x0, y0, "L", x1, y1, …, "ARC", 扫角, x, y, …]]` —— 通用路径式（任意多边形/圆角矩形），
-     与 `generatePathStr()` 输出同构。官方多边形补强实例：
-     `[[979.6744,821.3256,"ARC",-74.95,1021,875.235,"L",1021,1017.5,…,1021,767.4161,"ARC",-74.95,979.6744,821.3256]]`
-     （"L" 后可跟多个点直到下个指令；"ARC" 语义 = 从当前点画到 (x,y)，扫角由半径反推）
-- `fpcRectOf()` 只认 4 顶点且 x/y 各 2 个不同值 → 命中就用 ①；否则用 ②（**不再降级成普通 FILL**）。
-  只有路径空/退化（< 2 点）才退回普通 FILL。
-- zIndex 从 1 顺序递增（普通图元 zIndex=null 不占号）。官方新版导出可能写 `-1`（自动），两者都能用。
-- 板类型自动切 FPC：`autoDetectSettings` 里已有 `hasStiffener` 判断（58/59），无需新增。
-
-### 专业版 V4 写入（仅源码导入）
-- `getEnvInfo()` 用 `eda.sys_Environment.getEditorCurrentVersion()` 首字符：2→pro_v2 / 3→pro_v3 / **4→pro_v4**。
-- **V4 与 V3 的图元行逐字节同构**，只有文档头不同：
-  V4 多 `META`、`LAYER_PHYS`（叠层材料/厚度/zIndex）、`D3_ATTRIBUTE`、`RULE:CREEPAGE`、
-  一批显示配置 PRIMITIVE（DRC/BOARDSHAPE/CURSOR/BACKGROUND/GRID/BOLDGRID/COORDINATEAXIS/SELECTBOX/PLANE/null/D3BODY）；
-  `DOCHEAD` 多 `editVersion`/`user`，`CANVAS` 多 `layerBrightness`，LAYER 的 inactiveTransparency 1→0.5。
-- `LCEDA_V4_Head_Source` 直接取自 `Temp/FPC/V4空白PCB源码.epru`（4.1.78），与原文件逐字节一致；
-  生成脚本 `Temp/gen_v4_template.js`（转义 `\` → `\\` 是必须的，否则 JSON 里的 `\"` 会被模板字面量吃掉）。
-- `08-export.js`：`isV3`（严格 V3，仅用于 .epru 打包）+ `isLineFormat = isV3 || isV4`（源码拼接 / configureHeader / generatePrimitives 共用）。
-- `calculateMaxId` 的 V3 分支扩展到 V4（同样的 ticket/id 正则）。
-- ⚠️ V4 的 `ticket/id` 起始值比 V3 大（头部行更多）→ 对比 V3/V4 源码时要归一化编号再比。
-
-### V4 模板的三个坑（2026-10-17 修正，V3.9.1）
-- **转义**：模板字面量里 JSON 的 `\"` 必须写成 `\\"`（源文件 1 个反斜杠 → 模板里 2 个）。
-  少一层就会在运行时被吃掉，`LAYER` 行变成 `"id":"["LAYER",1]"` 非法 JSON（**60 行全废，
-  浏览器里同样失败**，不是 Node 的锅）。
-- **末行不留竖线**：EDA 源码每行以 `|` 结尾，但**最后一行不能有**。拼接图元用的是 `"|\n"`，
-  末行自带竖线会形成 `}||`，body 尾部残留 `|` → JSON 非法。
-- **模板来源**：以官方 4.x 导出的空白源码为准。4.1.78 导出的 `DOCHEAD` **没有 `editVersion`**，
-  新版 `LAYER` 行**带 `layerId`**；不要按旧模板补猜字段。
-- 生成脚本 `Temp/rebuild_v4_template.js`：源文件 → 逐行 JSON 解析 → 颜色对齐 V3 → 转义 → 写回 →
-  **运行时复核**（`new Function` 取回后逐行 JSON.parse）。复核必须跑，否则静默写出坏模板。
-
-### 颜色统一与 FPC 层启用（2026-10-17，V3.9.1）
-- 四套源码颜色以 **V3 模板**为基准：V2 本就一致（0 差异）；V4 模板 60 个图层的
-  `activeColor/inactiveColor/activateTransparency/inactiveTransparency` 已全部对齐；
-  标准版 `STD_LAYERS` 按**语义**映射对齐 —— 标准版图层 id 与内部编号不是一套
-  （5=锡膏 / 7=阻焊 / 10=板框 / 11=Multi / 12=Document / 15=Mechanical / 21-52=Inner1-32 /
-  99=零件形状 / 100=引脚 / 101=标记 / Hole），不能按 id 硬对。
-- **FPC 层启用**：`configureHeader` 用 `needStiffener`（loadedFiles 是否含 58/59）判断；
-  V3/V4 把 `use/show` 置 true，V2 把 `LAYER[4]` 置 3。模板来自空白 PCB，这两层默认禁用，
-  不打开的话 `FPC_FILL` 写进去也看不见。
-- **标准版不支持 FPC**：`buildStandardSource` 的 polys/fills/images 跳过 58/59。
-  否则 `STD_LAYER(58)` 兜底返回 12（Document），补强会画到文档层上。
-- 官方空白 PCB 与空白 FPC 源码的**唯一结构差异**就是 `LAYER:58/59` 的 `use/show`
-  （其余 141 行一致，DOCHEAD 仅 client/updateTime/version 不同）。
-
-### FPC 补强画布标注（2026-10-17，V3.9.2）
-- 补强区域中心画两行：**材料简称在上、厚度在下**（`0.2mm`），与引脚编号/网络名称同一套
-  `fitFont` 排布（各占半高、居中、随缩放）。行距 `half = min(boxH/4, 0.72×字号)` —— 
-  上限跟着字号走，否则 4×10mm 的竖条补强两行会被拉开近半屏（V3.9.4 起）。颜色 `#193366`。
-- 材料简称表 `STIFFENER_LABEL`（02-config）：PI / FR4 / 钢片 / 双面胶 / 电磁屏蔽膜；
-  未收录材料显示原名。字号上限 `FLYING_STIFFENER_MAX_FONT=24`（引脚是 12）。
-- 新增标注层 2004「补强名称」，`FLYING_LAYER.STIFFENER`，并入「自定义/特殊」分组、默认勾选。
-  `flyingOverlayVisible` 加一项；`toggleOverlay` 直接复用。
-- ⚠️ `renderFlyingLayerRows` 原来第一行就 `if (!flyingProbeData) return` —— FPC 板通常没有飞针文件，
-  导致补强行根本不出现。现在拆成 `hasFlying` / `hasStiff` 两个独立条件，
-  用 `FLYING_PIN_LAYER_IDS`（前三层）与 `FLYING_LAYER.STIFFENER` 分别渲染。
-- `ensureFlyingLabels` 里 `extractRawData` 抽成 `getRaw()` 只调一次，补强与飞针共用（大板开销大）。
-
-### ⚠️ FPC 补强只能源码导入（2026-10-17 用户实测，V3.9.5 定论）
-- **图元 API 创建不出补强**：`pcb_PrimitiveFill.create(58/59, …)` 实测无效 —— 即便先
-  `setPcbType(2)`（`EPCB_PcbPlateType.FPC`）让补强层存在，接口仍返回空或把图元落到默认层。
-  用户报的「补强变成顶层一块填充」就是这个。SDK 注释里其实有暗示：`setPcbType` 的
-  「FPC → 普通板」要求先清空补强层图元，说明补强层是特殊层，普通填充 API 管不到。
-- **结论**：补强**只能**走「通过源码导入」——源码里的 `FPC_FILL` 带 layerId/material/thickness，
-  由 EDA 自己建层解析。V3.9.5 起图元模式遇到 `FPC_FILL`（以及任何 58/59 层的 `FILL`）直接
-  **跳过 + 计数**，导入前后各给一次提示（结束时有吐司），并且**不再调 `setPcbType`**
-  （切了板材却写不进补强，只会留下「文档是 FPC 但没补强」的半成品）。
-- 之前 V3.9.3/V3.9.4 里「先 setPcbType 再 create」的写法是错的，已删除；`importPrimitivesAPI`
-  的 `case 'FPC_FILL'` 现在是 `stiffSkipped++; break;`。
-- 补强层是 58/59；`TPCB_LayersOfFill` 的联合类型本来就不含 TOP/BOTTOM_STIFFENER —— 现在知道
-  那不只是类型标注问题，运行时确实不支持。
-- 生成侧不受影响：`generatePrimitives` 仍产出 `FPC_FILL`（矩形用 `R` 快捷式，其它形状用
-  通用扁平路径），源码通道照旧；只有「图元通道」丢弃它们。
-- 多边形补强（L 形/阶梯形/圆角矩形，如 `Gerber_PCB1_2024-10-03.zip` 的 6 边形）在 V3.9.4 起
-  也走 `FPC_FILL` 通用路径式（此前退化成普通 `FILL`）。
-
-### 多边形 path 的官方指令集（`TPCB_PolygonSourceArray`，2026-10-17 查证）
-`Array<'L'|'ARC'|'CARC'|'C'|'R'|'CIRCLE'|number>`，官方注释给出五种模式：
-- ① L：`x1 y1 L x2 y2 x3 y3 …`（起点在前，后续多点只写一次 L）
-- ② ARC：`startX startY ARC arcAngle endX endY`；CARC 为「中心圆弧」同构写法。
-  **arcAngle 为角度制、负值=顺时针**（与 Gerber G02/G03 一致）
-- ③ C：`x1 y1 C x2 y2 x3 y3 x4 y4 …` 三阶贝塞尔（本项目未用）
-- ④ R：`R x y width height rot round`，**x/y = 左上点**，round = 圆角半径
-- ⑤ CIRCLE：`CIRCLE cx cy radius`
-本项目只生成 ①④（②只在原始 Gerber 带弧时出现）；`C`/`CARC`/`CIRCLE` 未实现。
+`importPrimitivesAPI(primitives, isV3)` 的 `isV3` 从未使用（api 模式强制 pro_v2）；
+PCB/FPC 手动开关只改 UI；标准版不导出埋盲孔；真彩图片离线无解。
+`ImportGerber.html` 协议里「本工具当前不生成网络 / 标准版不含位号」两句已过时（未改，属法务文案待用户确认）。

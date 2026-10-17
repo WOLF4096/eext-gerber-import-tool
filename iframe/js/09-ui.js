@@ -211,17 +211,17 @@
         ctx.clearRect(0,0, mainCanvas.width, mainCanvas.height);
         ctx.restore(); 
         
-        // --- 修复：在导出模式下，由于 mainCanvas.width 重置清除了 context 状态，
-        // 我们需要手动补上 scale，否则画面会极小。
-        // 但在屏幕渲染模式下，scale 是由 resizeCanvas 处理的，这里不需要补。
-        if (forceNoDpr) {
-            ctx.save();
-            ctx.scale(1, 1); // 显式重置为 1:1
-        } else {
-            // 屏幕渲染时，resizeCanvas 已经做过 scale(dpr, dpr) 了
-            // 但为了保险，drawCanvas 内部恢复 context 状态时要小心
-            ctx.save();
-        }
+        // 2. 【关键】每次绘制都用**绝对** setTransform 设定 dpr，而不是依赖
+        //    resizeCanvas 之前留下的 scale。
+        //    原因：只要有人重设过 `mainCanvas.width`（**导出 PDF 就会**，见 08-export.js
+        //    的 finally），context 变换会被浏览器重置成单位矩阵 —— 此时若仍靠
+        //    resizeCanvas 里那句 scale(dpr) 就失效了，图形会按「设备像素」绘制（小 dpr 倍、
+        //    整体偏左上），而标注文字层用的是绝对 setTransform(dpr) → 两者对不上。
+        //    这就是「高 DPI 屏上图形与标注文字 DPI 不一致」的根因（且只在导出过 PDF 后出现，
+        //    所以看起来像「不定时」）。
+        //    这里幂等：无论之前状态如何，进入绘制时一定是 dpr。
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
         // 绘制原点
         ctx.save();
@@ -688,6 +688,8 @@
         if (!forceNoDpr) drawFlyingOverlays(dpr);
         // 仅在非导出模式下绘制标尺
         if (!forceNoDpr) drawRulers();
+        // 与函数开头的 ctx.save() 配对：不 restore 会每帧泄漏一个 save 状态
+        ctx.restore();
     }
 
     /**
@@ -938,6 +940,24 @@
         // buffer 不需要 scale，因为它是在内部 transform 处理的，或者也统一 scale
 
         requestDraw(); // 触发重绘
+    }
+
+    /**
+     * 监听 devicePixelRatio 变化。
+     * 把窗口拖到「不同缩放比例」的显示器上时，dpr 会变，但并不一定触发 resize 事件；
+     * 不重算画布就会出现「图形按旧 dpr、文字按新 dpr」的错位（同样表现为图形与文字不一致）。
+     * matchMedia 的 resolution 查询只匹配挂载时的 dpr，所以每次变化后要重新挂一次。
+     */
+    function watchDprChanges() {
+        if (!window.matchMedia) return;
+        const dpr = window.devicePixelRatio || 1;
+        const mq = window.matchMedia(`(resolution: ${dpr}dppx)`);
+        const onChange = () => {
+            try { resizeCanvas(); drawCanvas(); } catch (e) { /* 忽略：下一帧会重绘 */ }
+            watchDprChanges();
+        };
+        if (mq.addEventListener) mq.addEventListener('change', onChange, { once: true });
+        else if (mq.addListener) mq.addListener(onChange);
     }
 
 
