@@ -183,3 +183,33 @@ EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外�
 - ⚠️ 测试坑：`rawFilesCache` / `loadedFiles` 是 03-state.js 的顶层 `let`，在页面里必须**裸赋值**
   （`rawFilesCache = …`）；写成 `window.rawFilesCache = …` 只会加一个 window 属性，原变量仍是 `[]`，
   于是 `hasSectionMarkers` 判为 false、全走推断分支，测试会静默测错版本。
+
+## FPC 补强 + 专业版 V4 写入（2026-10-17，V3.9.0）
+### FPC 补强（Stiffener）
+- 文件名：`Gerber_<Top|Bottom>StiffenerLayer_<材料码>_<厚度>.GTSL / .GBSL`。
+  顶层归 58、底层归 59；`.GTSL`/`.GBSL` 也进 extensionRules 兜底（02-config.js）。
+- **材料码是两套**（实测，不是简单 t→b）：顶层 `pit→Polyimide` / `fr4t→FR4` / `gpt→Stainless Steel`
+  / `csa→EMI Shielding Film`；底层 `pib / fr4b / gpb / ssa` 对应同样材料；
+  `pst_<型号>` / `psb_<型号>` 取型号大写为材料名（`pst_tesa8854 → TESA8854`，文件名不带厚度，默认 0.1mm）。
+- 未知材料码 → `parseStiffenerMeta` 返回 null → 补强形状仍生成普通 FILL（几何保留、材料不写），
+  日志统计数量。**绝不猜材料名**（写错比缺失更难发现）。
+- `FPC_FILL` 三种格式（V2/V3/V4 图元完全一致）：
+  V2 `["FPC_FILL", id, 0, layer, material, thickness, path, 0]`（8 字段）
+  V3/V4 `{"type":"FPC_FILL"}||{layerId, material, thickness, path, locked, zIndex}`
+  `path = [["R", x, y, w, h, 0, 0]]`，**单位 mil，x=左边界、y=上边界**，thickness 单位 mm。
+- `FPC_FILL` 的 R 只能表达轴对齐矩形 → `fpcRectOf()` 只认 4 顶点且 x/y 各 2 个不同值；
+  异形补强退回普通 FILL。
+- zIndex 从 1 顺序递增（普通图元 zIndex=null 不占号）。
+- 板类型自动切 FPC：`autoDetectSettings` 里已有 `hasStiffener` 判断（58/59），无需新增。
+
+### 专业版 V4 写入（仅源码导入）
+- `getEnvInfo()` 用 `eda.sys_Environment.getEditorCurrentVersion()` 首字符：2→pro_v2 / 3→pro_v3 / **4→pro_v4**。
+- **V4 与 V3 的图元行逐字节同构**，只有文档头不同：
+  V4 多 `META`、`LAYER_PHYS`（叠层材料/厚度/zIndex）、`D3_ATTRIBUTE`、`RULE:CREEPAGE`、
+  一批显示配置 PRIMITIVE（DRC/BOARDSHAPE/CURSOR/BACKGROUND/GRID/BOLDGRID/COORDINATEAXIS/SELECTBOX/PLANE/null/D3BODY）；
+  `DOCHEAD` 多 `editVersion`/`user`，`CANVAS` 多 `layerBrightness`，LAYER 的 inactiveTransparency 1→0.5。
+- `LCEDA_V4_Head_Source` 直接取自 `Temp/FPC/V4空白PCB源码.epru`（4.1.78），与原文件逐字节一致；
+  生成脚本 `Temp/gen_v4_template.js`（转义 `\` → `\\` 是必须的，否则 JSON 里的 `\"` 会被模板字面量吃掉）。
+- `08-export.js`：`isV3`（严格 V3，仅用于 .epru 打包）+ `isLineFormat = isV3 || isV4`（源码拼接 / configureHeader / generatePrimitives 共用）。
+- `calculateMaxId` 的 V3 分支扩展到 V4（同样的 ticket/id 正则）。
+- ⚠️ V4 的 `ticket/id` 起始值比 V3 大（头部行更多）→ 对比 V3/V4 源码时要归一化编号再比。

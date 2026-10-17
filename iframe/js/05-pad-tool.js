@@ -614,7 +614,9 @@
                         } else {
                             let targetLayer = layerId;
                             if (targetLayer === 56) targetLayer = 56; // 显式保留
-                            rawFills.push({ layerId: targetLayer, path: pathData });
+                            // FPC 补强层（58/59）：材料与厚度来自文件名（file.stiffener），
+                            // 挂到填充项上，生成阶段据此输出 FPC_FILL 而不是普通 FILL。
+                            rawFills.push({ layerId: targetLayer, path: pathData, stiffener: file.stiffener || null });
                         }
                         continue;
                     }
@@ -1905,9 +1907,82 @@
             // ... (G. Fills 生成) ...
             // 覆铜的「挖空」（LPC 清区）会作为额外分块一起交给 createComplexPolygon，
             // 由 EDA 按复合多边形处理（与画布上的 destination-out 挖空一致）。
+            // --- FPC 补强：矩形判定 ---
+            // FPC_FILL 的 path 是 [["R", x, y, w, h, 0, 0]]，只能表达**轴对齐矩形**。
+            // 因此只有补强区域正好是轴对齐矩形时才转成 FPC_FILL；其余形状退回普通 FILL
+            // （几何不丢，材料信息丢，日志会统计个数）。
+            // 坐标单位 mil；x 取左边界，y 取**上边界**（与 EDA 源码里 R 的原点一致，
+            // 已用 Temp/FPC 的源码与导出 Gerber 反算验证）。
+            const fpcRectOf = (pathArr) => {
+                if (!Array.isArray(pathArr)) return null;
+                const pts = [];
+                pathArr.forEach(op => {
+                    if (!op || (op.cmd !== 'M' && op.cmd !== 'L')) return;
+                    if (typeof op.x !== 'number' || !isFinite(op.x) ||
+                        typeof op.y !== 'number' || !isFinite(op.y)) return;
+                    const q = pts[pts.length - 1];
+                    if (q && Math.abs(q.x - op.x) < 1e-6 && Math.abs(q.y - op.y) < 1e-6) return;
+                    pts.push(op);
+                });
+                // 闭合路径的末点与首点重复，去掉
+                while (pts.length > 1) {
+                    const a = pts[0], b = pts[pts.length - 1];
+                    if (Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6) pts.pop();
+                    else break;
+                }
+                if (pts.length !== 4) return null;
+                const xs = [...new Set(pts.map(p => Math.round(p.x * 1000) / 1000))];
+                const ys = [...new Set(pts.map(p => Math.round(p.y * 1000) / 1000))];
+                if (xs.length !== 2 || ys.length !== 2) return null;
+                const x0 = Math.min(...xs), x1 = Math.max(...xs);
+                const y0 = Math.min(...ys), y1 = Math.max(...ys);
+                if (x1 - x0 <= 1e-6 || y1 - y0 <= 1e-6) return null;
+                return {
+                    x: PadTool.toMil(x0),
+                    y: PadTool.toMil(y1),
+                    w: PadTool.toMil(x1 - x0),
+                    h: PadTool.toMil(y1 - y0)
+                };
+            };
+
             if (data.fills) {
+                // FPC 补强的叠层序号：普通图元 zIndex 都是 null、不占号，这里从 1 起顺序递增。
+                let fpcZ = 0, fpcMade = 0, fpcFallback = 0;
                 data.fills.forEach(f => {
                     const ids = nextIds();
+
+                    // --- FPC 补强层（58 / 59）：输出 FPC_FILL，而不是普通填充 ---
+                    // 三种源码格式（Temp/FPC：V2/V3/V4 图元完全一致，仅行格式不同）：
+                    //   V2    ["FPC_FILL", id, 0, layerId, material, thickness, path, 0]
+                    //   V3/V4 {"type":"FPC_FILL"}||{layerId, material, thickness, path, locked, zIndex}
+                    // thickness 单位 mm（0.2 / 0.018），与文件名里的数字一致。
+                    if (f.stiffener && (f.layerId === 58 || f.layerId === 59)) {
+                        const rect = fpcRectOf(f.path);
+                        if (rect) {
+                            fpcZ++;
+                            const body = [["R", rect.x, rect.y, rect.w, rect.h, 0, 0]];
+                            if (isV3) {
+                                const obj = { "type": "FPC_FILL", "ticket": ids.t, "id": ids.id };
+                                const content = {
+                                    "partitionId": "",
+                                    "groupId": 0,
+                                    "layerId": f.layerId,
+                                    "material": f.stiffener.material,
+                                    "thickness": f.stiffener.thickness,
+                                    "path": body,
+                                    "locked": false,
+                                    "zIndex": fpcZ
+                                };
+                                output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
+                            } else {
+                                output.push(JSON.stringify(["FPC_FILL", ids.id, 0, f.layerId,
+                                    f.stiffener.material, f.stiffener.thickness, body, 0]));
+                            }
+                            fpcMade++;
+                            return;
+                        }
+                        fpcFallback++;   // 非矩形 → 落到下面的普通 FILL
+                    }
                     // 环规整（去零长线段 + 显式闭合）：嘉立创EDA **标准版** 导出的区域路径
                     // 常带「M 起点 → L 起点」的零长首段且不闭合，未规整时 EDA 会拒绝整块填充
                     // —— 表现为「画布渲染正常、导入 EDA 后填充区域丢失」（见 06-utils.js
@@ -1948,6 +2023,10 @@
                     }
                 });
                 console.log(`生成了 ${data.fills.length} 个填充区域`);
+                if (fpcMade || fpcFallback) {
+                    console.log(`FPC 补强：${fpcMade} 个 FPC_FILL`
+                        + (fpcFallback ? `，${fpcFallback} 个非矩形补强退回普通填充（材料信息未写）` : ''));
+                }
             }
 
             // ... (H. Image 生成 - 保持不变) ...

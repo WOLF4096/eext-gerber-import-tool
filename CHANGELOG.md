@@ -1,5 +1,22 @@
 # 更新日志
 
+## V3.9.0
+
+### 新增：FPC 补强层识别与导入
+
+- 识别 `Gerber_TopStiffenerLayer_*` / `Gerber_BottomStiffenerLayer_*`（`.GTSL` / `.GBSL`），归入补强层 58 / 59，不再落到「其它层」兜底
+- 从文件名解析材料与厚度：顶层 `pit/fr4t/gpt/csa`、底层 `pib/fr4b/gpb/ssa`、`pst_/psb_<型号>` 取型号为材料名
+- 生成 `FPC_FILL` 图元（V2 数组格式 / V3-V4 行格式两套），写入 `material` / `thickness` / `zIndex`
+- 未知材料码或非轴对齐矩形补强 → 退回普通填充（几何保留、材料不写），运行日志给出数量
+- 导入含补强层的 Gerber 时板类型自动切为 FPC
+
+### 新增：专业版 V4 源码写入（仅「通过源码导入」）
+
+- `getEnvInfo` 识别 `getEditorCurrentVersion()` 的 `4.*.*` → `pro_v4`
+- 新增 `LCEDA_V4_Head_Source`，取自 4.1.78 导出的空白 PCB 源码，与官方文件逐字节一致
+- V4 文档头比 V3 多 `LAYER_PHYS` / `D3_ATTRIBUTE` / `RULE:CREEPAGE` 与一批显示配置 PRIMITIVE；**图元行与 V3 完全相同**，因此图元生成逻辑共用
+- 不导出 V4 工程文件（`.epro2`）
+
 ## V3.8.2
 
 ### 改进：Copper 段的描边铜改为合并多段线

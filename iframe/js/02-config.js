@@ -224,6 +224,14 @@
         { regex: /Gerber_DocumentLayer/i, layerId: 13 },          // 文档层
         { regex: /Gerber_DrillDrawingLayer/i, layerId: 56 },      // 钻孔图层
 
+        // --- [新增] FPC 补强层（Stiffener）---
+        // 嘉立创专业版导出名：Gerber_TopStiffenerLayer_<材料码>_<厚度>.GTSL
+        // 每种「材料 + 厚度」组合单独一个文件，同一层可以有多份（58/59 共用）。
+        // 材料与厚度从文件名解析（见 06-utils.js parseStiffenerMeta），
+        // 生成 FPC_FILL 图元时必须带上，否则补强层只剩几何、没有材料信息。
+        { regex: /Gerber_TopStiffenerLayer/i, layerId: 58 },      // 顶部补强层
+        { regex: /Gerber_BottomStiffenerLayer/i, layerId: 59 },   // 底部补强层
+
         // --- [新增] 细分钻孔匹配规则 ---
         // 使用 ID 500+
         { regex: /Drill_PTH_Through/i, layerId: 500 },            // 金属化钻孔
@@ -284,6 +292,9 @@
         { regex: /\.GME$/i, layerId: 14 },
         { regex: /\.GDL$/i, layerId: 13 },
         { regex: /\.GDD$/i, layerId: 56 },
+        // FPC 补强层：Top = .GTSL，Bottom = .GBSL（嘉立创专业版命名）
+        { regex: /\.GTSL$/i, layerId: 58 },
+        { regex: /\.GBSL$/i, layerId: 59 },
         { regex: /\.DRL$|\.TXT$|\.XY$|\.XLN$/i, layerId: 47 } // 常见钻孔扩展名
     ];
 

@@ -26,9 +26,69 @@
         return null;
     }
 
+    // ----------------------------------------------------------------------------------
+    // FPC 补强层（Stiffener）文件名解析
+    // ------------------------------------------------------------------------------------
+    // 嘉立创 EDAP 专业版导出：`Gerber_<Top|Bottom>StiffenerLayer_<材料码>_<厚度>.GTSL`
+    // 实测（Temp/FPC：V2/V3/V4 源码与同板导出 Gerber 交叉比对，坐标逐一对应）：
+    //   顶层 .GTSL                                  底层 .GBSL
+    //   Gerber_TopStiffenerLayer_pit_0.2.GTSL    → Polyimide      0.2
+    //   Gerber_TopStiffenerLayer_fr4t_0.2.GTSL   → FR4            0.2
+    //   Gerber_TopStiffenerLayer_gpt_0.2.GTSL    → Stainless Steel 0.2
+    //   Gerber_TopStiffenerLayer_pst_tesa8854.GTSL → TESA8854     0.1（文件名不带厚度）
+    //   Gerber_TopStiffenerLayer_csa_0.018.GTSL  → EMI Shielding Film 0.018
+    //   底层同名材料分别写作 pib / fr4b / gpb / psb_<型号> / ssa（实测，非简单 t→b 替换）
+    // ⚠️ 材料码与材料名无法由缩写推导（gpt / csa / ssa 的含义不明），这张表是按样本反推的
+    //    固定枚举。**未知材料码一律返回 null**，调用方退回普通填充（几何保留、材料不写），
+    //    绝不猜一个材料名写进 FPC_FILL —— 材料写错比缺失更难发现。
+    const STIFFENER_MATERIAL_CODES = {
+        // 顶层（Top Stiffener, layer 58）
+        pit: 'Polyimide',
+        fr4t: 'FR4',
+        gpt: 'Stainless Steel',
+        csa: 'EMI Shielding Film',
+        // 底层（Bottom Stiffener, layer 59）
+        pib: 'Polyimide',
+        fr4b: 'FR4',
+        gpb: 'Stainless Steel',
+        ssa: 'EMI Shielding Film'
+    };
+    const STIFFENER_DEFAULT_THICKNESS = 0.1;
+
+    /**
+     * 从补强层 Gerber 文件名解析材料与厚度。
+     * @returns {{material:string, thickness:number}|null} 解析不出材料时返回 null
+     */
+    function parseStiffenerMeta(fileName) {
+        const name = String(fileName || '');
+        const m = name.match(/StiffenerLayer_(.+?)\.G[TB]SL$/i) ||
+                  name.match(/StiffenerLayer_(.+)$/i);
+        if (!m) return null;
+        const parts = m[1].split('_').filter(Boolean);
+        if (!parts.length) return null;
+        let thickness = null;
+        const last = parts[parts.length - 1];
+        if (parts.length > 1 && /^\d+(\.\d+)?$/.test(last)) {
+            thickness = parseFloat(last);
+            parts.pop();
+        }
+        const code = parts.join('_').toLowerCase();
+        let material = null;
+        if (STIFFENER_MATERIAL_CODES[code]) {
+            material = STIFFENER_MATERIAL_CODES[code];
+        } else if (code.startsWith('pst_') || code.startsWith('psb_')) {
+            // pst_<型号> / psb_<型号>：型号本身即材料名（tesa8854 → TESA8854）
+            material = code.slice(4).toUpperCase();
+        }
+        if (!material) return null;
+        return {
+            material: material,
+            thickness: (thickness === null) ? STIFFENER_DEFAULT_THICKNESS : thickness
+        };
+    }
+
     // --- [新增] UUID 生成辅助函数 (无连字符格式) ---
-    function generateUUID() {
-        return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    function generateUUID() {        return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
             var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
             return v.toString(16);
         });
@@ -683,8 +743,10 @@
         let maxTicket = 0;
         let maxIdNum = 0;
 
-        // 统一判断版本逻辑 (兼容传入 'pro_v3', 'V3专业版' 等情况)
-        const isV3 = version && (version.includes('V3') || version === 'pro_v3');
+        // 统一判断版本逻辑 (兼容传入 'pro_v3' / 'pro_v4' / 'V3专业版' 等情况)
+        // V4 的图元行格式与 V3 完全一致（同样 "ticket" / "id":"eN"），所以解析规则共用。
+        const isV3 = version && (version.includes('V3') || version.includes('V4') ||
+            version === 'pro_v3' || version === 'pro_v4');
 
         if (isV3) {
             // =========================
@@ -1181,9 +1243,14 @@
 
         if (typeof eda !== 'undefined') {
             isEdaEnv = true;
-            const verStr = eda.sys_Environment.getEditorCurrentVersion(); // "2.2.45.5"
+            const verStr = eda.sys_Environment.getEditorCurrentVersion(); // "2.2.45.5" / "3.2.149..." / "4.1.78"
+            // 主版本号决定文档源码格式：
+            //   2.x → V2 数组行（["PAD",...]）
+            //   3.x → V3 行格式（{"type":"..."}||{...}|）
+            //   4.x → V4 行格式（图元行与 V3 相同，仅头部多了 LAYER_PHYS / D3_ATTRIBUTE / 一批显示配置）
             if (verStr.startsWith('2')) clientVer = 'pro_v2';
             else if (verStr.startsWith('3')) clientVer = 'pro_v3';
+            else if (verStr.startsWith('4')) clientVer = 'pro_v4';
         }
         return { clientVer, isEdaEnv };
     }

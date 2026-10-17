@@ -753,13 +753,19 @@
         console.log("开始导出处理...", config);
         const startTime = performance.now(); // 开始计时
         
+        const isV4 = config.targetVer === 'pro_v4';
         const isV3 = config.targetVer === 'pro_v3';
-        const separator = isV3 ? "|\n" : "\n"; // 提前定义分隔符
+        // V3 与 V4 的**图元行格式完全相同**（{"type":...}||{...}|），只有文档头不同
+        // （V4 多 LAYER_PHYS / D3_ATTRIBUTE / 一批显示配置 PRIMITIVE）。
+        // 因此除"选哪份模板"以外，分隔符、configureHeader、图元生成、拼接全部共用。
+        const isLineFormat = isV3 || isV4;
+        const separator = isLineFormat ? "|\n" : "\n"; // 提前定义分隔符
         
         // 1. 准备源码头 (移除 !DEBUG 判断，始终生成头文件)
-        let rawTemplate = isV3 ? LCEDA_V3_Head_Source : LCEDA_V2_Head_Source;
+        let rawTemplate = isV4 ? LCEDA_V4_Head_Source
+            : (isV3 ? LCEDA_V3_Head_Source : LCEDA_V2_Head_Source);
         // 调用配置函数，动态修改图层和规则
-        let finalSource = configureHeader(rawTemplate, isV3);
+        let finalSource = configureHeader(rawTemplate, isLineFormat);
         
         // 仅在非Debug或Debug但未显示日志时记录，避免刷屏，但此处为了逻辑简单保留
         // appLog(`已根据设置动态更新文件头配置`);
@@ -788,7 +794,7 @@
 
         // 5. 生成图元字符串 (这一步才真正决定了最终有多少个图元)
         const primitives = PadTool.generatePrimitives(unifiedData, {
-            isV3: isV3,
+            isV3: isLineFormat,
             ticket: startIds.ticket || 10000,
             id: startIds.id || 10000
         }, config); 
@@ -803,7 +809,7 @@
         let stat_texts = 0;
 
         primitives.forEach(str => {
-            if (isV3) {
+            if (isLineFormat) {
                 try {
                     const parts = str.split("||");
                     if(parts.length > 1) {
@@ -869,7 +875,7 @@
         // 7. 正式输出拼接 (非 Debug 模式，或者 Debug 模式下的文件导出)
         if (primitives.length > 0) {
             // 注意：V3 格式如果直接拼接在头文件后，需要补一个分隔符
-            if (isV3) finalSource += separator + primitives.join(separator);
+            if (isLineFormat) finalSource += separator + primitives.join(separator);
             else finalSource += "\n" + primitives.join("\n");
         }
 
@@ -946,7 +952,8 @@
                         appLog(`写入画布中 (图元模式)...`);
                         // 在导入图元之前，先配置设计规则
                         // await configureBlindViasAPI(); // 当前保存设计规划失败，未知原因
-                        await importPrimitivesAPI(primitives, isV3);
+                        // V3 / V4 的图元串是同一种行格式，解析器共用；只有 V2 走数组分支
+                        await importPrimitivesAPI(primitives, isLineFormat);
                         
                         const writeEndTime = performance.now();
                         const writeDuration = ((writeEndTime - writeStartTime) / 1000).toFixed(2);

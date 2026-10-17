@@ -215,6 +215,11 @@
                 }
             }
 
+            // FPC 补强层：材料与厚度只在文件名里（Gerber 几何里没有），必须先解出来，
+            // 否则导入后只能还原出「一块补强形状」，材料/厚度信息全部丢失。
+            const stiffenerMeta = (matchedId === 58 || matchedId === 59)
+                ? parseStiffenerMeta(fileObj.name) : null;
+
             loadedFiles.push({
                 name: fileObj.name,
                 layerId: matchedId,
@@ -224,7 +229,9 @@
                 data: parseResult,
                 // [新增] 存储层对信息
                 pairStart: detectedStart, 
-                pairEnd: detectedEnd
+                pairEnd: detectedEnd,
+                // [新增] FPC 补强层的材料/厚度（解析不出时为 null）
+                stiffener: stiffenerMeta
             });
         });
 
