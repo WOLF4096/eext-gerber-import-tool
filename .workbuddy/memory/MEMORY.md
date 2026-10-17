@@ -40,20 +40,42 @@ X2 / X3 / RS-274D / 兼容 / 保底 已删。新增处理器要同步改三处�
 
 ## 嘉立创标准版导出格式（08-export.js）
 1 单位 = 10 mil = 0.254 mm；`X=4020+mmX/0.254`，`Y=3560.5-mmY/0.254`。
-字段：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10。
+字段：PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10 / TEXT 17。**没有 POLY**。
 区域类一律 SOLIDREGION（不要 COPPERAREA）。槽孔必须同时给 `holeLength` + `slotPointArr`。
 图层 ID 与内部编号顺序不同（阻焊/锡膏/装配需换算）。
-标准版**不导出**文字、元件位号、埋盲孔；矢量图片轮廓以 SOLIDREGION 导出，钻孔层默认不勾选。
+- **折线全转 TRACK**（V3.9.6）：`polys` 无论铜层/非铜层一律 `['TRACK', 线宽, STD_LAYER, net, 点列, gid, 0]`，
+  不再把铜层非描边 POLY 转 SOLIDREGION（折线是「线」语义，转实心会让 0.2mm 描边铜变零宽块）。
+  实心铜在 `uni.fills`，仍走 stdSolidRegion。
+- **文字只能用 TEXT**：`TEXT~L~x~y~0.8~0~0~<layer>~~<em>~文本~path~~ggeID~字体名~0~pinpart`（17 字段）。
+  `path` **必须自带字形轮廓且每条子路径显式闭合**（官方样例都以 Z 结尾，不闭合会按折线渲染）。
+  见下方「内置字体轮廓」。
+- ⚠️ **`stdX`/`stdY` 返回字符串**（stdNum 格式化结果），参与算术会变字符串拼接
+  （`"3521.12"+1.5 → "3521.121.5"`）→ 坐标归零。必须先 `parseFloat`。
+
+## 内置字体轮廓（V3.9.6）
+浏览器/EDA iframe 拿不到字体矢量路径（canvas 只能画、不能导出 path），所以**离线**提取、随包内置：
+- 数据：`iframe/js/11-font-outline.js`（`FONT_OUTLINE_DATA` + `fontTextToPath` / `fontEmForCapHeight`），
+  默认 ASCII 0x20–0x7E 共 94 字形，42KB。字体名写 `NotoSansCJKsc-DemiLight`（与 EDA 源码一致）。
+- 工具：`tools/font-outline.js`（不进包，`.edaignore` 已排除）：
+  `npm i opentype.js --prefix Temp/fonttest --no-save` →
+  `NODE_PATH=Temp/fonttest/node_modules node tools/font-outline.js --font <ttf> [--extra "字符"] [--range 0x4E00-0x9FA5]`
+- 字体来源：`C:/Windows/Fonts/NotoSansSC-VF.ttf` 是可变字体（默认 wght=100 Thin！），
+  opentype.js 的 `variation.set` **不会**改轮廓 → 先用 fontTools 实例化：
+  `python -m fontTools.varLib.instancer <VF.ttf> wght=350 -o Temp/NotoSansSC-DemiLight.ttf`（已验证，cap/em=0.732）。
+- 字高约定：PCB 说的「字高」= cap height。`em = capMil / (capHeight/upem)`，
+  本字体 30mil → em≈41.0mil ≈ 4.098 标准版单位。
+- 缺字（不在字符集里）跳过并在运行日志列出，绝不用近似字形顶替。
 
 ## 飞针标注层
 虚拟层 id 2001 引脚编号 / 2002 网络名称 / 2003 元件位号（有 `FlyingProbeTesting.json` 才出现）。
 匹配统一在 06-utils（`buildFlyingPinIndex`/`padMatchBoxMM`/`flyingPinAt`），画布与导出共用。
-单位 mil。引脚编号/网络名称仅显示不导出；位号勾选后写装配层文字（24mil）。
+单位 mil。引脚编号/网络名称仅显示不导出；位号勾选后写**文档层**（`FLYING_REFDES_LAYER=13`）文字，
+字高 `FLYING_REFDES_HEIGHT_MIL=30`（cap height），画布显示用 `FLYING_REFDES_CANVAS_MIL=16`。
 
 ## 已知缺口
-网络生成未实现（`netName=""`；「尝试生成网络」只驱动飞针编号/位号）；
-标准版不导出文字/位号/埋盲孔；宏基元 6/7 未绘制；`%SR` 未处理；`DEBUG` 硬编码 false；
-`setBoardType()` 空壳；`exportForOther_Pro()` 不可达；`LCEDA_STD_Head_Source` 未使用。
+宏基元 6/7 未绘制；`%SR` 未处理；`DEBUG` 硬编码 false；`LCEDA_STD_Head_Source` 空串；
+`importPrimitivesAPI(primitives, isV3)` 的 `isV3` 参数从未使用（api 模式强制 pro_v2）；
+PCB/FPC 手动开关只改 UI；标准版不导出埋盲孔；真彩图片离线无解（见 `Temp/FCTS_解析报告.md`）。
 
 ## 标准版 Gerber 的区域环「零长首段 + 未闭合」（2026-10-16 修复）
 嘉立创EDA**标准版**（EasyEDA v6.x）导出的 Gerber，其 G36/G37 区域路径常写成
@@ -101,8 +123,14 @@ X2 / X3 / RS-274D / 兼容 / 保底 已删。新增处理器要同步改三处�
      实测这是「GND 走线与 GPIO7 走线中心线只差 0.0877mm」这类假接触的**主因**
      → 在 `netBuildPrims` 里按 ≤22.5° 离散（只影响连通图，不改生成图元）。
    - 导线端点「正好停在焊盘边界」判不出来 → 补「多边形顶点到线段距离 ≤ w/2」。
-3. 安全网：**两个分量若各自带有不同的已知网络（飞针 NET_NAME）就禁止合并**
-   （`stats.rejectedMerges`）。几何修好后已不再触发（6 样本实测 0 次）。
+3. ~~安全网：两个分量若各自带有不同的已知网络就禁止合并~~ → **V3.9.6 改为「合并 + 改名」**：
+   两个分量各带不同已知网络（飞针 NET_NAME）却被几何判相连 → 允许合并，
+   并整块改名为一个**未被占用**的 `NET*`（从 NET1 起，跳过 `used` 里已有的名字）。
+   实现：`tryUnion` 里检测 `la ∩ lb = ∅` → `stats.renamedMerges++` 且把 `conflictRoots` 标记
+   传播到合并后的新根；定名阶段 `if (conflictRoots.has(root))` 优先于「票数定名」。
+   为什么不用原名字：两个名字里必有一个是错的，沿用会误导；改名后两个原网络名都消失，
+   也不会出现「同一网络落在两个互不相连分量上」的飞线。
+   `stats` 新增 `renamedMerges` / `renamedClusters`，日志会打印「冲突改名 N」。
 
 **健康度指标**（`Temp/net_health.js`）：`mixedClusters`（一个分量混入多网络 = 错乱）
 与「同名多岛网络」（同一网络名落在多个互不相连分量 = 飞线）。

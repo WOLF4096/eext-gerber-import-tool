@@ -119,8 +119,12 @@
     // 元件位号字高：
     //   · 导出（装配层文字）—— 24 mil
     //   · 画布显示        —— 16 mil（画布按世界尺寸随缩放变化，字高比导出的略小些更好看）
-    const FLYING_REFDES_HEIGHT_MIL = 24;
+    // 元件位号：导出的字高（mil，指字符实高 cap height，不是 em）、画布显示字号
+    // 【2026-10-17】按需求改为 30mil，并统一写到**文档层**（源码通道 STRING + 标准版 TEXT）。
+    const FLYING_REFDES_HEIGHT_MIL = 30;
     const FLYING_REFDES_CANVAS_MIL = 16;
+    // 位号导出到的内部图层 id（Document）。标准版对应 12，源码通道直接用这个 id。
+    const FLYING_REFDES_LAYER = 13;
 
     // 引脚编号 / 网络名称的文字上限（px）；低于下限说明焊盘实在装不下，直接隐藏
     const FLYING_LABEL_MAX_FONT = 12;

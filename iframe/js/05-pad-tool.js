@@ -1171,8 +1171,10 @@
                     const st = res.stats;
                     console.log(`物理网络：铜层图元 ${st.prims} → 连通分量 ${st.clusters}`
                         + `（沿用已有网络名 ${st.reused} 个 / 新分配 NET 名 ${st.generated} 个 / 共命名 ${st.named}）`
+                        + (st.renamedClusters ? `，其中 ${st.renamedClusters} 个分量因「两个不同网络名被连在一起」已改名为 NET*` : '')
                         + (padNet.size ? `，其中 ${padNet.size} 个焊盘来自飞针文件` : ''));
-                    appLog(`生成网络：连通分量 ${st.clusters} 个（沿用飞针/已有名 ${st.reused}，新分配 ${st.generated}）`);
+                    appLog(`生成网络：连通分量 ${st.clusters} 个（沿用飞针/已有名 ${st.reused}，新分配 ${st.generated}`
+                        + (st.renamedClusters ? `，冲突改名 ${st.renamedClusters}` : '') + `）`);
                 } catch (e) {
                     console.error('物理网络生成失败：', e);
                     netOf = null;
@@ -1764,10 +1766,12 @@
                             const y = parseFloat(row[idxY]); 
                             const angle = parseFloat(row[idxAngle] || 0);
 
-                            let layerId = 9; // Top Assembly
+                            // 【2026-10-17】位号统一写到**文档层**（13），不再写装配层：
+                            // 文档层不属于顶/底任意一面，位号在两面视图里都能看到，
+                            // 也不会被「装配层默认隐藏」吞掉。底层保留镜像标记。
+                            let layerId = (typeof FLYING_REFDES_LAYER === 'number') ? FLYING_REFDES_LAYER : 13;
                             let isMirror = 0; 
                             if (layerStr === "B") { 
-                                layerId = 10; // Bottom Assembly
                                 isMirror = 1; 
                             }
 

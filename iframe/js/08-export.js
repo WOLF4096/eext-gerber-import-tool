@@ -1776,17 +1776,16 @@
             if (p.layerId === 11) {
                 // 板框：标准版用 BoardOutLine 层上的闭合 TRACK 折线承载（板框不属于任何网络）
                 shapes.push(['TRACK', stdU(p.width || 0.254), 10, '', stdPointStr(pts), nextGid(), 0].join('~'));
-            } else if (p.isStroke || !STD_IS_COPPER(p.layerId)) {
-                // 描边折线 → 带线宽的多点 TRACK（一条 POLY 就是一条多段 TRACK，不拆散）。
-                // 【2026-10-17】铜层的 p.isStroke 来自 G04 Copper 段（G36 区域外的 D01/弧）：
-                // 它是「用给定线宽画出来的折线」，必须保留线宽。若走下面的 SOLIDREGION 分支，
-                // 只会写中心线围成的闭合区域 —— 0.2mm 的描边铜会变成零宽轮廓，几何全丢。
-                shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), stdNet(p), stdPointStr(pts), nextGid(), 0].join('~'));
-            } else if (STD_IS_COPPER(p.layerId)) {
-                // 实心铜多边形 → 填充区域（SOLIDREGION），与画布渲染一致：打开就是实心铜
-                shapes.push(stdSolidRegion(STD_LAYER(p.layerId), stdPathStr(pts, true), nextGid(), stdNet(p)));
             } else {
-                // 其它层的折线（丝印/文档/机械的描边）保留为带线宽的 TRACK
+                // 【2026-10-17】标准版**没有折线（POLY）图元**，折线一律转成带线宽的多点 TRACK：
+                // 一条 POLY = 一条多段 TRACK，不拆散。TRACK 允许出现在非铜层
+                // （丝印 / 文档 / 机械 / 装配），标准版打开后就是对应的「走线」。
+                //
+                // 这里不再区分铜层：以前铜层的非描边 POLY 走 SOLIDREGION（实心区域），
+                // 但 POLY 本身是「折线」语义（可能开口、可能只表示轮廓），
+                // 转成 SOLIDREGION 会被当闭合填充 —— 0.2mm 的描边铜直接变成零宽/实心块，
+                // 几何与原意都不对。实心铜的真身在 uni.fills（下面的 FILLS 段），
+                // 由 stdSolidRegion 输出，不受此处影响。
                 shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), stdNet(p), stdPointStr(pts), nextGid(), 0].join('~'));
             }
         });
@@ -1810,6 +1809,72 @@
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
             shapes.push(stdSolidRegion(STD_LAYER(img.layerId), stdPathStr(pts, true), nextGid(), stdNet(img)));
         });
+
+        // ---------- 7. 元件位号 → TEXT 图元（必须自带字形轮廓） ----------
+        // 标准版没有「折线文字」这种表达：文字要么是 TEXT 图元（自带轮廓 path），
+        // 要么就丢失。这里把飞针元件表的位号写成 TEXT，轮廓来自内置字体
+        // （iframe/js/11-font-outline.js，由 tools/font-outline.js 从 NotoSansSC 提取）。
+        //
+        // 官方样例（Temp/FCTS_解析报告.md 同批板子导出）：
+        //   TEXT~L~x~y~0.8~0~0~12~~7.874~文本~M…Z~~gge1161~NotoSansCJKsc-DemiLight~0~pinpart
+        // 字段：0 TEXT / 1 对齐 L / 2 x / 3 y / 4 线宽 / 5,6 保留 / 7 图层 /
+        //       8 空 / 9 字号(em, 标准版单位) / 10 文本 / 11 轮廓 path / 12 空 /
+        //       13 ggeID / 14 字体名 / 15 0 / 16 pinpart
+        // 对齐用 L（左 + 基线）而不是让 EDA 自己居中：坐标由我们自己算准，位置才可控。
+        const wantRefdesText = (typeof flyingOverlayVisible !== 'undefined')
+            && flyingOverlayVisible[FLYING_LAYER.REFDES]
+            && typeof flyingProbeData !== 'undefined' && flyingProbeData
+            && flyingProbeData.components && flyingProbeData.components.rows;
+        if (wantRefdesText) {
+            const canText = (typeof fontTextToPath === 'function') && (typeof fontEmForCapHeight === 'function');
+            if (!canText) {
+                appLog('⚠ 内置字体轮廓未加载（iframe/js/11-font-outline.js），标准版将不输出位号文字');
+            } else {
+                const capMil = (typeof FLYING_REFDES_HEIGHT_MIL === 'number') ? FLYING_REFDES_HEIGHT_MIL : 30;
+                const emStd = fontEmForCapHeight(capMil) / 10;    // 标准版单位 = 10 mil
+                const capStd = capMil / 10;
+                // 位号固定在文档层（标准版 Document = 12）
+                const txtLayer = 12;
+                const cFields = flyingProbeData.components.fields || [];
+                const ciName = cFields.indexOf('COMPONENT_NAME');
+                const ciX = cFields.indexOf('X_COORDINATE');
+                const ciY = cFields.indexOf('Y_COORDINATE');
+                let nText = 0, nMiss = 0;
+                const missSet = new Set();
+                if (ciName >= 0 && ciX >= 0 && ciY >= 0) {
+                    flyingProbeData.components.rows.forEach(row => {
+                        const name = row[ciName];
+                        if (!name || (typeof isFlyingPadPlaceholder === 'function' && isFlyingPadPlaceholder(name))) return;
+                        const mmX = parseFloat(row[ciX]), mmY = parseFloat(row[ciY]);
+                        if (!isFinite(mmX) || !isFinite(mmY)) return;
+                        // 先量宽度（锚点 0,0），再按「水平居中 + 垂直居中」算基线位置
+                        const probe = fontTextToPath(String(name), emStd, { x: 0, y: 0 });
+                        if (!probe.d) { nMiss++; return; }
+                        if (probe.missing) { nMiss++; probe.missing.split('').forEach(c => missSet.add(c)); }
+                        // ⚠️ stdX / stdY 返回的是**字符串**（stdNum 的格式化结果），
+                        // 直接参与算术会变成字符串拼接（"3521.12" + 1.5 → "3521.121.5"），
+                        // 所以这里必须先转成数字再算位置。
+                        const cx = parseFloat(stdX(mmX)), cy = parseFloat(stdY(mmY));
+                        if (!isFinite(cx) || !isFinite(cy)) return;
+                        const baseX = cx - probe.width / 2;
+                        const baseY = cy + capStd / 2;
+                        const placed = fontTextToPath(String(name), emStd, { x: baseX, y: baseY });
+                        if (!placed.d) { nMiss++; return; }
+                        grow(baseX, baseY);
+                        grow(baseX + probe.width, baseY - capStd);
+                        shapes.push(['TEXT', 'L', stdNum(baseX), stdNum(baseY), '0.8', '0', '0',
+                            String(txtLayer), '', stdNum(emStd), String(name), placed.d, '',
+                            nextGid(), FONT_OUTLINE_META.family, '0', 'pinpart'].join('~'));
+                        nText++;
+                    });
+                }
+                if (nText || nMiss) {
+                    appLog(`标准版位号：写出 ${nText} 条 TEXT（字高 ${capMil}mil，文档层）`
+                        + (nMiss ? `，${nMiss} 条因缺少字形轮廓被跳过`
+                            + (missSet.size ? `（缺字：${[...missSet].slice(0, 12).join('')}）` : '') : ''));
+                }
+            }
+        }
 
         // 兜底：一个图元都没生成时，BBox 用原点，避免出现 Infinity
         if (!isFinite(bx0)) { bx0 = STD_ORIGIN_X; bx1 = STD_ORIGIN_X; by0 = STD_ORIGIN_Y; by1 = STD_ORIGIN_Y; }

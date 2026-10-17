@@ -1872,7 +1872,7 @@
      */
     function buildNetAssignments(data, opts) {
         const prims = netBuildPrims(data, opts || {});
-        const stats = { prims: prims.length, clusters: 0, named: 0, generated: 0, reused: 0, mixedClusters: 0, ambiguousClusters: 0, rejectedMerges: 0 };
+        const stats = { prims: prims.length, clusters: 0, named: 0, generated: 0, reused: 0, mixedClusters: 0, ambiguousClusters: 0, rejectedMerges: 0, renamedMerges: 0, renamedClusters: 0 };
         const netOf = new Map();
         if (!prims.length) return { netOf, stats };
 
@@ -1895,23 +1895,30 @@
         const uf = netUnionFind();
         const seen = new Set();
 
-        // 「已知网络」是不可违背的证据（来自飞针文件的 NET_NAME），绝不允许把两个已经带有
-        // **不同**已知网络的分量并成一块 —— 那一定是几何判定的假象。实测：某板 GND 走线与
-        // GPIO7 走线的中心线只差 0.0877mm，而「线宽和」判据（(0.127+0.148)/2 = 0.1376）就
-        // 判成相接 → 整板 35 个网络被并成一个分量 → 覆铜被命名成 DP。
+        // 「已知网络」来自飞针文件的 NET_NAME。两个分量各自带着**不同**的已知网络却被几何判定
+        // 相连，说明两者必有一个名字是错的（或几何判定有假象）。
+        //
+        // 【2026-10-17 变更】以前是**拒绝合并**（保留两个网络）—— 实测某板 GND 走线与 GPIO7
+        // 走线中心线只差 0.0877mm 时会被判成相接，拒绝合并能挡住那一次误连，但也会把真正
+        // 相连的同名网络拆成孤岛（飞线）。
+        // 现在改为：**允许合并，但整块改名为一个未被占用的 NET***（见下方定名阶段），
+        // 既不产生"同一网络两个名字"的错乱，也不会让两个网络名静默地各占一半。
         const labelsOf = {};
         prims.forEach(p => {
             const r = uf.find(p.id);
             if (p.net) (labelsOf[r] || (labelsOf[r] = new Set())).add(p.net);
         });
+        // 发生过冲突合并的分量根：定名时必须丢弃原有名字，改用新的 NET*
+        const conflictRoots = new Set();
         const tryUnion = (a, b) => {
             const ra = uf.find(a.id), rb = uf.find(b.id);
             if (ra === rb) return false;
             const la = labelsOf[ra], lb = labelsOf[rb];
+            let conflict = false;
             if (la && lb) {
                 let same = false;
                 for (const n of la) { if (lb.has(n)) { same = true; break; } }
-                if (!same) { stats.rejectedMerges++; return false; }
+                if (!same) { conflict = true; stats.renamedMerges++; }
             }
             uf.union(a.id, b.id);
             const nr = uf.find(ra);
@@ -1921,6 +1928,8 @@
             delete labelsOf[ra];
             delete labelsOf[rb];
             if (merged.size) labelsOf[nr] = merged;
+            // 冲突标记要向合并后的新根传播（旧根可能已失效）
+            if (conflict || conflictRoots.has(ra) || conflictRoots.has(rb)) conflictRoots.add(nr);
             return true;
         };
 
@@ -1960,7 +1969,19 @@
             stats.clusters++;
 
             let target;
-            if (votes.size) {
+            if (conflictRoots.has(root)) {
+                // 该分量发生过「两个不同已知网络被连在一起」的冲突合并。
+                // 两个名字里必有一个是错的，沿用任何一个都会误导，所以**整块换成一个未使用的新名**：
+                // 新名一眼可见「这块需要人工核对」，而两个原网络名都从这张表里消失，
+                // 不会出现「同一个网络落在两个互不相连的分量上」的飞线。
+                while (used.has('NET' + counter)) counter++;
+                target = 'NET' + counter;
+                used.add(target);
+                counter++;
+                stats.renamedClusters++;
+                if (votes.size > 1) stats.mixedClusters++;
+                stats.generated++;
+            } else if (votes.size) {
                 if (votes.size > 1) stats.mixedClusters++;
                 // ⚠️ 必须按「票数」定名，**不能按名字长短**：分量里常混进少量被误连的异物
                 // （实测：GND 覆铜被误连了 1 个 DP 焊盘，按"最短名优先"整块被报成 DP）。
