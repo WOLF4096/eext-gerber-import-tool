@@ -196,10 +196,15 @@ EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外�
 - `FPC_FILL` 三种格式（V2/V3/V4 图元完全一致）：
   V2 `["FPC_FILL", id, 0, layer, material, thickness, path, 0]`（8 字段）
   V3/V4 `{"type":"FPC_FILL"}||{layerId, material, thickness, path, locked, zIndex}`
-  `path = [["R", x, y, w, h, 0, 0]]`，**单位 mil，x=左边界、y=上边界**，thickness 单位 mm。
-- `FPC_FILL` 的 R 只能表达轴对齐矩形 → `fpcRectOf()` 只认 4 顶点且 x/y 各 2 个不同值；
-  异形补强退回普通 FILL。
-- zIndex 从 1 顺序递增（普通图元 zIndex=null 不占号）。
+  `path` 是**路径对象数组**，有两种等价写法（都是 `[[...]]`，单位 mil、thickness 单位 mm）：
+  ① `[["R", x, y, w, h, 0, 0]]` —— 矩形快捷式，x=左边界、y=上边界；
+  ② `[[x0, y0, "L", x1, y1, …, "ARC", 扫角, x, y, …]]` —— 通用路径式（任意多边形/圆角矩形），
+     与 `generatePathStr()` 输出同构。官方多边形补强实例：
+     `[[979.6744,821.3256,"ARC",-74.95,1021,875.235,"L",1021,1017.5,…,1021,767.4161,"ARC",-74.95,979.6744,821.3256]]`
+     （"L" 后可跟多个点直到下个指令；"ARC" 语义 = 从当前点画到 (x,y)，扫角由半径反推）
+- `fpcRectOf()` 只认 4 顶点且 x/y 各 2 个不同值 → 命中就用 ①；否则用 ②（**不再降级成普通 FILL**）。
+  只有路径空/退化（< 2 点）才退回普通 FILL。
+- zIndex 从 1 顺序递增（普通图元 zIndex=null 不占号）。官方新版导出可能写 `-1`（自动），两者都能用。
 - 板类型自动切 FPC：`autoDetectSettings` 里已有 `hasStiffener` 判断（58/59），无需新增。
 
 ### 专业版 V4 写入（仅源码导入）
@@ -241,7 +246,8 @@ EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外�
 
 ### FPC 补强画布标注（2026-10-17，V3.9.2）
 - 补强区域中心画两行：**材料简称在上、厚度在下**（`0.2mm`），与引脚编号/网络名称同一套
-  `fitFont` 排布（各占半高、`half = boxH/4`、居中、随缩放）。颜色 `#193366`。
+  `fitFont` 排布（各占半高、居中、随缩放）。行距 `half = min(boxH/4, 0.72×字号)` —— 
+  上限跟着字号走，否则 4×10mm 的竖条补强两行会被拉开近半屏（V3.9.4 起）。颜色 `#193366`。
 - 材料简称表 `STIFFENER_LABEL`（02-config）：PI / FR4 / 钢片 / 双面胶 / 电磁屏蔽膜；
   未收录材料显示原名。字号上限 `FLYING_STIFFENER_MAX_FONT=24`（引脚是 12）。
 - 新增标注层 2004「补强名称」，`FLYING_LAYER.STIFFENER`，并入「自定义/特殊」分组、默认勾选。
@@ -250,3 +256,31 @@ EasyEDA 专业版的 `RoundRect` 宏 = 4 个圆角圆 + 4 条边线 + 1 个外�
   导致补强行根本不出现。现在拆成 `hasFlying` / `hasStiff` 两个独立条件，
   用 `FLYING_PIN_LAYER_IDS`（前三层）与 `FLYING_LAYER.STIFFENER` 分别渲染。
 - `ensureFlyingLabels` 里 `extractRawData` 抽成 `getRaw()` 只调一次，补强与飞针共用（大板开销大）。
+
+### ⚠️ FPC 补强只能源码导入（2026-10-17 用户实测，V3.9.5 定论）
+- **图元 API 创建不出补强**：`pcb_PrimitiveFill.create(58/59, …)` 实测无效 —— 即便先
+  `setPcbType(2)`（`EPCB_PcbPlateType.FPC`）让补强层存在，接口仍返回空或把图元落到默认层。
+  用户报的「补强变成顶层一块填充」就是这个。SDK 注释里其实有暗示：`setPcbType` 的
+  「FPC → 普通板」要求先清空补强层图元，说明补强层是特殊层，普通填充 API 管不到。
+- **结论**：补强**只能**走「通过源码导入」——源码里的 `FPC_FILL` 带 layerId/material/thickness，
+  由 EDA 自己建层解析。V3.9.5 起图元模式遇到 `FPC_FILL`（以及任何 58/59 层的 `FILL`）直接
+  **跳过 + 计数**，导入前后各给一次提示（结束时有吐司），并且**不再调 `setPcbType`**
+  （切了板材却写不进补强，只会留下「文档是 FPC 但没补强」的半成品）。
+- 之前 V3.9.3/V3.9.4 里「先 setPcbType 再 create」的写法是错的，已删除；`importPrimitivesAPI`
+  的 `case 'FPC_FILL'` 现在是 `stiffSkipped++; break;`。
+- 补强层是 58/59；`TPCB_LayersOfFill` 的联合类型本来就不含 TOP/BOTTOM_STIFFENER —— 现在知道
+  那不只是类型标注问题，运行时确实不支持。
+- 生成侧不受影响：`generatePrimitives` 仍产出 `FPC_FILL`（矩形用 `R` 快捷式，其它形状用
+  通用扁平路径），源码通道照旧；只有「图元通道」丢弃它们。
+- 多边形补强（L 形/阶梯形/圆角矩形，如 `Gerber_PCB1_2024-10-03.zip` 的 6 边形）在 V3.9.4 起
+  也走 `FPC_FILL` 通用路径式（此前退化成普通 `FILL`）。
+
+### 多边形 path 的官方指令集（`TPCB_PolygonSourceArray`，2026-10-17 查证）
+`Array<'L'|'ARC'|'CARC'|'C'|'R'|'CIRCLE'|number>`，官方注释给出五种模式：
+- ① L：`x1 y1 L x2 y2 x3 y3 …`（起点在前，后续多点只写一次 L）
+- ② ARC：`startX startY ARC arcAngle endX endY`；CARC 为「中心圆弧」同构写法。
+  **arcAngle 为角度制、负值=顺时针**（与 Gerber G02/G03 一致）
+- ③ C：`x1 y1 C x2 y2 x3 y3 x4 y4 …` 三阶贝塞尔（本项目未用）
+- ④ R：`R x y width height rot round`，**x/y = 左上点**，round = 圆角半径
+- ⑤ CIRCLE：`CIRCLE cx cy radius`
+本项目只生成 ①④（②只在原始 Gerber 带弧时出现）；`C`/`CARC`/`CIRCLE` 未实现。

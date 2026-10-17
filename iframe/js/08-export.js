@@ -958,8 +958,14 @@
                 // 1. 获取 UI 上设定的层数 (例如 2, 4, 6...)
                 const copperCountEl = document.getElementById('cfg-copper-layers');
                 const targetLayerCount = copperCountEl ? (parseInt(copperCountEl.value) || 2) : 2;
+
                 // 2. 调用 API 设置层数
                 const setLayerResult = await eda.pcb_Layer.setTheNumberOfCopperLayers(targetLayerCount);
+
+                // 注意：这里**不再** setPcbType(FPC)。实测（真实客户端）图元 API 无法把填充
+                // 写到补强层 58/59 —— 即使先切 FPC 让补强层存在，create 仍返回空或落到默认层。
+                // 切了板材只会得到「文档是 FPC、但没有补强」的半成品，更容易误导。
+                // 补强统一交给「通过源码导入」：源码里的 LAYER 58/59 + FPC_FILL 由 EDA 自己建层解析。
                 // console.log("层数设置结果:", setLayerResult);
                 
                 // 稍微等待一下，确保状态更新
@@ -970,11 +976,17 @@
                 if (typeof eda !== 'undefined') {
                     if (config.importMethod === 'api') {
                         appLog(`写入画布中 (图元模式)...`);
+                        // 补强在图元模式下创建不出来（API 限制，实测），提前说明，
+                        // 让用户有机会改用「通过源码导入」，而不是导完才发现补强缺失。
+                        const stiffCount = (unifiedData.fills || []).filter(f => f.layerId === 58 || f.layerId === 59).length
+                            + (unifiedData.polys || []).filter(p => p.layerId === 58 || p.layerId === 59).length;
+                        if (stiffCount > 0) {
+                            appLog(`注意：本次含 ${stiffCount} 块 FPC 补强。图元导入无法创建补强（API 限制），将被跳过 —— 需要补强请改用「通过源码导入」。`);
+                        }
                         // 在导入图元之前，先配置设计规则
                         // await configureBlindViasAPI(); // 当前保存设计规划失败，未知原因
                         // V3 / V4 的图元串是同一种行格式，解析器共用；只有 V2 走数组分支
-                        await importPrimitivesAPI(primitives, isLineFormat);
-                        
+                        await importPrimitivesAPI(primitives, isLineFormat);                        
                         const writeEndTime = performance.now();
                         const writeDuration = ((writeEndTime - writeStartTime) / 1000).toFixed(2);
                         appLog(`参数传递完成，耗时${writeDuration}秒`);
@@ -1030,6 +1042,7 @@
         // 这里跟踪每个 Promise 的结果，最后把失败数写进运行日志。
         const failStat = {};
         let firstFailMsg = '';
+        let stiffSkipped = 0;       // 被跳过的补强图元数（图元 API 不支持补强层）
         const trackFail = (kind, arg) => {
             const record = (msg) => {
                 failStat[kind] = (failStat[kind] || 0) + 1;
@@ -1169,7 +1182,20 @@
                         console.error('创建POLY失败:', error);
                     }
                     break;
+                case 'FPC_FILL': // FPC 补强（V2: ["FPC_FILL", id, group, layer, material, thickness, path, 0]）
+                    // ⚠️ 实测结论（真实客户端）：**图元 API 创建不出补强**。
+                    //    即便先 setPcbType(FPC) 让补强层（58 / 59）出现在文档里，
+                    //    pcb_PrimitiveFill.create() 仍返回空或把图元落到默认层 ——
+                    //    补强只能通过「通过源码导入」写入（源码里的 FPC_FILL 带
+                    //    layerId + material + thickness，由 EDA 自己解析建层）。
+                    //    这里直接跳过并计数，最后统一提示改用源码导入，
+                    //    不再尝试（避免把补强画到顶层误导用户）。
+                    stiffSkipped++;
+                    break;
                 case 'FILL': // 填充
+                    // 兜底：万一有历史数据把普通 FILL 写到补强层（58/59），直接跳过 ——
+                    // create 到不存在的层会落到默认层，表现就是「补强变成顶层一块填充」。
+                    if (line[4] === 58 || line[4] === 59) { stiffSkipped++; break; }
                     try {
                         // 第 7 项是多边形数据。**单环填充必须用「平铺源数组」创建**：
                         //   createComplexPolygon 的入参语义是「一个复杂多边形 = 多块源数组」，
@@ -1270,6 +1296,14 @@
             const detail = kinds.map(k => `${k} ${failStat[k]} 个`).join('，');
             appLog(`⚠ 图元创建失败：${detail}` + (firstFailMsg ? `；首个错误：${firstFailMsg}` : ''));
         }, 1500);
+
+        // 补强必须走源码导入：图元 API 无法把填充写到补强层（实测）。
+        if (stiffSkipped > 0) {
+            const msg = `⚠ 本次有 ${stiffSkipped} 块 FPC 补强未写入：补强只能通过「通过源码导入」创建，`
+                + `图元导入模式会跳过。请改用「通过源码导入」重新导入。`;
+            appLog(msg);
+            if (typeof showToast === 'function') showToast('补强需用「通过源码导入」', 'warn');
+        }
     }
 
     // ==================================================================================

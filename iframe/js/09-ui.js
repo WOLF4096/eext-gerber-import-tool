@@ -886,7 +886,10 @@
                     const fName = fitFont(nameTxt, boxW, boxH / 2, FLYING_STIFFENER_MAX_FONT);
                     const fTh = fitFont(thTxt, boxW, boxH / 2, FLYING_STIFFENER_MAX_FONT);
                     if (fName >= FLYING_LABEL_MIN_FONT && fTh >= FLYING_LABEL_MIN_FONT) {
-                        const half = boxH / 4;
+                        // 行距默认 boxH/4（与引脚标注同一套），但不超过 0.72 倍字号 ——
+                        // 否则高瘦补强（例如 4×10mm 的竖条）两行会被拉开近半屏，
+                        // 看着像两个互不相干的标签。
+                        const half = Math.min(boxH / 4, Math.max(fName, fTh) * 0.72);
                         setFont(fName); ctx.fillStyle = stiffCol; ctx.fillText(nameTxt, pt.x, pt.y - half);
                         setFont(fTh); ctx.fillStyle = stiffCol; ctx.fillText(thTxt, pt.x, pt.y + half);
                         return;

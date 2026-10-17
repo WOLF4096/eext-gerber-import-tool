@@ -1908,11 +1908,14 @@
             // 覆铜的「挖空」（LPC 清区）会作为额外分块一起交给 createComplexPolygon，
             // 由 EDA 按复合多边形处理（与画布上的 destination-out 挖空一致）。
             // --- FPC 补强：矩形判定 ---
-            // FPC_FILL 的 path 是 [["R", x, y, w, h, 0, 0]]，只能表达**轴对齐矩形**。
-            // 因此只有补强区域正好是轴对齐矩形时才转成 FPC_FILL；其余形状退回普通 FILL
-            // （几何不丢，材料信息丢，日志会统计个数）。
-            // 坐标单位 mil；x 取左边界，y 取**上边界**（与 EDA 源码里 R 的原点一致，
-            // 已用 Temp/FPC 的源码与导出 Gerber 反算验证）。
+            // FPC_FILL 的 path 有两种等价写法（都是「路径对象数组」）：
+            //   ① 矩形快捷式：[["R", x, y, w, h, 0, 0]]，只能表达轴对齐矩形；
+            //   ② 通用路径式：[[x0, y0, "L", x1, y1, … , "ARC", sweep, x, y, …]]，可表达任意多边形，
+            //      与 generatePathStr() 的输出完全同构（见下方 officialPath）。
+            //      ⚠️ 早期只认 ①，把非矩形补强降级成普通 FILL —— 图元导入时普通 FILL 的
+            //      补强层号（58/59）拿不到 FPC 层，会落到顶层，表现为「补强变成顶层填充」。
+            //      现在非矩形一律走 ②，不再降级。
+            // 坐标单位 mil；① 的 x 取左边界、y 取**上边界**（已用 Temp/FPC 的源码与导出 Gerber 反算验证）。
             const fpcRectOf = (pathArr) => {
                 if (!Array.isArray(pathArr)) return null;
                 const pts = [];
@@ -1957,10 +1960,17 @@
                     //   V3/V4 {"type":"FPC_FILL"}||{layerId, material, thickness, path, locked, zIndex}
                     // thickness 单位 mm（0.2 / 0.018），与文件名里的数字一致。
                     if (f.stiffener && (f.layerId === 58 || f.layerId === 59)) {
+                        // ① 矩形 → R 快捷式（最简，EDA 直接识别为矩形补强）
+                        // ② 其它形状 → 通用路径式（内部路径直接转 mil 后的扁平数组，
+                        //    与官方多边形补强源码 path 同构：[[x,y,"L",x,y,"ARC",sweep,x,y,...]]）
                         const rect = fpcRectOf(f.path);
-                        if (rect) {
+                        const flat = rect ? null : generatePathStr(f.path);
+                        // 有效路径至少 起点(2) + "L" + 一个点(2)；不足则无法成面
+                        const body = rect
+                            ? [["R", rect.x, rect.y, rect.w, rect.h, 0, 0]]
+                            : (Array.isArray(flat) && flat.length >= 5 ? [flat] : null);
+                        if (body) {
                             fpcZ++;
-                            const body = [["R", rect.x, rect.y, rect.w, rect.h, 0, 0]];
                             if (isV3) {
                                 const obj = { "type": "FPC_FILL", "ticket": ids.t, "id": ids.id };
                                 const content = {
@@ -1981,7 +1991,7 @@
                             fpcMade++;
                             return;
                         }
-                        fpcFallback++;   // 非矩形 → 落到下面的普通 FILL
+                        fpcFallback++;   // 连路径都拼不出来（空/退化）→ 落到下面的普通 FILL
                     }
                     // 环规整（去零长线段 + 显式闭合）：嘉立创EDA **标准版** 导出的区域路径
                     // 常带「M 起点 → L 起点」的零长首段且不闭合，未规整时 EDA 会拒绝整块填充
