@@ -281,20 +281,6 @@
 				<div class="btn-small" onclick="exportPDF('all')" title="导出所有图层，每层一页">全部图层</div>
 			</div>
 
-			<div class="section-title"
-				style="margin-top: 20px; display: flex; justify-content: space-between; align-items: center;">
-				<span>运行日志</span>
-				<span id="run-log-toggle" style="font-size: 11px; color: #888; cursor: pointer;"
-					onclick="toggleRunLog()">收起</span>
-			</div>
-			<div style="padding: 0 15px 12px;">
-				<!-- 当前步骤 + 预计剩余：导入/导出时实时更新（见 06-utils.js setStepStatus） -->
-				<div id="run-step" style="font-size: 12px; color: #ff9800; margin-bottom: 6px;">空闲</div>
-				<div id="run-log-lines"
-					style="height: 150px; overflow: auto; background: #111; border: 1px solid #3e3e42; border-radius: 4px; padding: 6px; font-family: 'Consolas', monospace; font-size: 11px; line-height: 1.5; color: #bbb; white-space: pre-wrap;">
-				</div>
-			</div>
-
 			<div id="debug-panel" style="display:none; padding-top: 10px;">
 				<div class="section-title" style="display: flex; justify-content: space-between; align-items: center;">
 					<span id="debug-panel-title">图形源码 (DEBUG)</span>
@@ -305,6 +291,9 @@
 							style="width: 60px; padding: 2px 0;">复制</button>
 					</div>
 				</div>
+				<!-- 当前步骤 + 预计剩余：导入/导出时实时更新（见 06-utils.js setStepStatus）。
+				     日志只剩这一处（原先上方还有一个「运行日志」列表，内容完全重复，已删）。 -->
+				<div id="run-step" style="font-size: 12px; color: #ff9800; padding: 4px 0 6px;">空闲</div>
 				<textarea id="debug-source-area" readonly spellcheck="false"
 					style="width: 100%; background-color: #111; color: #cccccc; border: 1px solid #444; font-family: 'Consolas', monospace; font-size: 11px; padding: 5px; white-space: pre; overflow: auto;"></textarea>
 			</div>

@@ -133,9 +133,11 @@
 
     // --- [新增] 全局日志工具函数 ---
     /**
-     * 运行日志：同时写入「运行日志」面板（侧栏，始终可见）与 DEBUG 文本框（隐藏面板）。
-     * 说明：早先只有 #debug-source-area 一处出口，而它在 DEBUG 关闭时是 display:none —— 
-     * 普通用户根本看不到日志，导入/导出期间只能盯着一个静态的转圈遮罩。
+     * 运行日志：只写侧栏底部那一个日志面板（#debug-source-area）。
+     * 说明：早先只有 #debug-source-area 一处出口，而它在 DEBUG 关闭时是 display:none ——
+     * 普通用户根本看不到日志，导入/导出期间只能盯着一个静态的转圈遮罩。所以后来补了
+     * 一个「运行日志」列表；但两处内容完全一样，等于同一份日志显示两遍，现在又合并回一处
+     * （面板在普通模式下标题就叫「运行日志」，并且始终 display:flex）。
      */
     function appLog(msg) {
         const now = new Date();
@@ -144,20 +146,19 @@
         const ss = String(now.getSeconds()).padStart(2, '0');
         const timeStr = `${hh}:${min}:${ss}`;
 
-        // ① 侧栏「运行日志」（用户可见，最多保留 200 行）
-        const lines = document.getElementById('run-log-lines');
-        if (lines) {
-            const div = document.createElement('div');
-            div.textContent = `${timeStr} ${msg}`;
-            lines.appendChild(div);
-            while (lines.childElementCount > 200) lines.removeChild(lines.firstChild);
-            lines.scrollTop = lines.scrollHeight;
-        }
-
-        // ② DEBUG 文本框（保留原有出口，便于复制整段日志）
+        // 唯一出口：侧栏底部的日志面板（#debug-source-area）。
+        // 历史上有两处出口（上方「运行日志」列表 + 这个文本框），内容完全一样，
+        // 用户看到的是两个重复的日志框 —— 已删掉上面那个列表，只留这一处。
+        // 注意：DEBUG 模式下同一个文本框会被「图形源码」占用（见 10-init.js），
+        // 那时日志仍然只是"顺带"写进来，不影响源码显示以外的行为。
         const area = document.getElementById('debug-source-area');
         if (area) {
             area.value += `${timeStr} ${msg}\n`;
+            // 长期开着面板时避免无限增长（保留最近 800 行）
+            if (area.value.length > 400000) {
+                const lines = area.value.split('\n');
+                area.value = lines.slice(-800).join('\n');
+            }
             area.scrollTop = area.scrollHeight;
         }
     }
@@ -197,16 +198,6 @@
         const overlay = document.getElementById('loading-overlay');
         if (overlay && overlay.style.display !== 'none') overlay.textContent = line;
         return line;
-    }
-
-    /** 收起 / 展开运行日志（侧栏空间有限） */
-    function toggleRunLog() {
-        const lines = document.getElementById('run-log-lines');
-        const t = document.getElementById('run-log-toggle');
-        if (!lines || !t) return;
-        const hidden = lines.style.display === 'none';
-        lines.style.display = hidden ? 'block' : 'none';
-        t.textContent = hidden ? '收起' : '展开';
     }
 
     // --- 大数据量导入确认（>500KB 走「通过源码导入」前弹窗） ---
