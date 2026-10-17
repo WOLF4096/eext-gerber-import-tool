@@ -318,11 +318,72 @@
             if (!file.visible) return;
             const def = layerDefs[file.layerId] || layerDefs[57] || { color: '#888', alpha: 1 };
 
+            // --- 先算「本层内容包围盒」，用于 ① 整层跳过 ② 合成时只拷贝内容矩形 ---
+            // ⚠️ 必须放在 bufCtx.save() 之前：这里的 return 会跳过末尾的 restore，
+            //    否则会破坏 buffer 上下文的 save 栈（后续图层的变换被重复叠加 → 画面错位）。
+            const { commands, apertures } = file.data;
+            // 光圈参数仍是「文件单位」，本图层内统一按这个倍率换算成 mm
+            // （坐标在解析阶段已换算，只有光圈/宏尺寸没有）。
+            // 注意：钻孔文件的刀具直径在解析时已经换算成 mm，不能再乘一次。
+            const unitScale = (!file.data.isDrill && file.data.units === 'in') ? 25.4 : 1;
+            // --- [性能优化] 裁剪余量：取本图层光圈的最大尺寸（换算成 mm），
+            //     保证被裁掉的一定是完全落在视口之外的图元 ---
+            let maxApMM = 0;
+            for (const k in apertures) {
+                const pp = apertures[k] && apertures[k].params;
+                if (!pp) continue;
+                for (let q = 0; q < pp.length; q++) {
+                    const v = Math.abs(pp[q]);
+                    if (v > maxApMM) maxApMM = v;
+                }
+            }
+            const cullPadAp = maxApMM * unitScale + cullPadMM;
+            let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+            for (let i = 0; i < commands.length; i++) {
+                const c = commands[i];
+                if (typeof c.x === 'number' && isFinite(c.x)) {
+                    if (c.x < bMinX) bMinX = c.x;
+                    if (c.x > bMaxX) bMaxX = c.x;
+                    if (typeof c.y === 'number' && isFinite(c.y)) {
+                        if (c.y < bMinY) bMinY = c.y;
+                        if (c.y > bMaxY) bMaxY = c.y;
+                    }
+                    // 圆弧/槽孔会鼓出端点之外：把「圆心 ± 半径」并入包围盒
+                    if ((c.mode === 2 || c.mode === 3) && typeof c.i === 'number' && typeof c.j === 'number') {
+                        const px = (typeof c.prevX === 'number') ? c.prevX : c.x;
+                        const py = (typeof c.prevY === 'number') ? c.prevY : c.y;
+                        const acx = px + c.i, acy = py + c.j;
+                        const ar = Math.sqrt(c.i * c.i + c.j * c.j);
+                        if (acx - ar < bMinX) bMinX = acx - ar;
+                        if (acx + ar > bMaxX) bMaxX = acx + ar;
+                        if (acy - ar < bMinY) bMinY = acy - ar;
+                        if (acy + ar > bMaxY) bMaxY = acy + ar;
+                    }
+                }
+                if (Array.isArray(c.path)) {
+                    for (let q = 0; q < c.path.length; q++) {
+                        const o = c.path[q];
+                        if (typeof o.x === 'number' && isFinite(o.x)) { if (o.x < bMinX) bMinX = o.x; if (o.x > bMaxX) bMaxX = o.x; }
+                        if (typeof o.y === 'number' && isFinite(o.y)) { if (o.y < bMinY) bMinY = o.y; if (o.y > bMaxY) bMaxY = o.y; }
+                    }
+                }
+            }
+            // 整层都在视口外：本层什么都不会画，直接跳过（此时还没 save，安全）
+            if (bMinX === Infinity || !rectVisible(bMinX, bMinY, bMaxX, bMaxY, cullPadAp)) return;
+
             // A. 清空 Buffer
+            // 只清「上一层真正画过的那块矩形」：全屏 clearRect 在 4K/高 DPI 下
+            // 一层就是几千万像素，16 层白清一遍纯属浪费（buffer 里的内容只可能落在
+            // lastBufRect 内 —— 每次绘制前都会按同样的规则清一次）。
             bufCtx.save();
             bufCtx.setTransform(1,0,0,1,0,0);
-            bufCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+            if (lastBufRect) {
+                bufCtx.clearRect(lastBufRect.x, lastBufRect.y, lastBufRect.w, lastBufRect.h);
+            } else {
+                bufCtx.clearRect(0, 0, bufferCanvas.width, bufferCanvas.height);
+            }
             bufCtx.restore(); // 如果 bufferCanvas 上下文没有做 dpr scale，这里其实不需要 restore，但为了安全
+            lastBufRect = null;
             
             // B. Buffer 绘图设置
             bufCtx.save();
@@ -336,27 +397,15 @@
             if(file.layerId === 47) { bufCtx.fillStyle="#ffffff"; bufCtx.strokeStyle="#ffffff"; }
             
             // ... (原有的绘制 Loop 保持不变，包含 commands 遍历) ...
-            const { commands, apertures } = file.data;
-            // 光圈参数仍是「文件单位」，本图层内统一按这个倍率换算成 mm
-            // （坐标在解析阶段已换算，只有光圈/宏尺寸没有）。
-            // 注意：钻孔文件的刀具直径在解析时已经换算成 mm，不能再乘一次。
-            const unitScale = (!file.data.isDrill && file.data.units === 'in') ? 25.4 : 1;
+            // 逐次 Flash 都要用到的两样东西，按光圈缓存：
+            //   · 换算过单位的光圈参数数组（原来每颗焊盘都 map 一遍，几十万个临时数组）
+            //   · 宏轮廓（原来每颗焊盘都跑一次 $n 表达式求值）
+            const _apParamsCache = new Map();
+            const _macroShapeCache = new Map();
             let currX=0; let currY=0;
             bufCtx.lineCap = 'round'; bufCtx.lineJoin = 'round'; 
             bufCtx.beginPath();
 
-            // --- [性能优化] 裁剪余量：取本图层光圈的最大尺寸（换算成 mm），
-            //     保证被裁掉的一定是完全落在视口之外的图元 ---
-            let maxApMM = 0;
-            for (const k in apertures) {
-                const pp = apertures[k] && apertures[k].params;
-                if (!pp) continue;
-                for (let q = 0; q < pp.length; q++) {
-                    const v = Math.abs(pp[q]);
-                    if (v > maxApMM) maxApMM = v;
-                }
-            }
-            const cullPadAp = maxApMM * unitScale + cullPadMM;
             let curPolarity = null;   // 当前生效的极性：仅在真正变化时才提交路径
             let pathBroken = false;   // 路径是否已与上一条画出的图元断开，需要重新 moveTo
 
@@ -460,7 +509,11 @@
                     const rawParams = safeAp.params || [];
                     // 钻孔刀具直径在解析时已换算成 mm，图形光圈参数还是文件单位
                     const up = (!file.data.isDrill && file.data.units === 'in') ? 25.4 : 1;
-                    const p = rawParams.map(v => (typeof v === 'number' && isFinite(v)) ? v * up : v);
+                    let p = _apParamsCache.get(cmd.ap);
+                    if (!p) {
+                        p = rawParams.map(v => (typeof v === 'number' && isFinite(v)) ? v * up : v);
+                        _apParamsCache.set(cmd.ap, p);
+                    }
 
                     // 获取宏定义 (注意 file.data.macros 是第一步 parse 返回的)
                     const macros = file.data.macros || {}; 
@@ -471,7 +524,13 @@
                     // 【新增】优先检查宏：支持 P-CAD / 嘉立创 / EasyEDA Pro 的参数化宏（含 $n 变量）
                     let macroDrew = false;
                     // 宏求值要用「文件单位」的参数，宏基元随后再统一乘 up
-                    const macroShape = macros[rawType] ? resolveApertureMacro(macros[rawType], rawParams) : null;
+                    // 缓存键用 cmd.ap（同一个光圈定义 = 同一套参数），不能只用宏名 ——
+                    // 同名宏被不同 %ADD 用不同参数实例化时，轮廓是不一样的。
+                    let macroShape = _macroShapeCache.get(cmd.ap);
+                    if (macroShape === undefined) {
+                        macroShape = macros[rawType] ? resolveApertureMacro(macros[rawType], rawParams) : null;
+                        _macroShapeCache.set(cmd.ap, macroShape || null);
+                    }
                     if (macroShape) {
                         const uScale = up;
                         bufCtx.beginPath();
@@ -685,15 +744,35 @@
 
             // C. 合成 (注意 drawImage 时因为 ctx 已经 scale 了 dpr，
             // 而 bufferCanvas 本身是 dpr 倍大的，所以绘制尺寸要除以 dpr 或者调整 drawImage 参数)
-            
+            //
+            // 【只拷贝内容所在的矩形】把「世界包围盒 ∩ 视口」换算成设备像素后取整，
+            // 源矩形与目标矩形都落在整数设备像素上（dest = device/dpr，ctx 已按 dpr 缩放），
+            // 因此是 1:1 拷贝，不会引入任何重采样模糊。
+            // 与 C 段合成共用：内容矩形要留足余量 —— 光圈「最大参数」只是尺寸量级，
+            // 长圆（O 型带 5 个参数）、宏基元、旋转矩形都可能把图形画到参数值之外，
+            // 余量给 3 倍 + 2px 才能保证这条矩形一定是「实际绘制内容」的超集。
+            const _pad = cullPadAp * 3 + 2 / (viewState.scale || 1);
+            let sx = Math.floor((viewState.offsetX + viewState.scale * (bMinX - _pad)) * dpr);
+            let sy = Math.floor((viewState.offsetY - viewState.scale * (bMaxY + _pad)) * dpr);
+            let ex = Math.ceil((viewState.offsetX + viewState.scale * (bMaxX + _pad)) * dpr);
+            let ey = Math.ceil((viewState.offsetY - viewState.scale * (bMinY - _pad)) * dpr);
+            if (sx < 0) sx = 0;
+            if (sy < 0) sy = 0;
+            if (ex > bufferCanvas.width) ex = bufferCanvas.width;
+            if (ey > bufferCanvas.height) ey = bufferCanvas.height;
+            if (ex <= sx || ey <= sy) return;   // 内容全在画布外
+            const sw = ex - sx, sh = ey - sy;
+
             ctx.save();
             // ctx.globalAlpha = def.alpha;
 			// ctx.globalAlpha = forceNoDpr ? 1.0 : def.alpha;
 			ctx.globalAlpha = forceSolid ? 1.0 : def.alpha;
             // 关键：因为 ctx 已经 scale(dpr, dpr)，这里绘制逻辑尺寸即可
             // bufferCanvas 是物理像素尺寸，drawImage 会自动映射
-            ctx.drawImage(bufferCanvas, 0, 0, logicalW, logicalH);
+            ctx.drawImage(bufferCanvas, sx, sy, sw, sh, sx / dpr, sy / dpr, sw / dpr, sh / dpr);
             ctx.restore();
+            // 记下这块矩形：下一层只需要清掉这一块，不必全屏 clearRect
+            lastBufRect = { x: sx, y: sy, w: sw, h: sh };
         });
         // 飞针标注叠加（引脚编号 / 网络名称 / 元件位号）：只在交互画布上画，PDF 导出保持干净
         if (!forceNoDpr) drawFlyingOverlays(dpr);
@@ -993,6 +1072,7 @@
         
         bufferCanvas.width = mainCanvas.width;
         bufferCanvas.height = mainCanvas.height;
+        lastBufRect = null;   // 改尺寸会把 buffer 内容清空，脏矩形记录同步失效
 
         // 2. 设置 CSS 尺寸 (用于布局)
         mainCanvas.style.width = c.clientWidth + 'px';
@@ -1165,19 +1245,32 @@
         if (loadedFiles.length === 0) return;
 
         // 收集全部可视坐标（含区域路径点），用于按分位数做「抗离群」适配
+        // ⚠️ 性能：大板有上百万个坐标点，全量 push + 两次 sort 要 0.9s（实测本板 619ms+314ms）。
+        //    这里改成「先数总量、再按 stride 抽样到 ≤6 万点」——0.2% / 99.8% 分位数对
+        //    抽样不敏感（离群点本来就要被裁掉），小板的 stride=1，行为与原来完全一致。
         const collectPts = (files) => {
             const xs = []; const ys = [];
+            let total = 0;
             files.forEach(f => {
                 if (!f.data || !Array.isArray(f.data.commands)) return;
                 f.data.commands.forEach(c => {
-                    if (typeof c.x === 'number' && isFinite(c.x)) xs.push(c.x);
-                    if (typeof c.y === 'number' && isFinite(c.y)) ys.push(c.y);
-                    if (Array.isArray(c.path)) {
-                        c.path.forEach(o => {
-                            if (typeof o.x === 'number' && isFinite(o.x)) xs.push(o.x);
-                            if (typeof o.y === 'number' && isFinite(o.y)) ys.push(o.y);
-                        });
-                    }
+                    total++;
+                    if (Array.isArray(c.path)) total += c.path.length;
+                });
+            });
+            const MAX_SAMPLES = 60000;
+            const stride = Math.max(1, Math.ceil(total / MAX_SAMPLES));
+            let idx = 0;
+            const visitPt = (x, y) => {
+                if ((idx++ % stride) !== 0) return;
+                if (typeof x === 'number' && isFinite(x)) xs.push(x);
+                if (typeof y === 'number' && isFinite(y)) ys.push(y);
+            };
+            files.forEach(f => {
+                if (!f.data || !Array.isArray(f.data.commands)) return;
+                f.data.commands.forEach(c => {
+                    visitPt(c.x, c.y);
+                    if (Array.isArray(c.path)) c.path.forEach(o => visitPt(o.x, o.y));
                 });
             });
             return { xs, ys };

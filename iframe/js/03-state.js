@@ -46,6 +46,9 @@
 
     const bufferCanvas = document.createElement('canvas');
     const bufCtx = bufferCanvas.getContext('2d', { willReadFrequently: true });
+    // bufferCanvas 里「当前还残留着像素」的矩形（设备像素）。绘制时只清这一块、
+    // 只把这块 drawImage 到主画布 —— 避免每层都全屏 clear + 全屏拷贝。
+    let lastBufRect = null;
 
     let isRenderPending = false; // RAF 锁
 

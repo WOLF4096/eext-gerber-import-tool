@@ -316,7 +316,14 @@
         }
     });
 
-    window.addEventListener('resize', resizeCanvas);
+    // 尺寸变化合并：EDA 打开面板 / 拖拽分栏时会连续触发几十次 resize，
+    // 而大板一次全量重绘要 1s 上下（3200×2000@2x 实测 1.2s）—— 不合并的话
+    // 一次面板动画就能把渲染时间叠成几十秒。这里延迟 120ms，只在尺寸稳定后重绘一次。
+    let _resizeTimer = 0;
+    window.addEventListener('resize', () => {
+        if (_resizeTimer) clearTimeout(_resizeTimer);
+        _resizeTimer = setTimeout(() => { _resizeTimer = 0; resizeCanvas(); }, 120);
+    });
     // 多显示器拖动时 dpr 会变但不一定触发 resize —— 单独监听，避免图形与文字 DPI 不一致
     if (typeof watchDprChanges === 'function') watchDprChanges();
 
