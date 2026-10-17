@@ -159,7 +159,6 @@
         
         // 5. 立即应用
         reparseFiles();
-        appLog(`渲染完成`);
     };
 
     // 重解析文件 (Reparse)
@@ -186,7 +185,7 @@
         };
         
         processRawFiles(configOverride);
-        appLog(`渲染完成`);
+        appLog('已按新的单位 / 精度重新渲染');
     };
 
     // --- 初始化入口 ---

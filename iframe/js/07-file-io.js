@@ -167,7 +167,6 @@
             processRawFiles(finalConfig);
 
             setStepStatus('就绪', 0, null);
-            appLog(`渲染完成`);
 
         } catch (e) {
             console.error(e);

@@ -1342,8 +1342,8 @@
                         + `（沿用已有网络名 ${st.reused} 个 / 新分配 NET 名 ${st.generated} 个 / 共命名 ${st.named}）`
                         + (st.renamedClusters ? `，其中 ${st.renamedClusters} 个分量因「两个不同网络名被连在一起」已改名为 NET*` : '')
                         + (padNet.size ? `，其中 ${padNet.size} 个焊盘来自飞针文件` : ''));
-                    appLog(`生成网络：连通分量 ${st.clusters} 个（沿用飞针/已有名 ${st.reused}，新分配 ${st.generated}`
-                        + (st.renamedClusters ? `，冲突改名 ${st.renamedClusters}` : '') + `）`);
+                    appLog(`生成网络：${st.clusters} 个连通分量，命名 ${st.named} 个`
+                        + (st.renamedClusters ? `，其中 ${st.renamedClusters} 个冲突改名` : ''));
                 } catch (e) {
                     console.error('物理网络生成失败：', e);
                     netOf = null;

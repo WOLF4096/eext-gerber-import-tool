@@ -91,7 +91,9 @@ PCB「字高」= cap height：`em = capMil / (capHeight/upem)`。缺字跳过并
 - 匹配统一在 06-utils（`buildFlyingPinIndex` / `padMatchBoxMM` / `flyingPinAt`）：① 中心 2.5mil 内
   ② 否则取落在焊盘包围盒内离中心最近的引脚。⚠️ `flyingPinAt` 内部是 `index.pins.find()` **线性扫**，
   焊盘×引脚数会 O(n²)，大板（数万盘）是潜在热点。
-- 字高（mil）：导出 `FLYING_REFDES_HEIGHT_MIL=30`（cap height）；画布 `_CANVAS_MIL=16`；
+- 字高（mil）：导出 `FLYING_REFDES_HEIGHT_MIL=30`（cap height）；画布 `_CANVAS_MIL=16`，
+  **画布上限 `_CANVAS_MAX_MIL=20`**（V3.9.15：字体 px = `min(max(6, 16mil*s), 20mil*s)`，
+  低于 `FLYING_LABEL_MIN_FONT`(4px) 不画；旧的 6px 下限会让缩小后等效字高冲到 157mil）；
   补强 `FLYING_STIFFENER_MAX_FONT=24`；引脚 `FLYING_LABEL_MAX_FONT=12`。
 - 位号图层按通道区分：专业版装配层（顶 9 / 底 10 + mirror）、标准版文档层 12。
   引脚编号/网络名仅显示不导出。占位名（PAD / PAD1 / PAD23）跳过（`isFlyingPadPlaceholder`）。
@@ -159,7 +161,29 @@ PCB/FPC 手动开关只改 UI；标准版不导出埋盲孔；真彩图片离线
 协议页「技术局限」在 V3.9.9 已与实现对齐（网络为几何推算、冲突改名、标准版不含埋盲孔、位号落层），
 以后只动**技术表述**，责任/侵权/备份条款一字不动。
 
-## 15. 文档联动
+## 15. 本地调试（tools/serve.py）
+`python tools/serve.py` → `http://127.0.0.1:8456/iframe/ImportGerber.html`（`tools/` 不进包）。
+必须以项目根为站点根（页面引用全是 `/iframe/...`），并在 `</head>` 前注入 `eda` mock，否则普通浏览器打开会 404 + 报错。
+支持 `?ver=4.1.78`（模拟 pro_v2/v3/v4）、`?nomock=1`、`?reload=0`；改 iframe/**/*.{html,js,css} 自动刷新（SSE）。
+校验：`Temp/scripts/checks/devserve_check.js` / `devserve_reload_check.js`。
+⚠️ 本机有 `http_proxy=127.0.0.1:2868`，curl 探本机端口要加 `--noproxy '*'`。
+
+## 16. 界面 / 日志规范（V3.9.13 起）
+- **日志**：`appLog` 只写 `#debug-source-area`（导出选项页底部）；一个阶段只写一行
+  `${label}，耗时 ${formatDuration(ms)}`（`stepBegin` 不写日志，`stepEnd` 用 begin 时更完整的标题补回数量）。
+  禁止 ▶ ✓ ⚠ ❌ ❗ 与 `-----` 分隔线；不写实现细节（如"未读取到 PCB 文档源码"），只写状态 / 数量 / 耗时。
+  `#run-step` 已删，当前步骤与预计剩余只在 `#loading-overlay` 上显示。
+- **弹窗**：只有「关闭」按钮与右上角 ✕ 能关（reward 弹窗已去掉遮罩点击与 ESC）。
+  按钮顺序统一：蜜雪 → 联系开发者 → 反馈问题 →（关闭，仅弹窗）。
+  「反馈问题」是**普通 `<a target="_blank">`**（V3.9.14），`rewardOpenIssues()` 已删，别再回退成 JS 打开。
+- **勾选行整行可点**：只有复选框的行可用 `<label for>`；行内若含「打开协议」链接，
+  必须用 `onAgreeRowClick(e)`（`#agree-row`），并对 `input` 与 `.agree-link` 提前 return ——
+  label 的激活行为会把"点链接"也变成切换勾选。
+- **协议**：4 节（风险提示 / 数据安全 / 免责 / 其他），技术实现细节不再写进协议。
+
+- 校验脚本：`Temp/scripts/checks/ui_polish_check.js`、`ui_log_check.js`。
+
+## 17. 文档联动
 功能改动同步四处：`CHANGELOG.md` → `README.md`（能力矩阵 + 4.4 特殊功能）→
 `iframe/ImportGerber.html`（导出页提示 + 协议技术局限）→ `iframe/About.html`。
 版本号改 `extension.json` + `package.json` → `npm run build`（HTML 也进包，改文档必须重打包）。

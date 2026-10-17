@@ -4,7 +4,7 @@
 // 职责：
 //   · recordImportExportSuccess  PCB 导入 / 导出成功后自增计数并持久化
 //   · showRewardDialog           「感觉不错？」弹窗（含蜜雪赞赏码 / 微信二维码展示）
-//   · rewardOpenIssues           在外部浏览器打开 GitHub Issues（唯一跳转外部的入口）
+//   · （「反馈问题」已改为普通 <a target="_blank"> 链接，不再走 JS 打开）
 //   · getImportExportCount       读取当前累计次数（调试 / 展示用）
 // 持久化：优先 eda.sys_Storage.getExtensionAllUserConfigs / setExtensionAllUserConfigs
 //         （同步读、异步写，会覆盖扩展全部用户配置 → 必须先读全量再回写）；
@@ -130,8 +130,8 @@
 			const store = readStore();
 			store[COUNT_KEY] = count;
 			const persisted = await writeStore(store);
-			log(`PCB 导入/导出累计 ${count} 次${source ? `（${source}）` : ''}` +
-				(persisted ? '' : ' · ⚠️ 计数保存失败，仅本次会话有效'));
+			log(`累计完成 ${count} 次导入 / 导出${source ? `（${source}）` : ''}` +
+				(persisted ? '' : '，计数保存失败，仅本次会话有效'));
 
 			// 弹窗判定：整 10 次，且该计数值没弹过（持久化失败时靠 promptedCache 兜底防重）
 			if (count % PROMPT_STEP === 0 && readPrompted() !== count) {
@@ -169,14 +169,13 @@
 	.rw-img-area { display: none; margin-top: 14px; text-align: center; background: #fff; border-radius: 6px; padding: 12px; }
 	.rw-img-area img { max-width: 260px; max-height: 260px; width: auto; height: auto; display: block; margin: 0 auto; }
 	.rw-cap { margin-top: 8px; font-size: 12px; color: #666; }
-	.rw-url-area { display: none; margin-top: 12px; }
-	.rw-url-area input { width: 100%; box-sizing: border-box; padding: 6px 8px; background: #3c3c3c; color: #fff;
-		border: 1px solid #3e3e42; border-radius: 4px; font-family: Consolas, monospace; font-size: 12px; }
 	.rw-foot { padding: 12px 18px; border-top: 1px solid #3e3e42; display: flex; gap: 8px; flex-wrap: wrap;
 		justify-content: flex-end; background: #333337; flex-shrink: 0; }
 	.rw-btn { padding: 7px 14px; border: 1px solid #3e3e42; border-radius: 4px; background: #3c3c3c;
 		color: #ddd; font-size: 12px; cursor: pointer; transition: opacity 0.15s; }
 	.rw-btn:hover { background: #4e4e52; color: #fff; }
+	/* 反馈问题改成普通链接：a 需要补齐按钮的排版属性 */
+	a.rw-btn { display: inline-block; box-sizing: border-box; text-decoration: none; line-height: 1.3; }
 	.rw-btn-reward { background: #c2492f; border-color: #c2492f; color: #fff; font-weight: 600; }
 	.rw-btn-reward:hover { background: #a93b25; border-color: #a93b25; }
 	.rw-btn-ghost { background: transparent; }
@@ -192,14 +191,11 @@
 					<img id="rw-img" alt="二维码">
 					<div class="rw-cap" id="rw-cap"></div>
 				</div>
-				<div class="rw-url-area" id="rw-url-area">
-					<input id="rw-url" readonly spellcheck="false" onclick="this.select()">
-				</div>
 			</div>
 			<div class="rw-foot">
 				<button class="rw-btn rw-btn-reward" id="rw-btn-reward">请开发者喝蜜雪</button>
-				<button class="rw-btn" id="rw-btn-issue">反馈问题</button>
 				<button class="rw-btn" id="rw-btn-wechat">联系开发者</button>
+				<a class="rw-btn" id="rw-btn-issue" href="${ISSUE_URL}" target="_blank" rel="noopener noreferrer">反馈问题</a>
 				<button class="rw-btn rw-btn-ghost" id="rw-btn-close">关闭</button>
 			</div>
 		</div>
@@ -208,7 +204,7 @@
 
 	const IMG_META = {
 		reward: { src: IMG_REWARD, cap: '微信扫码 · 请开发者喝蜜雪' },
-		wechat: { src: IMG_WECHAT, cap: '微信扫码联系开发者 · WOLF4096' }
+		wechat: { src: IMG_WECHAT, cap: '微信扫码联系开发者' }
 	};
 
 	/** 弹窗不存在时创建（幂等） */
@@ -229,13 +225,11 @@
 		document.getElementById('rw-btn-x').addEventListener('click', closeRewardDialog);
 		document.getElementById('rw-btn-reward').addEventListener('click', () => rewardShowImage('reward'));
 		document.getElementById('rw-btn-wechat').addEventListener('click', () => rewardShowImage('wechat'));
-		document.getElementById('rw-btn-issue').addEventListener('click', rewardOpenIssues);
+		// 「反馈问题」是普通 <a target="_blank"> 链接，不需要监听
 
-		// 点遮罩空白处 / 按 ESC 关闭（关掉不计数，下次达到条件还会提醒）
-		overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeRewardDialog(); });
-		document.addEventListener('keydown', (e) => {
-			if (e.key === 'Escape' && overlay.style.display === 'flex') closeRewardDialog();
-		});
+		// 关闭方式只有「关闭」按钮和右上角的 ✕：
+		//   · 不再监听遮罩空白处点击（误触会直接关掉，用户想复制二维码时很容易点空）；
+		//   · 也不再监听 ESC（要求"只能点关闭按钮"）。
 	}
 
 	/** 在弹窗内显示图片（'reward' = 赞赏码 / 'wechat' = 微信二维码） */
@@ -245,14 +239,11 @@
 		document.getElementById('rw-img').src = meta.src;
 		document.getElementById('rw-cap').textContent = meta.cap;
 		document.getElementById('rw-img-area').style.display = 'block';
-		document.getElementById('rw-url-area').style.display = 'none';
 	}
 
 	function hideImageArea() {
 		const area = document.getElementById('rw-img-area');
 		if (area) area.style.display = 'none';
-		const urlArea = document.getElementById('rw-url-area');
-		if (urlArea) urlArea.style.display = 'none';
 	}
 
 	/**
@@ -266,7 +257,7 @@
 		document.getElementById('rw-title').textContent = opts.title || '感觉不错？';
 		const desc = document.getElementById('rw-desc');
 		if (opts.count) {
-			desc.textContent = `这是你第 ${opts.count} 次用本工具完成 PCB 导入 / 导出。` +
+			desc.textContent = `这是你第 ${opts.count} 次使用本工具完成 PCB 导入 / 导出。` +
 				'如果它帮你省了时间，可以请开发者喝杯蜜雪，遇到问题也欢迎反馈～';
 		} else {
 			desc.textContent = '本工具免费开源、持续维护。如果它帮你省了时间，' +
@@ -287,47 +278,6 @@
 	// ==================================================================================
 	// 4. 外部链接：仅「反馈问题」跳转外部浏览器，其余一律在应用内弹窗展示
 	// ==================================================================================
-
-	function rewardOpenIssues() {
-		// ① 首选 EDA 官方窗口接口：扩展 iframe 内最可靠，
-		//    且它是唯一能在返回值 / 异常上确认"是否真的打开了"的通道。
-		if (typeof eda !== 'undefined' && eda && eda.sys_Window &&
-			typeof eda.sys_Window.open === 'function') {
-			try {
-				eda.sys_Window.open(ISSUE_URL, '_blank');
-				log('已在浏览器打开 GitHub Issues（sys_Window）');
-				closeRewardDialog();
-				return;
-			} catch (e) { /* 落到 ② */ }
-		}
-		// ② 纯浏览器 / EDA 接口不可用时：<a target="_blank"> 唤起系统默认浏览器。
-		//    注意 a.click() 被沙箱策略拦下时不会抛异常，所以这一步只能"尽人事"，
-		//    真正失败时由下面的可复制链接兜底。
-		try {
-			const a = document.createElement('a');
-			a.href = ISSUE_URL;
-			a.target = '_blank';
-			a.rel = 'noopener noreferrer';
-			document.body.appendChild(a);
-			a.click();
-			a.remove();
-			log('已尝试在浏览器打开 GitHub Issues（a[target=_blank]）');
-			closeRewardDialog();
-			return;
-		} catch (e) { /* 落到 ③ */ }
-		// ③ 全部失败：把链接展示在弹窗内让用户手动复制
-		showRewardDialog({ title: '反馈问题' });
-		const desc = document.getElementById('rw-desc');
-		if (desc) {
-			desc.textContent = '无法自动打开浏览器，请复制下面的链接在浏览器中访问。' +
-				'提交时附上报错的 Gerber 样本，更容易定位问题。';
-		}
-		document.getElementById('rw-url').value = ISSUE_URL;
-		document.getElementById('rw-url-area').style.display = 'block';
-		if (typeof showToast === 'function') showToast('无法打开浏览器，请手动复制链接', 'warn');
-	}
-
-	// ==================================================================================
 	// 5. 对外接口
 	// ==================================================================================
 
@@ -336,5 +286,4 @@
 	window.showRewardDialog = showRewardDialog;              // 打开弹窗
 	window.closeRewardDialog = closeRewardDialog;            // 关闭弹窗
 	window.rewardShowImage = rewardShowImage;                // 弹窗内显示二维码
-	window.rewardOpenIssues = rewardOpenIssues;              // 外部浏览器打开 Issues
 })();

@@ -39,6 +39,13 @@
 			overflow-y: auto;
 		}
 
+		/* --- 滚动条：与主工具（iframe/css/style.css 的全局规则）保持一致 --- */
+		::-webkit-scrollbar { width: 8px; height: 8px; }
+		::-webkit-scrollbar-track { background: var(--bg); }
+		::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+		::-webkit-scrollbar-thumb:hover { background: #555; }
+		* { scrollbar-width: thin; scrollbar-color: #444 var(--bg); }
+
 		.page {
 			max-width: 860px;
 			margin: 0 auto;
@@ -226,6 +233,14 @@
 			color: #fff;
 		}
 
+		/* 「反馈问题」是普通 <a target="_blank"> 链接：补齐按钮排版属性 */
+		a.support-btn {
+			text-decoration: none;
+			display: inline-block;
+			box-sizing: border-box;
+			line-height: 1.4;
+		}
+
 		.support-btn-reward {
 			background: #c2492f;
 			border-color: #c2492f;
@@ -325,9 +340,11 @@
 				<div class="support-btns">
 					<button class="support-btn support-btn-reward"
 						onclick="showRewardDialog({ title: '感觉不错？', show: 'reward' })">请开发者喝蜜雪</button>
-					<button class="support-btn" onclick="rewardOpenIssues()">反馈问题</button>
 					<button class="support-btn"
 						onclick="showRewardDialog({ title: '联系开发者', show: 'wechat' })">联系开发者</button>
+					<a class="support-btn"
+						href="https://github.com/WOLF4096/eext-gerber-import-tool/issues"
+						target="_blank" rel="noopener noreferrer">反馈问题</a>
 				</div>
 				<p class="support-note">「反馈问题」附上报错的 Gerber 样本更容易定位问题。</p>
 			</div>
@@ -425,20 +442,18 @@
 
 		<section>
 			<h2>四、免责声明</h2>
-			<p><strong>本工具为开源辅助软件，任何访问、加载或使用行为，即视为已阅读并同意以下全部条款：</strong></p>
+			<div class="notice notice-danger">
+				<strong>导入功能只允许在【新建的空白 PCB 文档】中使用。</strong>
+				工具会直接写入当前文档，操作前请自行备份。因未备份、在非空白文档中操作或操作不当导致的数据丢失、
+				文档损坏、返工等后果，由使用者自行承担。
+			</div>
 			<ol>
-				<li><strong>工具性质与授权范围</strong>：仅用于 Gerber 的可视化查看与格式转换，仅授权用于个人学习、研究与自有设计文件的格式互转等合法合规用途；严禁用于侵犯他人知识产权的行为。
-				</li>
-				<li><strong>高风险操作与数据安全</strong>：工具会对 EDA 画布进行直接读写，<strong>必须且仅可在空白 PCB
-						文档中使用导入功能</strong>；因未在空白文档操作、未提前备份或操作不当导致的数据丢失、文件损坏或不可逆修改，全部后果由用户自行承担。</li>
-				<li><strong>隐私保护</strong>：工具采用纯前端技术，文件解析与渲染均在浏览器本地完成，<strong>不会上传任何设计文件</strong>，不写入本地存储，不收集个人信息。</li>
-				<li><strong>侵权与合规</strong>：用户须独立承担因使用本工具（含逆向分析）产生的一切法律责任与赔偿费用；严禁未经授权复制、仿制他人产品，或窃取他人商业秘密 / 专利设计。</li>
-				<li><strong>技术局限与免责</strong>：工具「按现状」提供，不保证绝对准确、完整或适用于特定用途；对转换误差、图形丢失、网络连接错误、孔径误判、层属性偏差等不作担保。</li>
-				<li><strong>非生产级工具</strong>：生成的工程文件仅供参考，<strong>严禁未经验证直接用于 PCB
-						生产制造</strong>；因直接使用转换数据导致的产品报废、经济损失或设备损坏，开发者概不负责。</li>
-				<li><strong>协议变更</strong>：开发者保留随时修改本协议的权利，修改后随工具或文档发布即刻生效。若不同意任何条款，请立即停止使用本工具。</li>
+				<li><strong>数据安全</strong>：纯本地运行，文件解析与转换都在你的电脑上完成，<strong>不上传、不收集任何设计文件或个人数据</strong>。</li>
+				<li><strong>结果不作保证</strong>：工具按「现状」提供，转换结果可能存在误差，<strong>严禁未经人工复核直接用于生产制造</strong>。</li>
+				<li><strong>责任范围</strong>：因使用或无法使用本工具造成的任何直接或间接损失（数据丢失、返工、报废、生产延误等），<strong>开发者不承担任何责任</strong>。</li>
+				<li><strong>合规使用</strong>：请确保所处理文件的来源与用途合法，因使用本工具产生的法律责任由使用者自行承担。</li>
 			</ol>
-			<p style="color:var(--sub)">完整条款以工具导入时弹出的《用户协议与免责声明》为准。</p>
+			<p style="color:var(--sub)">完整条款以工具内勾选时弹出的《用户协议与免责声明》为准。</p>
 		</section>
 
 		<footer>

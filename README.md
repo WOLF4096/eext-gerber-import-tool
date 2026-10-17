@@ -266,6 +266,24 @@ iframe/
 - `.js` / `.css` 均带 UTF-8 BOM，可在服务端未声明 charset 时仍正确解析中文。
 - 改动后建议执行语法自检：`node --check iframe/js/*.js`
 
+### 本地调试前端 UI
+
+页面里的资源全是绝对路径（`/iframe/...`），且大量调用 `eda.*`，直接双击 HTML 打开会 404 + 报错。
+`tools/serve.py` 起了个只服务本机的调试站点（`tools/` 已在 `.edaignore` 里排除，不进扩展包）：
+
+```bash
+python tools/serve.py                     # → http://127.0.0.1:8456/iframe/ImportGerber.html
+python tools/serve.py --port 9000         # 换端口
+python tools/serve.py --no-mock           # 不注入 eda mock（想看真实环境的报错时用）
+python tools/serve.py --no-reload         # 关掉自动刷新
+```
+
+- 打开根路径 `/` 会自动跳到 `iframe/ImportGerber.html`；
+- 自动注入最小的 `eda` mock（toast / 版本号 / iframe 接口），普通浏览器里能完整跑界面与导入；
+- **改动 `iframe/` 下的 `html/js/css` 后浏览器自动刷新**（服务端轮询 mtime，经 SSE 通知页面）；
+- URL 参数：`?ver=4.1.78` 模拟不同 EDA 版本（首字符决定 pro_v2/v3/v4）、`?nomock=1`、`?reload=0`；
+- 响应一律 `Cache-Control: no-store`，不会出现"改了没生效"的缓存问题。
+
 ## 九、构建
 
 ```bash

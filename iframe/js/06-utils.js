@@ -166,12 +166,15 @@
     // --- 步骤 / 预计耗时（导入导出进度） ---
     // 统一口径：setStepStatus('生成图元 3/5', elapsedMs, etaMs)
     //   · 遮罩文字实时更新（用户看不到控制台，遮罩是唯一反馈）
-    //   · 侧栏「运行日志」上方显示一行当前状态，避免遮罩遮挡时完全没信息
+    // 日志口径（V3.9.13 起）：**一个阶段只写一行**，形如「解析图层（共 10 个），耗时 8ms」。
+    //   · 不再写「▶ 开始」那种重复行，也不再用 ▶ ✓ ⚠ 之类符号；
+    //   · "正在做什么 / 已用多久 / 预计剩余"由遮罩上的 setStepStatus 实时显示，不占日志。
     let _stepT0 = 0;
+    let _stepLabel = '';
     function stepBegin(label) {
         _stepT0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+        _stepLabel = label || '';
         setStepStatus(label, 0, null);
-        appLog('▶ ' + label);
     }
     function stepStatus(label, etaMs) {
         const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
@@ -180,12 +183,24 @@
     function stepEnd(label) {
         const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         const ms = Math.round(now - _stepT0);
-        setStepStatus(label + '（完成 ' + (ms / 1000).toFixed(ms < 1000 ? 2 : 1) + 's）', 0, 0);
-        appLog('✓ ' + label + ` ${ms}ms`);
+        // stepBegin 的标题通常更完整（例如「解析图层（共 10 个）」），stepEnd 只传了「解析图层」。
+        // 这里把数量/进度这类信息补回去，日志里才看得出"处理了多少"。
+        const full = (label && _stepLabel && _stepLabel.indexOf(label) === 0) ? _stepLabel : (label || _stepLabel);
+        setStepStatus(full + ' 完成', 0, 0);
+        appLog(`${full}，耗时 ${formatDuration(ms)}`);
         return ms;
     }
+    /** 毫秒 → 人读时长：850ms / 3.2s / 1分08s */
+    function formatDuration(ms) {
+        if (!isFinite(ms) || ms < 0) return '—';
+        if (ms < 1000) return Math.round(ms) + 'ms';
+        if (ms < 60000) return (ms / 1000).toFixed(1) + 's';
+        const m = Math.floor(ms / 60000);
+        const s = Math.round((ms % 60000) / 1000);
+        return m + '分' + String(s).padStart(2, '0') + 's';
+    }
 
-    /** 把「当前步骤 + 已用 + 预计剩余」写到遮罩与侧栏状态行 */
+    /** 把「当前步骤 + 已用 + 预计剩余」写到遮罩与状态行 */
     function setStepStatus(text, elapsedMs, etaMs) {
         let line = text || '';
         if (elapsedMs > 0) line += `（已用 ${(elapsedMs / 1000).toFixed(1)}s`;
@@ -194,6 +209,7 @@
 
         const st = document.getElementById('run-step');
         if (st) st.textContent = line;
+
 
         const overlay = document.getElementById('loading-overlay');
         if (overlay && overlay.style.display !== 'none') overlay.textContent = line;

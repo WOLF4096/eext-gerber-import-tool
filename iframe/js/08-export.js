@@ -164,7 +164,6 @@
                 await new Promise(r => setTimeout(r, 10));
 
                 drawWithBlackBg(false);
-                appLog(`-----------------------`);
                 overlay.textContent = "正在生成 PDF...";
                 await new Promise(r => setTimeout(r, 10));
 
@@ -897,8 +896,7 @@
             }
         });
 
-        // 输出日志
-        appLog(`-----------------------`);
+        // 输出日志（只列数量，不加装饰线）
         appLog(`生成焊盘 ${stat_pads} 个`);
         appLog(`生成过孔 ${stat_vias} 个`);
         appLog(`生成导线 ${stat_tracks} 条`);
@@ -1018,7 +1016,7 @@
                         const stiffCount = (unifiedData.fills || []).filter(f => f.layerId === 58 || f.layerId === 59).length
                             + (unifiedData.polys || []).filter(p => p.layerId === 58 || p.layerId === 59).length;
                         if (stiffCount > 0) {
-                            appLog(`注意：本次含 ${stiffCount} 块 FPC 补强。图元导入无法创建补强（API 限制），将被跳过 —— 需要补强请改用「通过源码导入」。`);
+                            appLog(`本次含 ${stiffCount} 块 FPC 补强，图元导入会跳过；需要补强请改用「通过源码导入」`);
                         }
                         // 在导入图元之前，先配置设计规则
                         // await configureBlindViasAPI(); // 当前保存设计规划失败，未知原因
@@ -1333,12 +1331,12 @@
             const kinds = Object.keys(failStat);
             if (!kinds.length) return;
             const detail = kinds.map(k => `${k} ${failStat[k]} 个`).join('，');
-            appLog(`⚠ 图元创建失败：${detail}` + (firstFailMsg ? `；首个错误：${firstFailMsg}` : ''));
+            appLog(`图元创建失败：${detail}` + (firstFailMsg ? `；首个错误：${firstFailMsg}` : ''));
         }, 1500);
 
         // 补强必须走源码导入：图元 API 无法把填充写到补强层（实测）。
         if (stiffSkipped > 0) {
-            const msg = `⚠ 本次有 ${stiffSkipped} 块 FPC 补强未写入：补强只能通过「通过源码导入」创建，`
+            const msg = `本次有 ${stiffSkipped} 块 FPC 补强未写入：补强只能通过「通过源码导入」创建，`
                 + `图元导入模式会跳过。请改用「通过源码导入」重新导入。`;
             appLog(msg);
             if (typeof showToast === 'function') showToast('补强需用「通过源码导入」', 'warn');
@@ -1953,7 +1951,7 @@
         if (wantRefdesText) {
             const canText = (typeof fontTextToPath === 'function') && (typeof fontEmForCapHeight === 'function');
             if (!canText) {
-                appLog('⚠ 内置字体轮廓未加载（iframe/js/11-font-outline.js），标准版将不输出位号文字');
+                appLog('内置字体轮廓未加载，标准版不输出位号文字');
             } else {
                 const capMil = (typeof FLYING_REFDES_HEIGHT_MIL === 'number') ? FLYING_REFDES_HEIGHT_MIL : 30;
                 const emStd = fontEmForCapHeight(capMil) / 10;    // 标准版单位 = 10 mil
@@ -2066,7 +2064,6 @@
                 const ni = netFieldIdx[k];
                 if (ni !== undefined && f[ni]) { nNet++; netNames.add(f[ni]); }
             });
-            appLog('-----------------------');
             appLog('标准版源码生成完毕');
             appLog(`焊盘 ${nPad} 个（含槽孔 ${nSlot} 个）/ 过孔 ${nVia} 个 / 非金属化孔 ${nHole} 个`);
             appLog(`导线 ${nTrack} 条 / 圆弧 ${nArc} 条 / 填充区域 ${nSolid} 块`);

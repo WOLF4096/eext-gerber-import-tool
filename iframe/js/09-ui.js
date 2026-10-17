@@ -921,7 +921,9 @@
      * 字号规则：
      *   · 引脚编号 / 网络名称 —— 文字必须完整落在**焊盘包围盒**内：两行排布（编号在上、网络名在下）
      *     各占半高；只要有一行放不下就退化为「单行只显示编号」；编号也放不下则整块隐藏。
-     *   · 元件位号 —— 固定字高 FLYING_REFDES_CANVAS_MIL（16 mil），按世界尺寸随缩放变化。
+     *   · 元件位号 —— 标称字高 FLYING_REFDES_CANVAS_MIL（16 mil），按世界尺寸随缩放变化；
+     *     但受 FLYING_REFDES_CANVAS_MAX_MIL（20 mil）上限约束：缩得很小时不再用像素下限顶住，
+     *     否则位号在板面上会越缩越大（缩放 1.5 倍时等效 157 mil）。
      * 所有文字都不描边（先前为了压住底层图形加了黑色描边，视觉发糊且不符合要求）。
      */
     function drawFlyingOverlays(dpr) {
@@ -1009,13 +1011,23 @@
         }
 
         if (wantRef) {
-            const fpx = Math.max(6, FLYING_REFDES_CANVAS_MIL * 0.0254 * s);   // 16 mil 字高，随缩放
-            setFont(fpx);
-            ctx.fillStyle = refCol;
-            labels.comps.forEach(c => {
-                const pt = project(c.x, c.y, 60);
-                if (pt) ctx.fillText(String(c.ref), pt.x, pt.y);
-            });
+            // 位号字高：标称 16 mil（随缩放），但**折算到板面不得超过 20 mil**。
+            // 旧写法 `max(6, 16mil*s)` 的 6px 下限会把小缩放时的等效字高顶到上百 mil
+            // （s=1.5 → 157 mil），位号在缩小时反而更大、互相盖住。
+            // 现在取 min(像素下限分支, 20mil 对应的像素)，缩小时字高严格跟着板子缩；
+            // 字高不足 4px 时直接不画（本来也看不清，还省掉上千次 fillText）。
+            const s2 = viewState.scale || 1;
+            const nominalPx = FLYING_REFDES_CANVAS_MIL * 0.0254 * s2;
+            const capPx = FLYING_REFDES_CANVAS_MAX_MIL * 0.0254 * s2;
+            const fpx = Math.min(Math.max(6, nominalPx), capPx);
+            if (fpx >= FLYING_LABEL_MIN_FONT) {
+                setFont(fpx);
+                ctx.fillStyle = refCol;
+                labels.comps.forEach(c => {
+                    const pt = project(c.x, c.y, 60);
+                    if (pt) ctx.fillText(String(c.ref), pt.x, pt.y);
+                });
+            }
         }
 
         // FPC 补强：材料名在上、厚度在下，与「引脚编号 / 网络名称」完全同一套排布与字号规则

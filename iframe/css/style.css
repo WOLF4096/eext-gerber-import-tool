@@ -84,6 +84,10 @@
     /* --- DEBUG区域 --- */
     #debug-panel { flex-direction: column; flex: 1; min-height: 200px; overflow: hidden; padding-bottom: 0; margin-bottom: 0; box-sizing: border-box; }
     #debug-source-area { width: 100%; flex: 1; height: auto !important; resize: none; box-sizing: border-box; display: block; margin-bottom: 0; border-bottom: none; border-radius: 0; }
+    /* 点进日志框时浏览器会画一圈白色 focus ring（且在 overflow 容器里表现为顶部一条白边）——去掉它，
+       只保留原有 1px 边框，视觉上不再有闪烁的亮边。 */
+    #debug-source-area:focus,
+    #debug-source-area:focus-visible { outline: none; box-shadow: none; border-color: #444; }
 
     /* --- 图层列表与表格 --- */
     .layer-header { background-color: var(--panel-header-bg); padding: 6px 10px; font-weight: bold; border-bottom: 1px solid var(--border-color); border-top: 1px solid var(--border-color); display: flex; align-items: center; color: #eee; font-size: 11px; }
@@ -141,8 +145,11 @@
     }
 
     /* --- 用户协议确认（位于「处理模式」下方） --- */
-    .agree-row { display: flex; align-items: center; gap: 6px; margin-top: 12px; padding: 5px 6px; border-radius: 4px; font-size: 12px; color: #ccc; user-select: none; }
+    .agree-row { display: flex; align-items: center; gap: 6px; margin-top: 10px; border-radius: 4px; font-size: 12px; color: #ccc; user-select: none; }
     .agree-row input[type="checkbox"] { margin: 0; cursor: pointer; }
+    /* 整行可点：配合 <label for="cfg-netlist"> 使用，点文字或行内空白都能切换勾选 */
+    .agree-row-hit { cursor: pointer; padding: 3px 0; }
+    .agree-row-hit:hover span { color: #fff; }
     .agree-link { color: var(--accent-color); cursor: pointer; text-decoration: underline; }
     .agree-link:hover { color: #4da3e0; }
     .agree-row.agree-shake { animation: agree-shake-x 0.45s ease-in-out; }

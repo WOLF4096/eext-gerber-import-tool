@@ -93,6 +93,23 @@
         syncAgreementButtons();
     }
 
+    /**
+     * 整行点击切换协议勾选（命中区 = 整个 .agree-row）。
+     * 两个例外：
+     *   · 点复选框本身 → 交给原生行为，避免取反两次；
+     *   · 点《用户协议与免责声明》链接 → 只打开条款，不改变勾选状态。
+     */
+    function onAgreeRowClick(e) {
+        const t = e && e.target;
+        if (!t) return;
+        if (t.id === 'cfg-agree') return;
+        if (t.classList && t.classList.contains('agree-link')) return;
+        const cb = document.getElementById('cfg-agree');
+        if (!cb) return;
+        cb.checked = !cb.checked;
+        onAgreementChange(cb.checked);
+    }
+
     /** 依据协议勾选状态，切换受控按钮的「锁定」外观（按钮仍可点击，点击会震动提示） */
     function syncAgreementButtons() {
         const debugOn = typeof DEBUG !== 'undefined' && DEBUG;
@@ -142,7 +159,7 @@
 
     /** 非 PCB 画布时给用户的提示文案 */
     function pcbContextHintText() {
-        return '未检测到 PCB 画布：请在嘉立创EDA 中打开或新建一个 PCB 文档后再打开本工具。';
+        return '未检测到 PCB 画布：打开 PCB 文档后才能进行导入。';
     }
 
     /**
@@ -174,14 +191,15 @@
             isOnPcbCanvas = r.onPcbCanvas;
             pcbContextReason = r.reason;
             if (!silent || changed) {
-                appLog(`PCB 画布检测：${r.onPcbCanvas ? '在 PCB 画布上' : '不在 PCB 画布上'}（${r.reason}）`);
+                // 只写状态，不写检测依据（原因由画布下方的提示条负责说明）
+                appLog(r.onPcbCanvas ? '已检测到 PCB 画布' : '未检测到 PCB 画布');
             }
             applyPcbContextUI();
             return isOnPcbCanvas;
         } catch (e) {
             isOnPcbCanvas = false;
             pcbContextReason = '检测异常：' + (e && e.message ? e.message : e);
-            appLog('PCB 画布检测异常：' + pcbContextReason);
+            appLog('画布状态：检测失败');
             applyPcbContextUI();
             return isOnPcbCanvas;
         }

@@ -190,13 +190,14 @@
         if (result.id && sel && sel.value !== result.id) {
             const from = processorRegistry.get(sel.value);
             sel.value = result.id;
-            appLog(`自动识别处理模式：${from && from.label ? from.label : '（未知）'} → ${result.label}`);
+            appLog(`处理模式：${from && from.label ? from.label : '未指定'} → ${result.label}`);
         } else if (result.id) {
-            appLog(`自动识别处理模式：${result.label}（与当前选择一致）`);
+            // 与当前选择一致时只报一次结果，不再追加「（与当前选择一致）」这类冗余说明
+            appLog(`处理模式：${result.label}`);
         } else if (result.blockedBy) {
-            appLog(`检测到「${result.blockedBy.label}」格式，但该模式尚未实现，已保持当前选择`);
+            appLog(`处理模式：${result.blockedBy.label} 暂不支持，沿用当前选择`);
         } else {
-            appLog(`未能唯一确定处理模式，沿用当前选择${detail ? '（候选 ' + detail + '）' : ''}`);
+            appLog('处理模式：未能识别，沿用当前选择');
         }
         return processorRegistry.current();
     }
