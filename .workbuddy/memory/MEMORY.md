@@ -175,4 +175,11 @@ X2/X3/RS-274D/兼容/保底 已删。新增处理器要同步改三处（HTML op
 宏基元 6/7 未绘制；`%SR` 未处理；`DEBUG` 硬编码 false；`LCEDA_STD_Head_Source` 空串；
 `importPrimitivesAPI(primitives, isV3)` 的 `isV3` 从未使用（api 模式强制 pro_v2）；
 PCB/FPC 手动开关只改 UI；标准版不导出埋盲孔；真彩图片离线无解。
-`ImportGerber.html` 协议里「本工具当前不生成网络 / 标准版不含位号」两句已过时（未改，属法务文案待用户确认）。
+`ImportGerber.html` 协议「技术局限」条已在 V3.9.9 改成与实现一致（网络为几何推算、冲突改名 `NET*`、
+标准版不含埋盲孔、位号落层），责任/侵权/备份条款一字未动 —— 以后改这段只动**技术表述**。
+
+## 14. 文档三处联动的约定
+功能改动要同步四处：`CHANGELOG.md`（新版本条目）→ `README.md`（能力矩阵 + 4.4 特殊功能）→
+`iframe/ImportGerber.html`（导出页提示列表 + 协议「技术局限」）→ `iframe/About.html`（使用方法/注意事项）。
+版本号改 `extension.json` + `package.json`，然后 `npm run build`（HTML 也打进包，文档改了必须重打包）。
+进度报告类一次性文档放 `Temp/`（gitignore + edaignore）。

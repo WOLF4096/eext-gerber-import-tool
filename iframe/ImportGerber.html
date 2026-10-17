@@ -163,7 +163,8 @@
 					<div class="seg-control" id="ui-board-type" style="width: 100px;">
 						<div class="seg-btn active" onclick="setBoardType('PCB')" data-val="PCB">PCB</div>
 						<div class="seg-btn" onclick="setBoardType('FPC')" data-val="FPC">FPC</div>
-						<!-- 当前版本工具暂不支持FPC，待后续更新 -->
+						<!-- FPC 已支持：含 *StiffenerLayer_* 文件时自动切到 FPC 并生成 FPC_FILL；
+						     但补强只能「通过源码导入」写入（图元 API 建不出补强），手动切换仅影响板材标记 -->
 					</div>
 				</div>
 
@@ -193,7 +194,9 @@
 						href="https://github.com/WOLF4096" target="_blank">WOLF4096</a> 开发</div>
 				<ul style="margin: 0; padding-left: 16px; color: #ccc;">
 					<li>渲染画面 ≠ 导入效果，不能保证100%准确</li>
-					<li>生成网络功能，不能保证100%准确</li>
+					<li>生成网络按铜层几何连通性推算，冲突处会整块改名为 <code>NET*</code>，请人工复核</li>
+					<li>元件位号来自飞针文件 <code>FlyingProbeTesting.json</code>：专业版写入装配层（顶层 9 / 底层 10），标准版写入文档层</li>
+					<li>FPC 补强只能「通过源码导入」写入，图元通道会跳过</li>
 					<li>使用前请阅读《用户协议与免责声明》</li>
 				</ul>
 			</div>
@@ -213,7 +216,9 @@
 
 				</div>
 
-				<!-- 网络生成：勾选后导入 / 导出时按铜层连通性为图元分配网络名 -->
+				<!-- 网络生成：勾选后导入 / 导出时按铜层连通性为图元分配网络名。
+				     同一连通块内出现两个不同已知网络（飞针 NET_NAME）时，整块（焊盘 + 导线 + 覆铜）
+				     改名为未占用的 NET*；焊盘编号与组合不受影响。 -->
 				<div id="agree-row" class="agree-row">
 					<input type="checkbox" id="cfg-netlist" checked>
 					<span>尝试生成网络</span>
@@ -296,7 +301,7 @@
 		<div class="modal-box">
 			<div class="modal-header">用户协议与免责声明</div>
 			<div class="modal-content">
-				<p><strong>版本日期：2026年10月16日</strong></p>
+				<p><strong>版本日期：2026年10月17日</strong></p>
 				<p>欢迎使用本 Gerber
 					文件查看与转换工具（以下简称“本工具”）。<strong>任何访问、加载或使用本工具的行为，即视为您已阅读、理解并完全同意本协议全部条款。</strong>若不同意，请立即停止使用。</p>
 
@@ -341,7 +346,15 @@
 				<ol>
 					<li><strong>“按现状”提供</strong>：本工具不保证功能的绝对准确性、完整性或特定用途的适用性。</li>
 					<li><strong>转换误差</strong>：受 Gerber 格式复杂度及 EDA
-						版本差异影响，转换结果可能存在图形丢失、网络缺失、孔径误判或层属性识别偏差。本工具当前<strong>不生成网络</strong>，标准版导出<strong>不包含文字、元件位号与埋盲孔</strong>。
+						版本差异影响，转换结果可能存在图形丢失、孔径误判或层属性识别偏差。其中：
+						<ul>
+							<li><strong>网络名</strong>由铜层几何连通性推算（存在飞针文件时优先采用文件中的网络名），
+								同一连通块内出现多个不同已知网络时会整块改名为 <code>NET*</code>，
+								网络名准确性不作保证，<strong>请务必人工复核</strong>；</li>
+							<li><strong>标准版导出不包含埋盲孔</strong>；元件位号以 <code>TEXT</code> 图元输出
+								（依赖内置字体轮廓，缺少字形的字符会被跳过）；专业版的元件位号写入装配层，
+								标准版写入文档层。</li>
+						</ul>
 					</li>
 					<li><strong>兼容性范围</strong>：本工具主要适配嘉立创 EDA V2.2 及以上版本导出的 Gerber，其它软件导出的文件兼容性不作保证。</li>
 					<li><strong>非生产级工具</strong>：<strong>本工具生成的工程文件仅供参考，严禁未经验证直接用于 PCB
