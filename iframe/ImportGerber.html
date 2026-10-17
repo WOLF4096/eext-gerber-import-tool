@@ -226,16 +226,18 @@
 
 			<div style="padding: 0 15px;" id="ui-export-canvas-btn-wrapper">
 				<div style="display: flex; gap: 10px; margin-top: 5px;">
-					<button class="btn-block btn-success agree-gated is-locked"
-						onclick="confirmAction(() => handleExportToCanvas('source'))" style="flex: 1;">
+					<button class="btn-block btn-success agree-gated pcb-gated is-locked"
+						onclick="confirmPcbAction(() => handleExportToCanvas('source'))" style="flex: 1;">
 						通过源码导入
 					</button>
-					<button class="btn-block btn-primary agree-gated is-locked"
-						onclick="confirmAction(() => handleExportToCanvas('api'))"
+					<button class="btn-block btn-primary agree-gated pcb-gated is-locked"
+						onclick="confirmPcbAction(() => handleExportToCanvas('api'))"
 						style="flex: 1; background-color: #007acc;">
 						通过图元导入
 					</button>
 				</div>
+				<!-- 不在 PCB 画布时显示（由 03-state.js applyPcbContextUI 控制显隐） -->
+				<div id="pcb-context-hint" style="display:none; margin-top:8px; font-size:11px; line-height:1.5; color:#ff9800;"></div>
 			</div>
 
 			<div class="section-title">导出嘉立创 EDA</div>

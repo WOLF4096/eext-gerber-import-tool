@@ -80,8 +80,12 @@ X2 / X3 / RS-274D / 兼容 / 保底 已删。新增处理器要同步改三处�
 - 算法（`06-utils.js`，移植自 `Temp/生成网络/GenerateNet.html`）：取铜层图元（焊盘 / 过孔 /
   导线 / 圆弧 / 折线 / 填充）→ 空间网格（5mm，+1mm 余量）求候选对 → `netConnected()` 几何
   连通判定 → 并查集 → 分量命名 → 回填到每个图元。
-- 已接入全部 PRO 通道：通过源码导入 / 通过图元导入 / 导出专业版 V2 / V3。
-  ⚠️ **标准版 .json 导出未接入**（标准版 PAD 无网络字段）。
+- 已接入全部通道：通过源码导入 / 通过图元导入 / 导出专业版 V2、V3 / **导出标准版**。
+  标准版的网络字段位置（`08-export.js buildStandardSource`，对照官方导出实测）：
+  `TRACK[3]` / `ARC[3]` / `CIRCLE[8]` / `SOLIDREGION[2]` / `PAD[7]` / `VIA[4]`；
+  `HOLE` 无网络字段；板框 TRACK 与非铜层图元留空。字段总数不变
+  （PAD 20 / VIA 8 / HOLE 6 / TRACK 7 / ARC 8 / CIRCLE 10 / SOLIDREGION 10）。
+  未勾选「生成网络」时全部写空串，输出与改动前逐字段一致。
 
 ### 2026-10-17 修复「GND 覆铜被命名成 DP」（参考实现同样存在）
 根因是**两条叠加缺陷**：
@@ -104,6 +108,25 @@ X2 / X3 / RS-274D / 兼容 / 保底 已删。新增处理器要同步改三处�
 与「同名多岛网络」（同一网络名落在多个互不相连分量 = 飞线）。
 修复后 6 个样本全部 **mixedClusters=0 / 多岛=0 / rejectedMerges=0**，且「网络名数 = 分量数」1:1。
 PCB1_2026-10-15 实测：GND 2645 图元、DP 35 图元，覆铜 22 块归 GND，132 个网络名全部来自飞针文件。
+
+## PCB 画布门控与「关于」页面（2026-10-17）
+「通过源码导入 / 通过图元导入」写的是**当前打开的 PCB 文档**，所以打开工具时先检测：
+`06-utils.js detectPcbCanvasContext()` —— ① `sys_FileManager.getDocumentSource()` 读不到
+→ 不在画布；② 读得到但非 PCB 源码（原理图/符号也能读到）→ 不在；③ 源码为空时用
+`dmt_SelectControl.getCurrentDocumentInfo().documentType === 3` 交叉确认
+（**空白 PCB 文档源码可能为空，不能误判**）。`isPcbDocumentSource()` 认
+V2 `["DOCTYPE","PCB",…]` / V3 `{"docType":"PCB",…}`。
+- UI：按钮加 `pcb-gated` 类 + onclick 用 `confirmPcbAction()`（顺序：不在画布 → 吐司中止；
+  在画布未勾选协议 → 震动）。`.pcb-gated.is-off-canvas` 只做灰显、保留 pointer-events
+  （点了要能弹提示）。`#pcb-context-hint` 显示原因；`refreshPcbContext()` 在窗口
+  focus / visibilitychange 时重测（`isOnPcbCanvas === null` 表示检测中，不锁）。
+- `showToast(msg, type)`（06-utils.js）：优先 `eda.sys_Message.showToastMessage`，
+  退回页面内 `.app-toast`，最后 alert。
+- 「关于」页 = `iframe/About.html` + `iframe/js/about.js`（**自带 style，不引 style.css**，
+  后者 body 是工具布局）。版本号取 `sys_FileSystem.getExtensionFile('/extension.json')`，
+  退回 `fetch('/extension.json')`。菜单：`extension.json` 五个 headerMenus 上下文各加
+  `{"id":"About","title":"关于","registerFn":"About"}`；入口 `src/index.ts export About()`。
+- `headerMenus` 的 `registerFn` 必须与 `src/index.ts` 的导出函数同名。
 
 ## 前端交互约定（2026-10-16）
 - 用户协议确认 = 「处理模式」下方的复选框 `#cfg-agree`（容器 `#agree-row`）；点击

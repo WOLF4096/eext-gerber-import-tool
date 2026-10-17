@@ -1446,19 +1446,21 @@
 
     /**
      * 生成一个 SOLIDREGION 图元串（10 字段，与官方导出的字段布局逐位对齐）：
-     * cmdKey, layer, '', pathStr, fillStyle, gId, '', '', '', locked
+     * cmdKey, layer, net, pathStr, fillStyle, gId, '', '', '', locked
      * 所有区域类图元（含覆铜）统一用它承载 —— 标准版对 SOLIDREGION 的解析最稳，
      * 不需要 COPPERAREA 那套「压缩数据 + 网络」附属信息，打开即见实心铜。
+     * @param {string} [net] 网络名（未生成网络时传空串）
      */
-    function stdSolidRegion(layer, pathStr, gid) {
-        return ['SOLIDREGION', layer, '', pathStr, 'solid', gid, '', '', '', 0].join('~');
+    function stdSolidRegion(layer, pathStr, gid, net) {
+        return ['SOLIDREGION', layer, net || '', pathStr, 'solid', gid, '', '', '', 0].join('~');
     }
 
     /**
      * 生成标准版 PCB 源码对象。
+     * @param {object} [config] 导出配置（读 config.tryNetlist 决定是否生成网络）
      * @returns {object} 可直接 JSON.stringify 的标准版 PCB 源码
      */
-    function buildStandardSource() {
+    function buildStandardSource(config) {
         const rawData = PadTool.extractRawData(loadedFiles.filter(f => f.visible));
         const uni = PadTool.consolidate(
             rawData.rawPads || [], rawData.rawVias || [], rawData.rawTracks || [],
@@ -1486,6 +1488,43 @@
         if (flyingIndex.pins.length) {
             appLog(`标准版导出：已读取飞针文件，共 ${flyingIndex.pins.length} 个引脚用于匹配焊盘编号`);
         }
+
+        // ---------- 物理网络（与 PRO 通道共用同一份计算结果） ----------
+        // 标准版各图元的「网络」字段位置（对照官方导出实测，见各分支注释）：
+        //   TRACK[3] / ARC[3] / CIRCLE[8] / SOLIDREGION[2] / PAD[7] / VIA[4]
+        // 未勾选「生成网络」时全部写空串 —— 与改动前的输出逐字段一致。
+        let netOf = null;
+        if (config && config.tryNetlist) {
+            try {
+                // 焊盘网络优先取飞针文件的 NET_NAME（有飞针文件时命中率最高）
+                const padNet = new Map();
+                if (flyingIndex.pins.length) {
+                    (uni.unifiedPads || []).forEach(p => {
+                        const p0 = p.top || p.bottom || p.innerRep || (p.inners && p.inners[0]);
+                        const m = flyingPinAt(flyingIndex, p.x, p.y, padMatchBoxMM(p0));
+                        if (m && m.net) padNet.set(p, String(m.net));
+                    });
+                }
+                const innerCopper = [...new Set(loadedFiles.map(f => f.layerId).filter(id => id >= 15 && id <= 46))];
+                const res = buildNetAssignments(uni, { padNet, innerCopperLayers: innerCopper });
+                netOf = res.netOf;
+                const st = res.stats;
+                appLog(`标准版导出：已生成网络 ${st.named} 个（沿用飞针/已有名 ${st.reused}，新分配 ${st.generated}）`);
+            } catch (e) {
+                console.error('标准版导出：物理网络生成失败', e);
+                appLog(`标准版导出：生成网络失败（${e && e.message ? e.message : e}），本次不写网络`);
+                netOf = null;
+            }
+        }
+        /**
+         * 取图元对应的网络名（未生成网络时恒为空串）。
+         * 标准版图元串用 `~` 分隔，网络名里若混入 `~` 会把整条记录拆错位，
+         * 这里统一换成 `_`（实际网络名极少出现，属防御性处理）。
+         */
+        const stdNet = (obj) => {
+            const v = (netOf && obj) ? (netOf.get(obj) || '') : '';
+            return (v.indexOf('~') >= 0) ? v.split('~').join('_') : v;
+        };
 
         // ---------- 1. 焊盘 ----------
         (uni.unifiedPads || []).forEach(pad => {
@@ -1571,7 +1610,8 @@
             // 焊盘编号：优先取飞针文件里匹配到的引脚号，否则回退 '1'
             const pinHit = flyingPinAt(flyingIndex, pad.x, pad.y, padMatchBoxMM(prim));
             const padNum = (pinHit && pinHit.num) || '1';
-            const f = ['PAD', shapeName, hx, hy, stdU(w), stdU(h), layer, '', padNum,
+            // [7] = 网络名（标准版 PAD 的第 8 个字段）
+            const f = ['PAD', shapeName, hx, hy, stdU(w), stdU(h), layer, stdNet(pad), padNum,
                 holeR, points, stdNum(rot), nextGid(), holeLength, slotPts, plated, 0,
                 pstExp, solExp, hx + ',' + hy];
             shapes.push(f.join('~'));
@@ -1582,8 +1622,10 @@
             const hx = stdX(v.x), hy = stdY(v.y);
             grow(hx, hy);
             if (v.isPlated) {
-                shapes.push(['VIA', hx, hy, stdU(v.padDia || v.dia), '', stdU(v.dia / 2), nextGid(), 0].join('~'));
+                // [4] = 网络名（VIA 8 字段布局：VIA~x~y~padDia~net~holeR~gid~locked）
+                shapes.push(['VIA', hx, hy, stdU(v.padDia || v.dia), stdNet(v), stdU(v.dia / 2), nextGid(), 0].join('~'));
             } else {
+                // HOLE（非金属化孔）没有网络字段
                 shapes.push(['HOLE', hx, hy, stdU(v.dia / 2), nextGid(), 0].join('~'));
             }
         });
@@ -1607,7 +1649,8 @@
             const gid = nextGid();
             if (t.type !== 'ARC') {
                 grow(stdX(t.x1), stdY(t.y1)); grow(stdX(t.x2), stdY(t.y2));
-                shapes.push(['TRACK', sw, layer, '', stdX(t.x1) + ' ' + stdY(t.y1) + ' ' + stdX(t.x2) + ' ' + stdY(t.y2), gid, 0].join('~'));
+                // [3] = 网络名（TRACK 7 字段布局：TRACK~sw~layer~net~points~gid~locked）
+                shapes.push(['TRACK', sw, layer, stdNet(t), stdX(t.x1) + ' ' + stdY(t.y1) + ' ' + stdX(t.x2) + ' ' + stdY(t.y2), gid, 0].join('~'));
                 continue;
             }
             // 360° 整圆在提取阶段已拆成「两段对向的 180° 半圆」——
@@ -1622,7 +1665,8 @@
                 const cx = (t.x1 + t.x2) / 2, cy = (t.y1 + t.y2) / 2;
                 const r = Math.hypot(t.x2 - t.x1, t.y2 - t.y1) / 2;
                 grow(stdX(cx - r), stdY(cy)); grow(stdX(cx + r), stdY(cy));
-                shapes.push(['CIRCLE', stdX(cx), stdY(cy), stdU(r), sw, layer, gid, 0, '', ''].join('~'));
+                // [8] = 网络名（CIRCLE 10 字段布局：CIRCLE~x~y~r~sw~layer~gid~locked~net~childIds）
+                shapes.push(['CIRCLE', stdX(cx), stdY(cy), stdU(r), sw, layer, gid, 0, stdNet(t), ''].join('~'));
                 i++;   // 两段半圆已经合成一个整圆
                 continue;
             }
@@ -1635,7 +1679,8 @@
             }
             const r = Math.abs(chord / (2 * Math.sin(srad / 2)));
             grow(stdX(t.x1), stdY(t.y1)); grow(stdX(t.x2), stdY(t.y2));
-            shapes.push(['ARC', sw, layer, '', svgArcD(t.x1, t.y1, t.x2, t.y2, r, t.angle), '', gid, 0].join('~'));
+            // [3] = 网络名（ARC 8 字段布局：ARC~sw~layer~net~path~''~gid~locked）
+            shapes.push(['ARC', sw, layer, stdNet(t), svgArcD(t.x1, t.y1, t.x2, t.y2, r, t.angle), '', gid, 0].join('~'));
         }
 
         // ---------- 4. 折线 / 覆铜 / 板框 ----------
@@ -1644,14 +1689,14 @@
             if (pts.length < 2) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
             if (p.layerId === 11) {
-                // 板框：标准版用 BoardOutLine 层上的闭合 TRACK 折线承载
+                // 板框：标准版用 BoardOutLine 层上的闭合 TRACK 折线承载（板框不属于任何网络）
                 shapes.push(['TRACK', stdU(p.width || 0.254), 10, '', stdPointStr(pts), nextGid(), 0].join('~'));
             } else if (STD_IS_COPPER(p.layerId)) {
                 // 覆铜 → 填充区域（SOLIDREGION），与画布渲染一致：打开就是实心铜
-                shapes.push(stdSolidRegion(STD_LAYER(p.layerId), stdPathStr(pts, true), nextGid()));
+                shapes.push(stdSolidRegion(STD_LAYER(p.layerId), stdPathStr(pts, true), nextGid(), stdNet(p)));
             } else {
                 // 其它层的折线（丝印/文档/机械的描边）保留为带线宽的 TRACK
-                shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), '', stdPointStr(pts), nextGid(), 0].join('~'));
+                shapes.push(['TRACK', stdU(p.width || 0.15), STD_LAYER(p.layerId), stdNet(p), stdPointStr(pts), nextGid(), 0].join('~'));
             }
         });
 
@@ -1660,7 +1705,7 @@
             const pts = stdFlattenPath(f.path, 6);
             if (pts.length < 3) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
-            shapes.push(stdSolidRegion(STD_LAYER(f.layerId), stdPathStr(pts, true), nextGid()));
+            shapes.push(stdSolidRegion(STD_LAYER(f.layerId), stdPathStr(pts, true), nextGid(), stdNet(f)));
         });
 
         // ---------- 6. 图片（轮廓填充） ----------
@@ -1668,7 +1713,7 @@
             const pts = stdFlattenPath(img.path, 6);
             if (pts.length < 3) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
-            shapes.push(stdSolidRegion(STD_LAYER(img.layerId), stdPathStr(pts, true), nextGid()));
+            shapes.push(stdSolidRegion(STD_LAYER(img.layerId), stdPathStr(pts, true), nextGid(), stdNet(img)));
         });
 
         // 兜底：一个图元都没生成时，BBox 用原点，避免出现 Infinity
@@ -1707,7 +1752,7 @@
             return;
         }
         try {
-            const doc = buildStandardSource();
+            const doc = buildStandardSource(config);
             if (!doc.shape.length) {
                 alert('没有可导出的图元，请检查已勾选的图层');
                 return;
@@ -1717,20 +1762,28 @@
             downloadBlobAsFile(new Blob([json], { type: 'application/json;charset=utf-8' }),
                 `Gerber_To_PCB_${baseName}.json`);
 
-            let nPad = 0, nVia = 0, nHole = 0, nTrack = 0, nArc = 0, nSolid = 0, nSlot = 0;
+            let nPad = 0, nVia = 0, nHole = 0, nTrack = 0, nArc = 0, nSolid = 0, nSlot = 0, nNet = 0;
+            const netNames = new Set();
+            // 各图元的网络字段索引（与 buildStandardSource 里写入的位置一致）
+            const netFieldIdx = { PAD: 7, VIA: 4, TRACK: 3, ARC: 3, CIRCLE: 8, SOLIDREGION: 2 };
             doc.shape.forEach(s => {
-                const k = s.split('~')[0];
-                if (k === 'PAD') { nPad++; if (parseFloat(s.split('~')[13]) > 0) nSlot++; }
+                const f = s.split('~');
+                const k = f[0];
+                if (k === 'PAD') { nPad++; if (parseFloat(f[13]) > 0) nSlot++; }
                 else if (k === 'VIA') nVia++;
                 else if (k === 'HOLE') nHole++;
                 else if (k === 'TRACK') nTrack++;
                 else if (k === 'ARC') nArc++;
                 else if (k === 'SOLIDREGION') nSolid++;
+                const ni = netFieldIdx[k];
+                if (ni !== undefined && f[ni]) { nNet++; netNames.add(f[ni]); }
             });
             appLog('-----------------------');
             appLog('标准版源码生成完毕');
             appLog(`焊盘 ${nPad} 个（含槽孔 ${nSlot} 个）/ 过孔 ${nVia} 个 / 非金属化孔 ${nHole} 个`);
             appLog(`导线 ${nTrack} 条 / 圆弧 ${nArc} 条 / 填充区域 ${nSolid} 块`);
+            appLog(nNet ? `已写网络：${netNames.size} 个网络名 / ${nNet} 个图元`
+                : '未写网络（「生成网络」未勾选）');
             appLog(`画布尺寸 ${doc.BBox.width} × ${doc.BBox.height} 单位（1 单位 = 10 mil）`);
         } catch (e) {
             console.error(e);

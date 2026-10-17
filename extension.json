@@ -33,6 +33,11 @@
 						"id": "ImportGerber",
 						"title": "导入Gerber",
 						"registerFn": "ImportGerber"
+					},
+					{
+						"id": "About",
+						"title": "关于",
+						"registerFn": "About"
 					}
 				]
 			}
@@ -46,6 +51,11 @@
 						"id": "ImportGerber",
 						"title": "导入Gerber",
 						"registerFn": "ImportGerber"
+					},
+					{
+						"id": "About",
+						"title": "关于",
+						"registerFn": "About"
 					}
 				]
 			}
@@ -59,6 +69,11 @@
 						"id": "ImportGerber",
 						"title": "导入Gerber",
 						"registerFn": "ImportGerber"
+					},
+					{
+						"id": "About",
+						"title": "关于",
+						"registerFn": "About"
 					}
 				]
 			}
@@ -72,6 +87,11 @@
 						"id": "ImportGerber",
 						"title": "导入Gerber",
 						"registerFn": "ImportGerber"
+					},
+					{
+						"id": "About",
+						"title": "关于",
+						"registerFn": "About"
 					}
 				]
 			}
@@ -85,6 +105,11 @@
 						"id": "ImportGerber",
 						"title": "导入Gerber",
 						"registerFn": "ImportGerber"
+					},
+					{
+						"id": "About",
+						"title": "关于",
+						"registerFn": "About"
 					}
 				]
 			}

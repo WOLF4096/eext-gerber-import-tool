@@ -43,6 +43,34 @@
         URL.revokeObjectURL(link.href);
     }
 
+    /**
+     * 轻量提示条（吐司）。
+     * 优先用嘉立创EDA 原生吐司；不可用时退化成本页面的浮动提示，最后才用 alert。
+     * @param {string} msg   提示内容
+     * @param {'info'|'warn'|'error'|'success'} [type='info'] 类型
+     */
+    function showToast(msg, type) {
+        const t = type || 'info';
+        try {
+            if (typeof eda !== 'undefined' && eda.sys_Message &&
+                typeof eda.sys_Message.showToastMessage === 'function') {
+                eda.sys_Message.showToastMessage(msg, t, 4);
+                return;
+            }
+        } catch (e) { /* 原生吐司不可用，走下面的页面内提示 */ }
+
+        let box = document.getElementById('app-toast');
+        if (!box) {
+            box = document.createElement('div');
+            box.id = 'app-toast';
+            document.body.appendChild(box);
+        }
+        box.className = 'app-toast app-toast-' + t + ' app-toast-show';
+        box.textContent = msg;
+        if (showToast._timer) clearTimeout(showToast._timer);
+        showToast._timer = setTimeout(() => { box.classList.remove('app-toast-show'); }, 4000);
+    }
+
     // --- [新增] 全局日志工具函数 ---
     function appLog(msg) {
         const area = document.getElementById('debug-source-area');
@@ -1158,6 +1186,79 @@
             else if (verStr.startsWith('3')) clientVer = 'pro_v3';
         }
         return { clientVer, isEdaEnv };
+    }
+
+    // ----------------------------------------------------------------------------------
+    // PCB 画布上下文检测
+    // ------------------------------------------------------------------------------------
+    // 「通过源码导入 / 通过图元导入」写的是**当前打开的 PCB 文档**。如果本工具是从
+    // 开始页 / 原理图 / 符号库等非 PCB 页签打开的，这两个入口点了也不会有结果，
+    // 所以先在打开时检测一次，非 PCB 画布就把它们禁用掉。
+    //
+    // 判据（按需求）：**读得到 PCB 源码 → 在画布上；读不到 → 不在**。
+    //   ① `sys_FileManager.getDocumentSource()` 返回 undefined = 当前未打开文档 / 读取失败；
+    //   ② 源码能读到，但文档类型不是 PCB（原理图、符号等同样能读到源码）→ 也不算；
+    //   ③ 源码读不到时，再用 `dmt_SelectControl.getCurrentDocumentInfo()` 的 documentType
+    //      交叉确认一次（全新的空白 PCB 文档源码可能为空，这时不能误判为「不在」）。
+    // ----------------------------------------------------------------------------------
+
+    /** PCB 文档类型枚举值（EDMT_EditorDocumentType.PCB = 3） */
+    const PCB_DOCUMENT_TYPE = 3;
+
+    /**
+     * 判断一段文档源码是不是 PCB 文档。
+     * 专业版 V2 头：`["DOCTYPE","PCB","1.8"]`
+     * 专业版 V3 头：`{"type":"DOCHEAD"}||{"docType":"PCB",...}`
+     */
+    function isPcbDocumentSource(source) {
+        if (typeof source !== 'string' || !source) return false;
+        const head = source.slice(0, 4096);
+        // V2：["DOCTYPE","PCB",...
+        if (/\[\s*"DOCTYPE"\s*,\s*"PCB"/i.test(head)) return true;
+        // V3：{"type":"DOCHEAD"}||{"docType":"PCB",...
+        if (/"docType"\s*:\s*"PCB"/i.test(head)) return true;
+        return false;
+    }
+
+    /**
+     * 检测当前是否处于 PCB 画布。
+     * @returns {Promise<{onPcbCanvas:boolean, reason:string, sourceLen:number}>}
+     *          reason 仅用于运行日志，说明判定依据
+     */
+    async function detectPcbCanvasContext() {
+        const env = getEnvInfo();
+        if (!env.isEdaEnv) {
+            return { onPcbCanvas: false, reason: '未运行在嘉立创EDA 环境中', sourceLen: 0 };
+        }
+
+        // ① 读当前文档源码（需求判据）
+        let source = undefined;
+        try {
+            if (eda.sys_FileManager && typeof eda.sys_FileManager.getDocumentSource === 'function') {
+                source = await eda.sys_FileManager.getDocumentSource();
+            }
+        } catch (e) {
+            source = undefined;
+        }
+
+        // ② 源码不是 PCB → 直接判不在（原理图/符号也能读到源码，必须排除）
+        if (typeof source === 'string' && source) {
+            return isPcbDocumentSource(source)
+                ? { onPcbCanvas: true, reason: '已读取到 PCB 文档源码', sourceLen: source.length }
+                : { onPcbCanvas: false, reason: '当前文档不是 PCB（读取到的源码非 PCB 文档）', sourceLen: source.length };
+        }
+
+        // ③ 源码读不到 → 用文档类型接口交叉确认（空白 PCB 文档可能没有源码）
+        try {
+            if (eda.dmt_SelectControl && typeof eda.dmt_SelectControl.getCurrentDocumentInfo === 'function') {
+                const info = await eda.dmt_SelectControl.getCurrentDocumentInfo();
+                if (info && info.documentType === PCB_DOCUMENT_TYPE) {
+                    return { onPcbCanvas: true, reason: '源码为空，按当前文档类型判定为 PCB', sourceLen: 0 };
+                }
+            }
+        } catch (e) { /* 忽略：接口不可用时按「不在」处理 */ }
+
+        return { onPcbCanvas: false, reason: '未读取到 PCB 文档源码', sourceLen: 0 };
     }
 
     // --- 辅助：从 Gerber 头部注释识别「导出来源软件」与「导出时间」---

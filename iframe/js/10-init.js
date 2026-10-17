@@ -6,6 +6,7 @@
 //   · 拖拽导入：dragenter / dragleave / dragover / drop（含全屏遮罩层）
 //   · window.resetConfig / window.reparseFiles  恢复默认设置 / 应用参数并重载
 //   · DOMContentLoaded 初始化、窗口 resize 监听、首屏尺寸与绘制
+//   · PCB 画布上下文检测的启动与重新检测（焦点 / 可见性变化时刷新）
 // 依赖：必须最后加载 —— 加载时会立即调用 09-ui.js 的 resizeCanvas() 与 drawCanvas()。
 // 加载顺序：第 10 个（最后）
 // ====================================================================================
@@ -224,6 +225,23 @@
             // 2. [新增] 显示 [获取当前板子] 区域
             if (titleImportEda) titleImportEda.style.display = 'flex';
             if (divImportEda) divImportEda.style.display = 'block';
+
+            // --- [新增] 检测当前是否处于 PCB 画布 ---
+            // 「通过源码导入 / 通过图元导入」写的是当前打开的 PCB 文档；
+            // 从开始页 / 原理图 / 符号库打开时读不到 PCB 源码 → 这两个入口禁用。
+            if (typeof refreshPcbContext === 'function') {
+                refreshPcbContext();
+                // 用户切到其它文档再切回来时重新检测（iframe 重新获得焦点 / 页面重新可见）
+                let pcbRecheckTimer = null;
+                const schedulePcbRecheck = () => {
+                    if (pcbRecheckTimer) clearTimeout(pcbRecheckTimer);
+                    pcbRecheckTimer = setTimeout(() => { refreshPcbContext(true); }, 400);
+                };
+                window.addEventListener('focus', schedulePcbRecheck);
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') schedulePcbRecheck();
+                });
+            }
         }
         
         // --- [修改] 调试面板初始化与模式控制 ---

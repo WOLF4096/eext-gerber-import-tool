@@ -160,4 +160,25 @@
     .agree-gated.is-locked { opacity: 0.4; filter: saturate(0.4); }
     .agree-gated.is-locked:hover { opacity: 0.6; filter: saturate(0.65); }
 
+    /* --- PCB 画布上下文门控（「通过源码导入 / 通过图元导入」） --- */
+    /* 不在 PCB 画布上时禁用：比「未勾选协议」更强的灰显 + 禁止光标；点击只给提示，不发起写入 */
+    .pcb-gated.is-off-canvas,
+    .pcb-gated.is-off-canvas:hover {
+        opacity: 0.55; filter: grayscale(1) brightness(0.62);
+        cursor: not-allowed; pointer-events: auto;
+    }
+
+    /* --- 页面内浮动提示条（原生吐司不可用时的兜底） --- */
+    .app-toast {
+        position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 12px);
+        max-width: 70vw; padding: 9px 16px; border-radius: 4px; z-index: 10001;
+        font-size: 12px; line-height: 1.5; color: #fff; white-space: pre-wrap;
+        background: #3a3a3a; border: 1px solid #555; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+        opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
+    }
+    .app-toast-show { opacity: 1; transform: translate(-50%, 0); }
+    .app-toast-warn { background: #5a3c10; border-color: #b8791a; }
+    .app-toast-error { background: #5a1d1d; border-color: #b83a3a; }
+    .app-toast-success { background: #14421f; border-color: #2ea043; }
+
     

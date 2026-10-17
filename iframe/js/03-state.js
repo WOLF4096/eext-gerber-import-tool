@@ -5,6 +5,7 @@
 //   · 全局可变状态：rawFilesCache / loadedFiles / viewState
 //   · 主画布与标尺的 2D 上下文、离屏缓冲画布
 //   · 用户协议确认与条款弹窗（confirmAction / showDisclaimer / 协议复选框同步）
+//   · PCB 画布上下文门控（「通过源码导入 / 通过图元导入」仅在 PCB 画布上可用）
 // 依赖：本文件在【加载时即访问 DOM】（#main-canvas / #ruler-h / #ruler-v），
 //       因此所有脚本必须放在 </body> 之前，且本文件早于 09-ui.js。
 // 加载顺序：第 3 个
@@ -17,6 +18,11 @@
     let rawFilesCache = []; 
     let loadedFiles = [];
     let viewState = { scale: 15, offsetX: 0, offsetY: 0, unit: 'mm', isDragging: false, lastX: 0, lastY: 0 };
+
+    // 当前是否处于 PCB 画布（由 06-utils.js detectPcbCanvasContext() 检测后写入）。
+    // null = 尚未检测完成（此时不锁定按钮，避免误禁用）。
+    let isOnPcbCanvas = null;
+    let pcbContextReason = '';
 
     // --- 飞针标注层（引脚编号 / 网络名称 / 元件位号）---------------------------------
     // 数据源：压缩包内的 FlyingProbeTesting.json。这些层不对应 Gerber 文件，
@@ -106,5 +112,78 @@
             return;
         }
         actionCallback();
+    }
+
+    // ----------------------------------------------------------------------------------
+    // PCB 画布上下文门控
+    // ------------------------------------------------------------------------------------
+    // 「通过源码导入 / 通过图元导入」必须写在**当前打开的 PCB 文档**里：
+    //   · 不在 PCB 画布（开始页 / 原理图 / 符号库…）→ 按钮置灰 + 点击给提示，不发起写入；
+    //   · 在 PCB 画布但未勾选协议 → 仍走原有「震动协议复选框」的提示。
+    // 检测结果由 06-utils.js detectPcbCanvasContext() 异步返回。
+    // ----------------------------------------------------------------------------------
+
+    /** 非 PCB 画布时给用户的提示文案 */
+    function pcbContextHintText() {
+        return '未检测到 PCB 画布：请在嘉立创EDA 中打开或新建一个 PCB 文档后再打开本工具。';
+    }
+
+    /**
+     * 刷新「需要 PCB 画布」按钮的状态。
+     * 三态：null（检测中，不锁） / true（可用） / false（禁用并显示提示行）
+     */
+    function applyPcbContextUI() {
+        const off = (isOnPcbCanvas === false);
+        document.querySelectorAll('.pcb-gated').forEach(btn => {
+            btn.classList.toggle('is-off-canvas', off);
+        });
+        const hint = document.getElementById('pcb-context-hint');
+        if (hint) {
+            hint.style.display = off ? 'block' : 'none';
+            if (off) hint.textContent = pcbContextHintText();
+        }
+    }
+
+    /**
+     * 检测并刷新 PCB 画布状态。
+     * @param {boolean} [silent] 静默模式（只刷新界面，不写运行日志）
+     * @returns {Promise<boolean|null>} 是否在 PCB 画布上（检测失败返回 null）
+     */
+    async function refreshPcbContext(silent) {
+        if (typeof detectPcbCanvasContext !== 'function') return isOnPcbCanvas;
+        try {
+            const r = await detectPcbCanvasContext();
+            const changed = (isOnPcbCanvas !== r.onPcbCanvas);
+            isOnPcbCanvas = r.onPcbCanvas;
+            pcbContextReason = r.reason;
+            if (!silent || changed) {
+                appLog(`PCB 画布检测：${r.onPcbCanvas ? '在 PCB 画布上' : '不在 PCB 画布上'}（${r.reason}）`);
+            }
+            applyPcbContextUI();
+            return isOnPcbCanvas;
+        } catch (e) {
+            isOnPcbCanvas = false;
+            pcbContextReason = '检测异常：' + (e && e.message ? e.message : e);
+            appLog('PCB 画布检测异常：' + pcbContextReason);
+            applyPcbContextUI();
+            return isOnPcbCanvas;
+        }
+    }
+
+    /**
+     * 需要 PCB 画布的导入入口（HTML 内联 onclick 调用）。
+     * 顺序：不在 PCB 画布 → 提示并中止；在画布但未勾选协议 → 震动提示；否则执行。
+     */
+    function confirmPcbAction(actionCallback) {
+        if (typeof DEBUG !== 'undefined' && DEBUG) {
+            actionCallback();
+            return;
+        }
+        if (isOnPcbCanvas === false) {
+            if (typeof showToast === 'function') showToast(pcbContextHintText(), 'warn');
+            else alert(pcbContextHintText());
+            return;
+        }
+        confirmAction(actionCallback);
     }
 

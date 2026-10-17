@@ -19,3 +19,8 @@ export function activate(status?: 'onStartupFinished', arg?: string): void {}
 export async function ImportGerber() {
 	eda.sys_IFrame.openIFrame('/iframe/ImportGerber.html', 1280, 800, 'ImportGerber');
 }
+
+// 关于：开发者信息 / 使用方法 / 免责声明
+export async function About() {
+	eda.sys_IFrame.openIFrame('/iframe/About.html', 900, 720, 'About');
+}
