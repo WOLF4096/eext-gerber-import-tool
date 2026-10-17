@@ -378,6 +378,7 @@
      * 选中的模式尚未实现时给出明确提示，而不是静默什么都不做。
      *
      * @param config - 导出配置
+     * @returns 是否导出成功（用于操作计数；未实现 / 失败 / DEBUG 预览均返回 false）
      */
     async function routeExport(config) {
         const processor = processorRegistry.current();
@@ -385,13 +386,12 @@
             const msg = `处理模式「${processor.label}」尚未实现，暂时无法导出。\n请在「处理模式」下拉中改用已实现的模式（嘉立创专业版 / RS-274X）。`;
             appLog(msg.replace(/\n/g, ' '));
             alert(msg);
-            return;
+            return false;
         }
         if (processor.exportTarget === 'other') {
-            await exportForOther_Pro(config);
-            return;
+            return await exportForOther_Pro(config);
         }
-        await exportForEasyEDA_Pro(config);
+        return await exportForEasyEDA_Pro(config);
     }
 
     window.handleExportToCanvas = async (method) => {
@@ -422,8 +422,11 @@
             return;
         }
 
-        // 按当前处理模式路由到对应导出后端
-        await routeExport(config);
+        // 按当前处理模式路由到对应导出后端；成功后计入导入次数（PDF 不计）
+        const ok = await routeExport(config);
+        if (ok && typeof recordImportExportSuccess === 'function') {
+            await recordImportExportSuccess(method === 'api' ? '通过图元导入 PCB 画布' : '通过源码导入 PCB 画布');
+        }
     };
 
     // --- 1.2 按钮：导出标准版文件 (下载逻辑) ---
@@ -436,7 +439,11 @@
             tryNetlist: document.getElementById('cfg-netlist').checked // 尝试生成网络
         };
 
-        await exportForStandard(config);
+        // 导出成功后计入操作次数（PDF 导出不计）
+        const ok = await exportForStandard(config);
+        if (ok && typeof recordImportExportSuccess === 'function') {
+            await recordImportExportSuccess('导出标准版');
+        }
     };
 
     // --- 1.3 按钮：导出专业版 V2 文件 (下载逻辑) ---
@@ -449,10 +456,12 @@
             tryNetlist: document.getElementById('cfg-netlist').checked // 尝试生成网络
         };
 
-        // 按当前处理模式路由到对应导出后端
-        await routeExport(config);
+        // 按当前处理模式路由到对应导出后端；成功后计入操作次数（PDF 导出不计）
+        const ok = await routeExport(config);
+        if (ok && typeof recordImportExportSuccess === 'function') {
+            await recordImportExportSuccess('导出专业版 V2');
+        }
     };
-
     // --- 1.4 按钮：导出专业版 V3 文件 (下载逻辑) ---
     window.handleExportProV3 = async () => {
         const sourceType = document.getElementById('cfg-source-type').value;
@@ -463,8 +472,11 @@
             tryNetlist: document.getElementById('cfg-netlist').checked // 尝试生成网络
         };
 
-        // 按当前处理模式路由到对应导出后端
-        await routeExport(config);
+        // 按当前处理模式路由到对应导出后端；成功后计入操作次数（PDF 导出不计）
+        const ok = await routeExport(config);
+        if (ok && typeof recordImportExportSuccess === 'function') {
+            await recordImportExportSuccess('导出专业版 V3');
+        }
     };
 
     // --- [修改] 动态配置头文件函数 ---
@@ -849,7 +861,8 @@
                      textArea.value = debugFullSource;
                  }
                  // Debug 模式下生成完源码直接返回，不进行后续的文件下载或API写入
-                 return;
+                 // （DEBUG 预览不计入导入/导出操作次数）
+                 return false;
             }
         }
 
@@ -910,6 +923,7 @@
                 const content = await zip.generateAsync({type:"blob"});
                 downloadBlobAsFile(content, `${outputName}.epro`);
             }
+            return true; // 文件已下载，计一次成功导出
 
         } else if (config.mode === 'canvas') {
             
@@ -938,6 +952,7 @@
                         const writeDuration = ((writeEndTime - writeStartTime) / 1000).toFixed(2);
                         appLog(`参数传递完成，耗时${writeDuration}秒`);
                         appLog(`全部参数已传递至EDA，待EDA绘制完成`);
+                        return true; // 图元 API 全部调用完毕（个别图元失败已在日志单独统计）
                     } else {
                         appLog(`正在写入全量数据...`);
                         const result = await eda.sys_FileManager.setDocumentSource(finalSource);
@@ -945,18 +960,23 @@
                         const writeDuration = ((writeEndTime - writeStartTime) / 1000).toFixed(2);
                         if (result) appLog(`写入完成，耗时${writeDuration}秒`);
                         else appLog(`写入失败 (API返回false)`);
+                        return !!result;
                     }
                 }
+                return false; // 非 EDA 环境，未真正写入画布
             } catch (e) {
                 console.error(e);
                 appLog(`写入过程出错: ${e.message}`);
+                return false;
             }
         }
+        return false;
     }
 
     // 来源：其他 -> 目标：专业版 (支持 V2 和 V3) (保留入口)
     async function exportForOther_Pro(config) {
         // 待完善
+        return false;
     }
 
     // importPrimitivesAPI (API 写入)。
@@ -1746,16 +1766,17 @@
     }
 
     // 目标：标准版 —— 生成并下载嘉立创EDA标准版 PCB 源码（.json）
+    // @returns 是否导出成功（用于操作计数）
     async function exportForStandard(config) {
         if (!loadedFiles || loadedFiles.length === 0) {
             alert('请先导入 Gerber 文件');
-            return;
+            return false;
         }
         try {
             const doc = buildStandardSource(config);
             if (!doc.shape.length) {
                 alert('没有可导出的图元，请检查已勾选的图层');
-                return;
+                return false;
             }
             const json = JSON.stringify(doc, null, 2);
             const baseName = currentZipName || `${new Date().getTime()}`;
@@ -1785,10 +1806,12 @@
             appLog(nNet ? `已写网络：${netNames.size} 个网络名 / ${nNet} 个图元`
                 : '未写网络（「生成网络」未勾选）');
             appLog(`画布尺寸 ${doc.BBox.width} × ${doc.BBox.height} 单位（1 单位 = 10 mil）`);
+            return true;
         } catch (e) {
             console.error(e);
             appLog(`标准版导出失败: ${e.message}`);
             alert('标准版导出失败: ' + e.message);
+            return false;
         }
     }
 
