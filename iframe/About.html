@@ -370,9 +370,11 @@
 				<li><strong>导入 Gerber 压缩包 / 文件</strong>：点击按钮选择 <code>.zip</code> 压缩包，或一次选中多个 Gerber / 钻孔文件。</li>
 				<li><strong>直接拖拽</strong>：把压缩包或文件拖到工具窗口任意位置。</li>
 			</ol>
-			<p>压缩包内若含飞针测试文件 <code>FlyingProbeTesting.json</code>，工具会自动读取，并在画布上标注引脚编号、网络名称与元件位号。
-				其中<strong>引脚编号 / 网络名称仅在画布显示</strong>；<strong>元件位号</strong>勾选后会随导出写入文字，字高 30 mil
-				（专业版写<strong>装配层</strong>，顶层 9 / 底层 10 并按面镜像；标准版写<strong>文档层</strong>，以 <code>TEXT</code> 轮廓输出）。</p>
+			<p>压缩包内若含飞针测试文件 <code>FlyingProbeTesting.json</code>，工具会自动读取，并按文件里的 <code>LAYER</code> 字段（T/B）在画布上分成四层：
+				<strong>顶层元件位号</strong>、<strong>顶层焊盘名称</strong>（引脚编号 + 网络名）、<strong>底层元件位号</strong>、<strong>底层焊盘名称</strong>。
+				焊盘名称两层<strong>仅在画布显示</strong>；两个位号层勾选后会随导出写入文字，字高 30 mil
+				（专业版写<strong>装配层</strong>，顶层 9 / 底层 10 并按面镜像；标准版写<strong>文档层</strong>，以 <code>TEXT</code> 轮廓输出），
+				且各自只写自己那一面。「顶面 / 底面」图层组整组勾选或取消时，同面的两层标注跟着显示/隐藏。</p>
 
 			<h3>3. 配置</h3>
 			<ul>

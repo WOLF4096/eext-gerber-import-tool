@@ -181,6 +181,7 @@
             const row = document.createElement('div');
             row.className = 'layer-row';
             row.dataset.group = customGid;
+            row.dataset.layerId = String(id);   // 供组级联动（顶面/底面 ↔ 标注层）定位这一行
             row.innerHTML = `
                 <div class="col-color"><input type="color" value="${def.color}" onchange="updateColor(${id},this.value)"></div>
                 <div class="col-vis"><input type="checkbox" ${flyingOverlayVisible[id] ? 'checked' : ''} onchange="toggleOverlay(${id},this.checked)"></div>
@@ -884,7 +885,9 @@
 
         const index = buildFlyingPinIndex(flyingProbeData);
         // 孤立焊盘的占位名（PAD / PAD1 / PAD23…）不作为位号显示
-        flyingLabelCache.comps = index.comps.filter(c => !c.isPadOnly).map(c => ({ x: c.x, y: c.y, ref: c.ref }));
+        flyingLabelCache.comps = index.comps
+            .filter(c => !c.isPadOnly)
+            .map(c => ({ x: c.x, y: c.y, ref: c.ref, side: c.side || 'T' }));
         if (!index.pins.length) return flyingLabelCache;
 
         try {
@@ -898,16 +901,41 @@
             (uni.unifiedPads || []).forEach(pad => {
                 const prim = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
                 const box = padMatchBoxMM(prim);
-                const pin = flyingPinAt(index, pad.x, pad.y, box);
-                if (!pin) return;
                 // 记录焊盘包围盒尺寸（mm）：文字大小要以它为上限，超出就换行/隐藏
                 let bw = box ? (box.x1 - box.x0) : ((prim && prim.w) || 0);
                 let bh = box ? (box.y1 - box.y0) : ((prim && prim.h) || 0);
-                flyingLabelCache.pads.push({
-                    x: pad.x, y: pad.y, num: pin.num, net: pin.net, comp: pin.comp,
-                    bw: isFinite(bw) ? bw : 0, bh: isFinite(bh) ? bh : 0,
-                    isPadOnly: !!pin.isPadOnly
+                const push = (side, pin) => {
+                    flyingLabelCache.pads.push({
+                        x: pad.x, y: pad.y, num: pin.num, net: pin.net, comp: pin.comp,
+                        side: side,
+                        bw: isFinite(bw) ? bw : 0, bh: isFinite(bh) ? bh : 0,
+                        isPadOnly: !!pin.isPadOnly
+                    });
+                };
+                // 只在「焊盘自己有铜的那一面」找飞针引脚。
+                // 只按飞针文件的 T/B 过滤是不够的：焊盘包围盒会框住隔壁元件的引脚
+                // （实测本板 910 条错配里 798 条就是这么来的 —— 顶面焊盘框里套到了底层引脚），
+                // 于是顶层焊盘名称里混进底层焊盘名称。
+                const sides = [];
+                if (pad.top) sides.push('T');
+                if (pad.bottom) sides.push('B');
+                if (!sides.length) sides.push('T', 'B');   // 只有内层铜的盘：退回按飞针面判断
+                let matched = 0;
+                sides.forEach(side => {
+                    const pin = flyingPinAt(index, pad.x, pad.y, box, side);
+                    if (!pin) return;
+                    push(side, pin);
+                    matched++;
                 });
+                // 兜底：铜层与飞针文件对不上（引脚正好在焊盘中心、但记在另一面）时，
+                // 仍保留这条标注，并归到焊盘实际所在的那一面 —— 不能因为数据打架就丢名字。
+                if (!matched && sides.length === 1) {
+                    const pin = flyingPinAt(index, pad.x, pad.y, box, null);
+                    if (pin) {
+                        const px = PadTool.toMil(pad.x), py = PadTool.toMil(pad.y);
+                        if (Math.abs(pin.x - px) < 2.5 && Math.abs(pin.y - py) < 2.5) push(sides[0], pin);
+                    }
+                }
             });
         } catch (e) { console.error('飞针标注构建失败:', e); }
         return flyingLabelCache;
@@ -927,23 +955,26 @@
      * 所有文字都不描边（先前为了压住底层图形加了黑色描边，视觉发糊且不符合要求）。
      */
     function drawFlyingOverlays(dpr) {
-        const showNum = !!flyingOverlayVisible[FLYING_LAYER.PAD_NUMBER];
-        const showNet = !!flyingOverlayVisible[FLYING_LAYER.NET_NAME];
-        const showRef = !!flyingOverlayVisible[FLYING_LAYER.REFDES];
+        // 四个标注层：顶层/底层 × 元件位号/焊盘名称（飞针文件的 LAYER=T/B 决定归属）
+        const showRefT = !!flyingOverlayVisible[FLYING_LAYER.REFDES_TOP];
+        const showPadT = !!flyingOverlayVisible[FLYING_LAYER.PADNAME_TOP];
+        const showRefB = !!flyingOverlayVisible[FLYING_LAYER.REFDES_BOTTOM];
+        const showPadB = !!flyingOverlayVisible[FLYING_LAYER.PADNAME_BOTTOM];
         const showStiff = !!flyingOverlayVisible[FLYING_LAYER.STIFFENER];
-        if (!showNum && !showNet && !showRef && !showStiff) return;
+        if (!showRefT && !showPadT && !showRefB && !showPadB && !showStiff) return;
 
         const labels = ensureFlyingLabels();
-        const wantPad = (showNum || showNet) && labels.pads.length > 0;
-        const wantRef = showRef && labels.comps.length > 0;
+        const wantPad = (showPadT || showPadB) && labels.pads.length > 0;
+        const wantRef = (showRefT || showRefB) && labels.comps.length > 0;
         const wantStiff = showStiff && labels.stiffeners.length > 0;
         if (!wantPad && !wantRef && !wantStiff) return;
 
         const s = viewState.scale || 1;
         const cssW = mainCanvas.width / dpr; const cssH = mainCanvas.height / dpr;
-        const numCol = (layerDefs[FLYING_LAYER.PAD_NUMBER] || {}).color || '#ff5555';
-        const netCol = (layerDefs[FLYING_LAYER.NET_NAME] || {}).color || '#33e0ff';
-        const refCol = (layerDefs[FLYING_LAYER.REFDES] || {}).color || '#ff44dd';
+        const padColT = (layerDefs[FLYING_LAYER.PADNAME_TOP] || {}).color || '#ffffff';
+        const padColB = (layerDefs[FLYING_LAYER.PADNAME_BOTTOM] || {}).color || '#ffe0b3';
+        const refColT = (layerDefs[FLYING_LAYER.REFDES_TOP] || {}).color || '#00ffff';
+        const refColB = (layerDefs[FLYING_LAYER.REFDES_BOTTOM] || {}).color || '#ff6688';
         const stiffCol = (layerDefs[FLYING_LAYER.STIFFENER] || {}).color || '#193366';
 
         ctx.save();
@@ -971,8 +1002,13 @@
             return Math.min(probe * maxW / w, maxH, cap);
         };
 
-        if (wantPad) {
+        // ---- 焊盘名称（引脚编号 + 网络名）：按面各画一遍 ----
+        // 两面同时勾选时，通孔焊盘在飞针文件里 T/B 都有一条记录、内容完全相同，
+        // 这里用「文字+屏幕坐标」去重，避免同一位置叠两层字（看着发粗）。
+        const drawnPadKeys = new Set();
+        const drawPadNames = (side, col) => {
             labels.pads.forEach(p => {
+                if ((p.side || 'T') !== side) return;
                 const pt = project(p.x, p.y, 0);
                 if (!pt) return;
                 // 焊盘包围盒（屏幕像素），左右各留 1px 边距，避免文字压到焊盘边缘外
@@ -980,16 +1016,20 @@
                 const boxH = (p.bh || 0) * s - 2;
                 if (boxW <= 1 || boxH <= 1) return;   // 焊盘太小，连编号都放不下 → 隐藏
                 // 占用位焊盘的占位名（PAD / PAD1…）不作为引脚编号显示
-                const numTxt = (showNum && p.num && !p.isPadOnly && !isFlyingPadPlaceholder(p.num)) ? String(p.num) : '';
-                const netTxt = (showNet && p.net) ? String(p.net) : '';
+                const numTxt = (p.num && !p.isPadOnly && !isFlyingPadPlaceholder(p.num)) ? String(p.num) : '';
+                const netTxt = p.net ? String(p.net) : '';
+                if (!numTxt && !netTxt) return;
+                const key = numTxt + '|' + netTxt + '|' + Math.round(pt.x) + '|' + Math.round(pt.y);
+                if (drawnPadKeys.has(key)) return;
                 // ① 两行：编号在上、网络名在下，各占半高
                 if (numTxt && netTxt) {
                     const fNum = fitFont(numTxt, boxW, boxH / 2);
                     const fNet = fitFont(netTxt, boxW, boxH / 2);
                     if (fNum >= FLYING_LABEL_MIN_FONT && fNet >= FLYING_LABEL_MIN_FONT) {
                         const half = boxH / 4;
-                        setFont(fNum); ctx.fillStyle = numCol; ctx.fillText(numTxt, pt.x, pt.y - half);
-                        setFont(fNet); ctx.fillStyle = netCol; ctx.fillText(netTxt, pt.x, pt.y + half);
+                        setFont(fNum); ctx.fillStyle = col; ctx.fillText(numTxt, pt.x, pt.y - half);
+                        setFont(fNet); ctx.fillStyle = col; ctx.fillText(netTxt, pt.x, pt.y + half);
+                        drawnPadKeys.add(key);
                         return;
                     }
                 }
@@ -997,19 +1037,24 @@
                 if (numTxt) {
                     const f = fitFont(numTxt, boxW, boxH);
                     if (f >= FLYING_LABEL_MIN_FONT) {
-                        setFont(f); ctx.fillStyle = numCol; ctx.fillText(numTxt, pt.x, pt.y);
+                        setFont(f); ctx.fillStyle = col; ctx.fillText(numTxt, pt.x, pt.y);
+                        drawnPadKeys.add(key);
                         return;
                     }
                 }
                 if (netTxt) {
                     const f = fitFont(netTxt, boxW, boxH);
                     if (f >= FLYING_LABEL_MIN_FONT) {
-                        setFont(f); ctx.fillStyle = netCol; ctx.fillText(netTxt, pt.x, pt.y);
+                        setFont(f); ctx.fillStyle = col; ctx.fillText(netTxt, pt.x, pt.y);
+                        drawnPadKeys.add(key);
                     }
                 }
             });
-        }
+        };
+        if (wantPad && showPadT) drawPadNames('T', padColT);
+        if (wantPad && showPadB) drawPadNames('B', padColB);
 
+        // ---- 元件位号：按面各画一遍（位号只属于一个面，不会重叠）----
         if (wantRef) {
             // 位号字高：标称 16 mil（随缩放），但**折算到板面不得超过 20 mil**。
             // 旧写法 `max(6, 16mil*s)` 的 6px 下限会把小缩放时的等效字高顶到上百 mil
@@ -1021,12 +1066,17 @@
             const capPx = FLYING_REFDES_CANVAS_MAX_MIL * 0.0254 * s2;
             const fpx = Math.min(Math.max(6, nominalPx), capPx);
             if (fpx >= FLYING_LABEL_MIN_FONT) {
-                setFont(fpx);
-                ctx.fillStyle = refCol;
-                labels.comps.forEach(c => {
-                    const pt = project(c.x, c.y, 60);
-                    if (pt) ctx.fillText(String(c.ref), pt.x, pt.y);
-                });
+                const drawRefdes = (side, col) => {
+                    setFont(fpx);
+                    ctx.fillStyle = col;
+                    labels.comps.forEach(c => {
+                        if ((c.side || 'T') !== side) return;
+                        const pt = project(c.x, c.y, 60);
+                        if (pt) ctx.fillText(String(c.ref), pt.x, pt.y);
+                    });
+                };
+                if (showRefT) drawRefdes('T', refColT);
+                if (showRefB) drawRefdes('B', refColB);
             }
         }
 
@@ -1435,6 +1485,25 @@
                 hasChanged = true;
             }
         });
+
+        // 1.6 组级联动：勾/取消「顶面 / 底面」整组时，同面的两个标注层
+        //     （顶层元件位号 / 顶层焊盘名称、底层…）跟着显示/隐藏。
+        //     这两层挂在「自定义/特殊」组下，上面的 getGroupId 过滤拿不到，所以单独处理。
+        const linkedIds = (typeof FLYING_GROUP_LINK !== 'undefined' && FLYING_GROUP_LINK[gid]) || null;
+        if (linkedIds) {
+            linkedIds.forEach(id => {
+                if (!!flyingOverlayVisible[id] !== !!isChecked) {
+                    flyingOverlayVisible[id] = !!isChecked;
+                    hasChanged = true;
+                }
+                // 这两行不在当前组的 DOM 里，按 data-layer-id 单独同步复选框
+                const rowCb = document.querySelector(
+                    `.layer-row[data-layer-id="${id}"] .col-vis input[type="checkbox"]`);
+                if (rowCb) rowCb.checked = !!isChecked;
+            });
+            // 它们的宿主组（自定义/特殊）复选框状态要跟着重算
+            updateGroupCheckboxState(getGroupId(linkedIds[0]));
+        }
 
         // 2. 更新 DOM：同步该组下所有子项复选框（含标注虚拟层；它们没有 .file-cb 类）
         document.querySelectorAll(`.layer-row[data-group="${gid}"] .col-vis input[type="checkbox"]`)

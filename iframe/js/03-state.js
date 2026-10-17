@@ -24,19 +24,22 @@
     let isOnPcbCanvas = null;
     let pcbContextReason = '';
 
-    // --- 飞针标注层（引脚编号 / 网络名称 / 元件位号）---------------------------------
-    // 数据源：压缩包内的 FlyingProbeTesting.json。这些层不对应 Gerber 文件，
-    // 只在画布上做文字标注；「元件位号」勾选后还会参与导出（见 05-pad-tool.js）。
-    // 三层默认全部勾选显示（导入的 Gerber 若带飞针文件即刻可见）。
+    // --- 飞针标注层（顶层/底层 × 元件位号/焊盘名称）---------------------------------
+    // 数据源：压缩包内的 FlyingProbeTesting.json（LAYER 字段 T/B 决定属于哪一面）。
+    // 这些层不对应 Gerber 文件，只在画布上做文字标注；「元件位号」两层勾选后还会参与导出
+    // （见 05-pad-tool.js / 08-export.js）。
+    // 四层默认全部勾选显示（导入的 Gerber 若带飞针文件即刻可见）。
     const flyingOverlayVisible = {
-        [FLYING_LAYER.PAD_NUMBER]: true,
-        [FLYING_LAYER.NET_NAME]: true,
-        [FLYING_LAYER.REFDES]: true,
+        [FLYING_LAYER.REFDES_TOP]: true,
+        [FLYING_LAYER.PADNAME_TOP]: true,
+        [FLYING_LAYER.REFDES_BOTTOM]: true,
+        [FLYING_LAYER.PADNAME_BOTTOM]: true,
         // FPC 补强「材料 + 厚度」标注，同样默认显示
         [FLYING_LAYER.STIFFENER]: true
     };
-    // 标注数据缓存：{ pads:[{x,y,num,net}], comps:[{x,y,ref}] }。导入/重载时置空重建，
-    // 避免在 drawCanvas（跟随平移缩放高频调用）里重复做 extractRawData + consolidate。
+    // 标注数据缓存：{ pads:[{x,y,num,net,comp,side}], comps:[{x,y,ref,side}] }。
+    // 导入/重载时置空重建，避免在 drawCanvas（跟随平移缩放高频调用）里重复做
+    // extractRawData + consolidate。
     let flyingLabelCache = null;
     // --- 5. 画布渲染 (优化版：HiDPI + RAF 节流) ---
     const mainCanvas = document.getElementById('main-canvas');

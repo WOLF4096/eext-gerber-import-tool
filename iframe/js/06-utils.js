@@ -645,6 +645,8 @@
         const lu = String(fp.lengthUnit || 'mil').toLowerCase();
         const kPin = (lu === 'mm' || lu === 'metric') ? (1 / 0.0254) : ((lu === 'inch' || lu === 'in') ? 1000 : 1);
         const kComp = (lu === 'mm' || lu === 'metric') ? 1 : ((lu === 'inch' || lu === 'in') ? 25.4 : 0.0254);
+        // LAYER 字段 → 面：'B' / 'bottom' → 'B'，其余（'T' / 空）→ 'T'
+        const normSide = (v) => (/^b/i.test(String(v || '').trim()) ? 'B' : 'T');
         try {
             const pins = fp.pins;
             if (pins && Array.isArray(pins.rows) && Array.isArray(pins.fields)) {
@@ -653,6 +655,7 @@
                 const iX = f.indexOf('PIN_X');
                 const iY = f.indexOf('PIN_Y');
                 const iNet = f.indexOf('NET_NAME');
+                const iLayer = f.indexOf('LAYER');
                 if (iX >= 0 && iY >= 0) {
                     pins.rows.forEach(row => {
                         const rx = parseFloat(row[iX]);
@@ -669,6 +672,7 @@
                             comp: comp,
                             name: full,
                             net: iNet >= 0 ? String(row[iNet] || '') : '',
+                            side: iLayer >= 0 ? normSide(row[iLayer]) : 'T',
                             // 孤立焊盘（PAD / PAD1 / PAD23…）：名字只是占位，不当作引脚号显示
                             isPadOnly: isFlyingPadPlaceholder(comp) || isFlyingPadPlaceholder(num)
                         });
@@ -681,6 +685,7 @@
                 const iName = f.indexOf('COMPONENT_NAME');
                 const iX = f.indexOf('X_COORDINATE');
                 const iY = f.indexOf('Y_COORDINATE');
+                const iLayer = f.indexOf('LAYER');
                 if (iName >= 0 && iX >= 0 && iY >= 0) {
                     comps.rows.forEach(row => {
                         const rx = parseFloat(row[iX]);
@@ -689,6 +694,7 @@
                         if (!isFinite(rx) || !isFinite(ry) || !ref) return;
                         out.comps.push({
                             x: rx * kComp, y: ry * kComp, ref: ref,
+                            side: iLayer >= 0 ? normSide(row[iLayer]) : 'T',
                             isPadOnly: isFlyingPadPlaceholder(ref)
                         });
                     });
@@ -723,24 +729,76 @@
     }
 
     /**
+     * 引脚栅格索引（懒建）：按 40 mil（≈1mm）分格。
+     * 飞针匹配原来是「每个焊盘线性扫全部引脚」，按面拆成两层后要扫两遍
+     * （本板 7339 焊盘 × 7315 引脚 × 2 ≈ 1 亿次），实测多花 1.1s。
+     * 这里建一次格子（O(n)），匹配时只遍历覆盖到的那几格。
+     */
+    function ensurePinGrid(index) {
+        if (index._grid) return index._grid;
+        const CELL = 40;                       // mil
+        const map = new Map();
+        const cellOf = (v) => Math.floor(v / CELL);
+        index.pins.forEach((pt, i) => {
+            if (!isFinite(pt.x) || !isFinite(pt.y)) return;
+            const k = cellOf(pt.x) * 131072 + cellOf(pt.y);
+            let arr = map.get(k);
+            if (!arr) map.set(k, arr = []);
+            arr.push(i);
+        });
+        index._grid = { cell: CELL, map: map, cellOf: cellOf };
+        return index._grid;
+    }
+
+    /** 遍历矩形范围内的所有引脚（像素/世界单位都是 mil，闭区间向外取整到格） */
+    function forEachPinInRect(index, grid, x0, x1, y0, y1, cb) {
+        const c0 = grid.cellOf(x0), c1 = grid.cellOf(x1);
+        const r0 = grid.cellOf(y0), r1 = grid.cellOf(y1);
+        // 极端大框（整板级焊盘）退化成线性扫描，避免遍历上万格
+        if ((c1 - c0 + 1) * (r1 - r0 + 1) > 40000) {
+            for (let i = 0; i < index.pins.length; i++) cb(index.pins[i]);
+            return;
+        }
+        for (let cx = c0; cx <= c1; cx++) {
+            for (let cy = r0; cy <= r1; cy++) {
+                const arr = grid.map.get(cx * 131072 + cy);
+                if (!arr) continue;
+                for (let t = 0; t < arr.length; t++) cb(index.pins[arr[t]]);
+            }
+        }
+    }
+
+    /**
      * 按坐标给焊盘匹配飞针引脚。
      * @param index  buildFlyingPinIndex() 的返回值
      * @param xMM/yMM 焊盘中心（mm）
      * @param boxMM  焊盘包围盒（mm，可空）
+     * @param side   只匹配某一面（'T' / 'B'，可空 = 两面都匹配）
      * @returns 命中的引脚对象，或 null
      */
-    function flyingPinAt(index, xMM, yMM, boxMM) {
+    function flyingPinAt(index, xMM, yMM, boxMM, side) {
         if (!index || !index.pins || !index.pins.length) return null;
+        const sideOk = (pt) => (!side || !pt.side || pt.side === side);
         const px = PadTool.toMil(xMM), py = PadTool.toMil(yMM);
         const tol = 2.5;   // mil，与既有专业版图元生成保持一致
-        const near = index.pins.find(pt => Math.abs(pt.x - px) < tol && Math.abs(pt.y - py) < tol);
+        const grid = ensurePinGrid(index);
+
+        // ① 中心 2.5 mil 内（同一格/相邻格，数量极少）
+        let near = null;
+        forEachPinInRect(index, grid, px - tol, px + tol, py - tol, py + tol, (pt) => {
+            if (near) return;
+            if (sideOk(pt) && Math.abs(pt.x - px) < tol && Math.abs(pt.y - py) < tol) near = pt;
+        });
         if (near) return near;
+
+        // ② 落在焊盘包围盒内、离中心最近的引脚
         if (boxMM) {
-            const x0 = PadTool.toMil(boxMM.x0), x1 = PadTool.toMil(boxMM.x1);
-            const y0 = PadTool.toMil(boxMM.y0), y1 = PadTool.toMil(boxMM.y1);
+            const x0 = PadTool.toMil(boxMM.x0) - tol, x1 = PadTool.toMil(boxMM.x1) + tol;
+            const y0 = PadTool.toMil(boxMM.y0) - tol, y1 = PadTool.toMil(boxMM.y1) + tol;
             let best = null;
-            index.pins.forEach(pt => {
-                if (pt.x < x0 - tol || pt.x > x1 + tol || pt.y < y0 - tol || pt.y > y1 + tol) return;
+            forEachPinInRect(index, grid, x0, x1, y0, y1, (pt) => {
+                if (!sideOk(pt)) return;
+                if (pt.x < x0 || pt.x > x1 || pt.y < y0 || pt.y > y1) return;
                 const dd = Math.hypot(pt.x - px, pt.y - py);
                 if (!best || dd < best.d) best = { d: dd, pin: pt };
             });

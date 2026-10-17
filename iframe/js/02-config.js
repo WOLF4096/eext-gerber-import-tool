@@ -88,23 +88,51 @@
         ["LAYER",500,"DRILL_PTH","PTH Through",3,"#222222",1,"#666666",0.5],          // 金属化通孔
         ["LAYER",501,"DRILL_NPTH","NPTH Through",3,"#222222",1,"#7f4c00",0.5],        // 非金属化通孔
         ["LAYER",502,"DRILL_BLIND","Blind/Buried Via",3,"#cccccc",0.5,"#007f7f",0.5],  // 埋盲孔
-        // --- [新增] 飞针标注层（2001~2003）：数据来自 FlyingProbeTesting.json，**仅用于画布标注显示**，
-        //     不对应任何 Gerber 文件、也不参与导入。前两个只显示，元件位号勾选后才会导出。
-        ["LAYER",2001, "PAD_NUMBER", "引脚编号", 3, "#ffffff", 1, "#7f2a2a", 0.5],
-        ["LAYER",2002, "NET_NAME",   "网络名称", 3, "#ffffff", 1, "#196f7f", 0.5],
-        ["LAYER",2003, "REFDES",     "元件位号", 3, "#00ffff", 1, "#7f226f", 0.5],
-        // --- [新增] FPC 补强标注层（2004）：显示「材料简称 + 厚度」，数据来自补强层
+        // --- [新增] 飞针标注层（2001~2004）：数据来自 FlyingProbeTesting.json，**仅用于画布标注显示**，
+        //     不对应任何 Gerber 文件、也不参与导入。按飞针文件的 LAYER 字段（T/B）拆成「顶面/底面」，
+        //     各自可以单独显隐：顶层元件位号 / 顶层焊盘名称（引脚编号 + 网络名）/
+        //     底层元件位号 / 底层焊盘名称。位号层勾选后会随导出写入；
+        //     焊盘名称层只显示、不导出。
+        ["LAYER",2001, "REFDES_TOP",      "顶层元件位号", 3, "#00ffff", 1, "#7f226f", 0.5],
+        ["LAYER",2002, "PADNAME_TOP",     "顶层焊盘名称", 3, "#ffffff", 1, "#7f2a2a", 0.5],
+        ["LAYER",2003, "REFDES_BOTTOM",   "底层元件位号", 3, "#ff6688", 1, "#7f3344", 0.5],
+        ["LAYER",2004, "PADNAME_BOTTOM",  "底层焊盘名称", 3, "#ffe0b3", 1, "#7f5033", 0.5],
+        // --- FPC 补强标注层（2005）：显示「材料简称 + 厚度」，数据来自补强层
         //     Gerber 的文件名（材料/厚度）。同样只做画布标注，不参与导入导出。
-        ["LAYER",2004, "STIFFENER_LABEL", "补强名称", 3, "#193366", 1, "#0d1f3d", 0.5]
+        ["LAYER",2005, "STIFFENER_LABEL", "补强名称", 3, "#193366", 1, "#0d1f3d", 0.5]
     ];
 
     // 飞针标注层 id 常量（与上面的 rawLayerData 一一对应）
-    const FLYING_LAYER = { PAD_NUMBER: 2001, NET_NAME: 2002, REFDES: 2003, STIFFENER: 2004 };
-    // 依赖飞针文件的三层（没有 FlyingProbeTesting.json 时不显示）
-    const FLYING_PIN_LAYER_IDS = [FLYING_LAYER.PAD_NUMBER, FLYING_LAYER.NET_NAME, FLYING_LAYER.REFDES];
+    const FLYING_LAYER = {
+        REFDES_TOP: 2001,     // 顶层元件位号
+        PADNAME_TOP: 2002,    // 顶层焊盘名称（引脚编号 + 网络名）
+        REFDES_BOTTOM: 2003,  // 底层元件位号
+        PADNAME_BOTTOM: 2004, // 底层焊盘名称
+        STIFFENER: 2005       // FPC 补强名称（与飞针无关）
+    };
+    // 依赖飞针文件的四层（没有 FlyingProbeTesting.json 时不显示）
+    const FLYING_PIN_LAYER_IDS = [
+        FLYING_LAYER.REFDES_TOP, FLYING_LAYER.PADNAME_TOP,
+        FLYING_LAYER.REFDES_BOTTOM, FLYING_LAYER.PADNAME_BOTTOM
+    ];
     // 全部标注层（含补强）：用于 isFlyingLayer 判定与图层行渲染
     const FLYING_LAYER_IDS = FLYING_PIN_LAYER_IDS.concat([FLYING_LAYER.STIFFENER]);
     const isFlyingLayer = (id) => FLYING_LAYER_IDS.indexOf(id) >= 0;
+    // 「面 → 该面的两个标注层」
+    const FLYING_SIDE_LAYER = {
+        T: { refdes: FLYING_LAYER.REFDES_TOP, padName: FLYING_LAYER.PADNAME_TOP },
+        B: { refdes: FLYING_LAYER.REFDES_BOTTOM, padName: FLYING_LAYER.PADNAME_BOTTOM }
+    };
+    // 图层组复选框联动：勾/取消「顶面 / 底面」整组时，同面的两个标注层跟着显示/隐藏
+    const FLYING_GROUP_LINK = {
+        TOP: [FLYING_LAYER.REFDES_TOP, FLYING_LAYER.PADNAME_TOP],
+        BOTTOM: [FLYING_LAYER.REFDES_BOTTOM, FLYING_LAYER.PADNAME_BOTTOM]
+    };
+    // 某一面的位号图层是否被勾选（导出时按面过滤）
+    const isRefdesLayerOn = (side) => {
+        const m = FLYING_SIDE_LAYER[side];
+        return !!(m && typeof flyingOverlayVisible !== 'undefined' && flyingOverlayVisible[m.refdes]);
+    };
 
     // FPC 补强材料 → 画布显示名（画布空间有限，用简称；厚度另起一行）。
     // 未列出的材料直接显示原名（例如 pst_/psb_ 解析出的 TESA 型号以外的值）。

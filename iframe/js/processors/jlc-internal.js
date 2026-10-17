@@ -13,7 +13,7 @@
 
     registerProcessor({
         id: 'easyedapro',
-        label: '嘉立创EDA专业版 V2.2 / V3 专用',
+        label: '嘉立创 EDA 专业版 V2.2 ~ V4 专用',
         group: 'internal',
         ready: true,
 

@@ -1945,7 +1945,8 @@
         //       13 ggeID / 14 字体名 / 15 0 / 16 pinpart
         // 对齐用 L（左 + 基线）而不是让 EDA 自己居中：坐标由我们自己算准，位置才可控。
         const wantRefdesText = (typeof flyingOverlayVisible !== 'undefined')
-            && flyingOverlayVisible[FLYING_LAYER.REFDES]
+            && ((typeof isRefdesLayerOn === 'function' && (isRefdesLayerOn('T') || isRefdesLayerOn('B')))
+                || flyingOverlayVisible[FLYING_LAYER.REFDES_TOP] || flyingOverlayVisible[FLYING_LAYER.REFDES_BOTTOM])
             && typeof flyingProbeData !== 'undefined' && flyingProbeData
             && flyingProbeData.components && flyingProbeData.components.rows;
         if (wantRefdesText) {
@@ -1964,12 +1965,16 @@
                 const ciName = cFields.indexOf('COMPONENT_NAME');
                 const ciX = cFields.indexOf('X_COORDINATE');
                 const ciY = cFields.indexOf('Y_COORDINATE');
+                const ciLayer = cFields.indexOf('LAYER');
                 let nText = 0, nMiss = 0;
                 const missSet = new Set();
                 if (ciName >= 0 && ciX >= 0 && ciY >= 0) {
                     flyingProbeData.components.rows.forEach(row => {
                         const name = row[ciName];
                         if (!name || (typeof isFlyingPadPlaceholder === 'function' && isFlyingPadPlaceholder(name))) return;
+                        // 位号按面分开导出：该面的位号图层没勾选就跳过
+                        const isBottomRow = ciLayer >= 0 ? /^b/i.test(String(row[ciLayer] || '')) : false;
+                        if (typeof isRefdesLayerOn === 'function' && !isRefdesLayerOn(isBottomRow ? 'B' : 'T')) return;
                         const mmX = parseFloat(row[ciX]), mmY = parseFloat(row[ciY]);
                         if (!isFinite(mmX) || !isFinite(mmY)) return;
                         // 先量宽度（锚点 0,0），再按「水平居中 + 垂直居中」算基线位置

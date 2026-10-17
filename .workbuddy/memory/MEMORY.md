@@ -86,16 +86,23 @@ PCB「字高」= cap height：`em = capMil / (capHeight/upem)`。缺字跳过并
   与 V3.9.10 改动无关，待按「轮廓凹口」重做判定。
 
 ## 9. 飞针标注 / 位号 / 补强标注
-- 虚拟层 2001 引脚编号 / 2002 网络名 / 2003 位号 / 2004 补强名；并入「自定义/特殊」组、默认全勾选；
-  位号色 `#00ffff`，其余 `#ffffff`。
+- 虚拟层（V3.9.16 起按面拆分，均并入「自定义/特殊」组、默认全勾选）：
+  2001 顶层元件位号 / 2002 顶层焊盘名称（编号+网络）/ 2003 底层元件位号 / 2004 底层焊盘名称 / **2005 补强名称**。
+  面来自飞针 JSON 的 `LAYER`（T/B），`buildFlyingPinIndex` 的 pin/comp 带 `side`（缺省 T）；
+  `flyingPinAt(index,x,y,box,side)` 按面过滤，内部用 `ensurePinGrid`（40mil 栅格）避免双扫描 O(n²)；
+  715 个通孔坐标 T/B 各一条 → 绘制时按「文字+屏幕坐标」去重。
+  ⚠️ 匹配必须**先按焊盘铜层限定面**（`pad.top`→只找 T、`pad.bottom`→只找 B；内层盘才退回按飞针面），
+  否则框内匹配会框到隔壁元件引脚，把 B 面名字画到顶层（本板曾 910 条错配，798 条来自框内误配）。
+  组联动 `FLYING_GROUP_LINK`（TOP→2001/2002、BOTTOM→2003/2004）写在 `toggleGroup()` 里。
 - 匹配统一在 06-utils（`buildFlyingPinIndex` / `padMatchBoxMM` / `flyingPinAt`）：① 中心 2.5mil 内
-  ② 否则取落在焊盘包围盒内离中心最近的引脚。⚠️ `flyingPinAt` 内部是 `index.pins.find()` **线性扫**，
-  焊盘×引脚数会 O(n²)，大板（数万盘）是潜在热点。
+  ② 否则取落在焊盘包围盒内离中心最近的引脚。V3.9.16 起改用 `ensurePinGrid`（40mil 栅格）+
+  `forEachPinInRect`，不再是 `index.pins.find()` 线性扫（按面双扫描曾让本板 +1.1s，加索引后反而更快）。
 - 字高（mil）：导出 `FLYING_REFDES_HEIGHT_MIL=30`（cap height）；画布 `_CANVAS_MIL=16`，
   **画布上限 `_CANVAS_MAX_MIL=20`**（V3.9.15：字体 px = `min(max(6, 16mil*s), 20mil*s)`，
   低于 `FLYING_LABEL_MIN_FONT`(4px) 不画；旧的 6px 下限会让缩小后等效字高冲到 157mil）；
   补强 `FLYING_STIFFENER_MAX_FONT=24`；引脚 `FLYING_LABEL_MAX_FONT=12`。
-- 位号图层按通道区分：专业版装配层（顶 9 / 底 10 + mirror）、标准版文档层 12。
+- 位号图层按通道区分：专业版装配层（顶 9 / 底 10 + mirror）、标准版文档层 12；
+  导出按面过滤用 `isRefdesLayerOn(side)`（只导出被勾选那一面的位号）。
   引脚编号/网络名仅显示不导出。占位名（PAD / PAD1 / PAD23）跳过（`isFlyingPadPlaceholder`）。
 - `ensureFlyingLabels()` 结果缓存在 `flyingLabelCache`（导入/重载时置空），内部会做一次
   `extractRawData + consolidate` —— **首帧的主要成本来源之一**（见 §13）。

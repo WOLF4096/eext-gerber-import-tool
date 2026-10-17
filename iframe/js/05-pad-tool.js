@@ -1921,7 +1921,9 @@
             // ... (D. Text 生成：元件位号) ...
             // 「元件位号」是新增的标注层：**勾选后**才用飞针文件的元件表把位号写成装配层文字，
             // 未勾选时只做画布标注、不产生任何图元（该层的显隐/勾选状态见 03-state.js）。
-            if (config && config.tryNetlist && flyingOverlayVisible[FLYING_LAYER.REFDES]
+            // 位号现在按面拆成两个图层（顶层 / 底层元件位号），各自只管自己那一面：
+            // 任一层勾选就生成，但每一行还要按飞针文件的 LAYER 再过滤一次。
+            if (config && config.tryNetlist && (isRefdesLayerOn('T') || isRefdesLayerOn('B'))
                 && typeof flyingProbeData !== 'undefined' && flyingProbeData) {
                 try {
                     const rows = flyingProbeData.components.rows;
@@ -1950,7 +1952,9 @@
                             //   顶层位号 → 顶层装配(9)，底层位号 → 底层装配(10) + 镜像。
                             // 不再统一写文档层（文档层不分正反面，装配图/钢网图按面看时看不到）。
                             // 标准版走的是另一条通道（08-export.js 的 TEXT），仍是文档层。
-                            const isBottom = (layerStr === "B");
+                            const isBottom = /^b/i.test(String(layerStr || ''));
+                            // 该面的位号图层没勾选 → 这一行不导出
+                            if (!isRefdesLayerOn(isBottom ? 'B' : 'T')) return;
                             const layerId = isBottom
                                 ? ((typeof FLYING_REFDES_LAYER_BOTTOM === 'number') ? FLYING_REFDES_LAYER_BOTTOM : 10)
                                 : ((typeof FLYING_REFDES_LAYER_TOP === 'number') ? FLYING_REFDES_LAYER_TOP : 9);

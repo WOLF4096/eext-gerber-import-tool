@@ -245,8 +245,7 @@
 					</button>
 				</div>
 				<!-- 不在 PCB 画布时显示（由 03-state.js applyPcbContextUI 控制显隐） -->
-				<div id="pcb-context-hint"
-					style="display:none; margin-top:8px; font-size:11px; line-height:1.5; color:#ff9800;"></div>
+				<div id="pcb-context-hint" style="display:none; font-size:11px; line-height:1.5; color:#ff9800;"></div>
 			</div>
 
 			<div class="section-title">导出嘉立创 EDA</div>
@@ -333,16 +332,19 @@
 				<ol>
 					<li><strong>只能在空白 PCB 文档里导入。</strong><strong style="color: #ff5555;">不要在已有设计的
 							PCB 文档中执行导入</strong>——导入会直接写入当前文档，可能覆盖原有图元、破坏文档结构，并且
-						<strong>无法撤销</strong>。</li>
+						<strong>无法撤销</strong>。
+					</li>
 					<li><strong>先备份。</strong>请在操作前自行备份设计文件；重要项目建议另存一份再试。</li>
 					<li><strong>结果需人工核对。</strong>转换结果可能存在图形缺失、尺寸或层属性偏差等问题，
-						<strong>严禁未经复核直接用于生产制造</strong>。</li>
+						<strong>严禁未经复核直接用于生产制造</strong>。
+					</li>
 				</ol>
 
 				<h3>二、数据安全</h3>
 				<ol>
 					<li><strong>纯本地运行。</strong>文件解析、渲染与导出全部在你的浏览器里完成，
-						<strong>不上传、不收集任何设计文件或个人数据</strong>。</li>
+						<strong>不上传、不收集任何设计文件或个人数据</strong>。
+					</li>
 					<li><strong>数据只留在你自己的设备与工程里。</strong>本工具没有服务器，也不会把文件发送给开发者。</li>
 				</ol>
 
