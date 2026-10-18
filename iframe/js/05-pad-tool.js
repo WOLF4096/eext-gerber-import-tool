@@ -2227,7 +2227,9 @@
                             "groupId": 0,
                             "netName": netNameOf(f),
                             "layerId": f.layerId,
-                            "width": 0.2,           // 线宽 (保持与 V2 逻辑一致，或者设为 0)
+                            // ⚠️ 线宽必须 0：EDA 会按线宽把实心填充整体内缩（写 0.2 时
+                            //    相邻填充各缩一半 → 缝宽再 +0.2 mil，铜皮连不上）。
+                            "width": 0,
                             "fillStyle": "SOLID",   // [新增] 填充模式：SOLID (实心填充)
                             "path": rings,          // 首环为外框，其余为挖空内环
                             "locked": false,
@@ -2240,8 +2242,9 @@
                         output.push(JSON.stringify(obj) + "||" + JSON.stringify(content));
                     } else {
                         // --- V2 格式处理 ---
-                        // ["FILL", id, group, net, layer, type(0.2?? width?), type(0=solid), path, rot]
-                        const arr = ["FILL", ids.id, 0, netNameOf(f), f.layerId, 0.2, 0, rings, 0];
+                        // ["FILL", id, group, net, layer, width, type(0=solid), path, rot]
+                        // width 必须 0（同上：写 0.2 会让填充内缩，相邻块之间又多一条 0.2 mil 缝）
+                        const arr = ["FILL", ids.id, 0, netNameOf(f), f.layerId, 0, 0, rings, 0];
                         output.push(JSON.stringify(arr));
                     }
                 });

@@ -1039,8 +1039,18 @@
 
     const FILL_ARC_TOL = 0.01;        // 圆弧离散化弦高容差 (mm)
     const FILL_SCALE = 1e5;           // mm → 整数（分辨率 0.00001 mm）
-    const FILL_SLIT_HALF = 0.005;     // 开缝半宽 (mm)，即缝宽 0.01mm
+    // 开缝半宽 (mm)：单环填充表达不了「孔洞」，只能从每个孔向区域外切一条缝（keyhole）。
+    //   · 旧值 0.005 → 缝宽 0.01mm（0.39 mil）：相邻填充之间肉眼可见一条缝，铜皮看着不连通；
+    //   · 现在 0.0001 → 缝宽 0.0002mm（0.008 mil）：远小于制板/DRC 最小间距（0.075mm），
+    //     画布与 EDA 里都看不出来，但仍保证孔洞是「开口」而不是「内部洞」。
+    // ⚠️ 不要试图用「拆完再向外膨胀」来补缝：膨胀会把缝两侧合拢，孔洞随即变成
+    //    多边形内部的洞（单环 FILL 表达不了）→ 被当成铜填死（实测 227 个孔 340mm² 全丢）。
+    //     要么保留一条极窄的缝，要么换能带孔洞的图元（当前两套导出格式都不支持）。
+    const FILL_SLIT_HALF = 0.0001;
     const FILL_AREA_EPS = 1e-9;       // 环面积有效阈值 (mm²)
+    // 拆分出来的「填充块」最小面积 (mm²)：0.001mm² = 0.03mm×0.03mm，比这更小的一定是
+    // 开缝/布尔运算留下的碎屑（实测层 15 会剩下 0 面积和 0.03mm² 的两片），直接丢掉。
+    const FILL_PIECE_MIN_AREA = 1e-3;
 
     /** 环的有向面积（>0 = 逆时针），结果缓存在环对象上（reverse 时必须调 fillReverseRing 作废） */
     function fillRingArea(ring) {
@@ -1274,7 +1284,8 @@
      * 从区域里减掉它之后，这个孔洞就与外边界连通 → 不再是闭合孔洞（变成开口凹槽）。
      * 代价是割掉一条 0.01mm 宽的铜 —— 这就是 keyhole 开缝的标准做法。
      */
-    function fillHoleSlitRect(holePath, beyondX) {
+    /** 取孔洞内部的一个点（在几条水平线上找最宽内部区间，取其中点） */
+    function fillHoleInteriorPoint(holePath) {
         const n = holePath.length;
         if (n < 3) return null;
         let y0 = Infinity; let y1 = -Infinity;
@@ -1283,9 +1294,7 @@
             if (holePath[i].Y > y1) y1 = holePath[i].Y;
         }
         if (!(y1 - y0 >= 2)) return null;
-        // 在几条水平线上找孔洞内部区间，取最宽一段的中点作为缝的起点
         const cands = [0.5, 0.37, 0.63, 0.22, 0.78];
-        const half = Math.max(1, Math.round(FILL_SLIT_HALF * FILL_SCALE));
         for (let k = 0; k < cands.length; k++) {
             const y = Math.round(y0 + (y1 - y0) * cands[k]);
             const xs = [];
@@ -1302,15 +1311,65 @@
                 if (bestA === null || xs[i + 1] - xs[i] > bestB - bestA) { bestA = xs[i]; bestB = xs[i + 1]; }
             }
             if (bestA === null) continue;
-            const xIn = Math.round((bestA + bestB) / 2);
-            return [
-                { X: xIn, Y: y - half },
-                { X: beyondX, Y: y - half },
-                { X: beyondX, Y: y + half },
-                { X: xIn, Y: y + half }
-            ];
+            return { X: Math.round((bestA + bestB) / 2), Y: y };
         }
         return null;
+    }
+
+    /** 孔洞 → 区域外的一条水平开缝（单孔时的兜底做法） */
+    function fillHoleSlitRect(holePath, beyondX) {
+        const pt = fillHoleInteriorPoint(holePath);
+        if (!pt) return null;
+        const half = Math.max(1, Math.round(FILL_SLIT_HALF * FILL_SCALE));
+        return [
+            { X: pt.X, Y: pt.Y - half },
+            { X: beyondX, Y: pt.Y - half },
+            { X: beyondX, Y: pt.Y + half },
+            { X: pt.X, Y: pt.Y + half }
+        ];
+    }
+
+    /**
+     * 出口缝：从孔内点沿「离区域边界最近的方向」切出去。
+     * 旧做法一律水平切到区域最右边（beyondX），长缝经常横穿整块铜、把它切成两半；
+     * 改成朝最近边界切，切口最短，铜基本保持一整片。
+     */
+    function fillExitSlit(holePath, outerRing) {
+        const pt = fillHoleInteriorPoint(holePath);
+        if (!pt || !outerRing || outerRing.length < 3) return null;
+        let bx = 0, by = 0, bestD = Infinity;
+        for (let i = 0; i < outerRing.length; i++) {
+            const q = outerRing[i]; const w = outerRing[(i + 1) % outerRing.length];
+            const dx = w.X - q.X, dy = w.Y - q.Y;
+            const L2 = dx * dx + dy * dy;
+            let t = L2 > 0 ? ((pt.X - q.X) * dx + (pt.Y - q.Y) * dy) / L2 : 0;
+            t = Math.max(0, Math.min(1, t));
+            const cx = q.X + t * dx, cy = q.Y + t * dy;
+            const d = Math.hypot(pt.X - cx, pt.Y - cy);
+            if (d < bestD) { bestD = d; bx = cx; by = cy; }
+        }
+        if (!isFinite(bestD)) return null;
+        const dx = bx - pt.X, dy = by - pt.Y;
+        const len = Math.hypot(dx, dy) || 1;
+        const over = Math.max(1, Math.round(0.05 * FILL_SCALE));   // 穿出边界 0.05mm
+        return fillSlitRectBetween(pt, { X: Math.round(bx + dx / len * over), Y: Math.round(by + dy / len * over) });
+    }
+
+    /** 两个孔内点之间的一条窄缝（宽 2×FILL_SLIT_HALF），把两个孔连成一条「通道」 */
+    function fillSlitRectBetween(a, b) {
+        if (!a || !b) return null;
+        const dx = b.X - a.X; const dy = b.Y - a.Y;
+        const len = Math.hypot(dx, dy);
+        if (!(len > 1)) return null;
+        const half = Math.max(1, Math.round(FILL_SLIT_HALF * FILL_SCALE));
+        const nx = -dy / len * half;
+        const ny = dx / len * half;
+        return [
+            { X: Math.round(a.X + nx), Y: Math.round(a.Y + ny) },
+            { X: Math.round(b.X + nx), Y: Math.round(b.Y + ny) },
+            { X: Math.round(b.X - nx), Y: Math.round(b.Y - ny) },
+            { X: Math.round(a.X - nx), Y: Math.round(a.Y - ny) }
+        ];
     }
 
     /**
@@ -1376,16 +1435,50 @@
         }
         if (!outers.length) return [];
 
-        // ---- ② 残留孔洞开缝（keyhole）----
+        // ---- ② 残留孔洞开缝（keyhole）：孔与孔互相搭缝，整棵树只开一条缝通到区域外 ----
+        // 旧做法是「每个孔各开一条缝到区域边界」，227 个孔就在平面上割出 227 条横切口，
+        // 一张内层平面被切成 688 块细碎填充。改成最小生成树后，铜始终连成一片。
         let finalPaths = null;
         if (holesOfResult.length) {
             const regionPaths = outers.map(p => fillForceOrientation(p.slice(), true))
                 .concat(holesOfResult.map(p => fillForceOrientation(p.slice(), false)));
             const slits = [];
-            holesOfResult.forEach(hp => {
-                const rect = fillHoleSlitRect(hp, beyondX);
-                if (rect) slits.push(rect);
-            });
+            const nH = holesOfResult.length;
+            const outerRingForExit = outers[0] || null;
+            if (nH === 1) {
+                const r = fillExitSlit(holesOfResult[0], outerRingForExit);
+                if (r) slits.push(r);
+            } else {
+                const pts = holesOfResult.map(hp => fillHoleInteriorPoint(hp));
+                const d2 = (i, j) => {
+                    const a = pts[i]; const b = pts[j];
+                    return (a && b) ? Math.hypot(a.X - b.X, a.Y - b.Y) : Infinity;
+                };
+                // Prim 最小生成树（O(n²)）：dist[j] = 第 j 个孔到「已连通集合」的最近距离
+                const inTree = new Array(nH).fill(false);
+                const dist = new Array(nH).fill(Infinity);
+                const from = new Array(nH).fill(-1);
+                inTree[0] = true;
+                for (let j = 1; j < nH; j++) { dist[j] = d2(0, j); from[j] = 0; }
+                for (let k = 1; k < nH; k++) {
+                    let best = -1; let bestD = Infinity;
+                    for (let j = 0; j < nH; j++) {
+                        if (!inTree[j] && dist[j] < bestD) { bestD = dist[j]; best = j; }
+                    }
+                    if (best < 0) break;
+                    inTree[best] = true;
+                    const rect = fillSlitRectBetween(pts[from[best]], pts[best]);
+                    if (rect) slits.push(rect);
+                    for (let j = 0; j < nH; j++) {
+                        if (inTree[j]) continue;
+                        const dd = d2(best, j);
+                        if (dd < dist[j]) { dist[j] = dd; from[j] = best; }
+                    }
+                }
+                // 整棵树只开一条缝通到区域外（从 0 号孔水平切出去）
+                const exitSlit = fillExitSlit(holesOfResult[0], outerRingForExit);
+                if (exitSlit) slits.push(exitSlit);
+            }
             if (slits.length) {
                 try {
                     const cpr2 = new ClipperLib.Clipper();
@@ -1399,6 +1492,13 @@
             }
         }
 
+        // ---- ②.5 关于「合缝」----
+        // 试过「拆完再把每块向外膨胀 FILL_SEAM_OVERLAP」来补缝，结论是**不能用**：
+        // 膨胀会把 0.01mm 的开缝两侧合拢，而开缝正是孔洞与外界的唯一通路 ——
+        // 一旦合拢，孔洞就变成多边形内部的洞，单环 FILL 无法表达 → 孔被铜填掉
+        // （实测层 15 的 227 个挖空共 340mm² 全被填死）。
+        // 正确做法是减少开缝数量、并把缝宽压到不可见：见 FILL_SLIT_HALF / 树状开缝。
+
         // ---- ③ 输出外边界（清理顶点后显式闭合）----
         const out = [];
         const srcPaths = finalPaths || outers.concat(holesOfResult);
@@ -1407,7 +1507,7 @@
             if (!p || p.length < 3) return;
             if (!ClipperLib.Clipper.Orientation(p)) { leftover++; return; }   // 只取外环
             const pts = fillCleanRing(fillFromIntPath(p));
-            if (pts.length >= 3 && Math.abs(fillRingArea(pts)) > FILL_AREA_EPS) out.push(fillPointsToOps(pts));
+            if (pts.length >= 3 && Math.abs(fillRingArea(pts)) > FILL_PIECE_MIN_AREA) out.push(fillPointsToOps(pts));
         });
         if (leftover) console.warn(`负片拆分：开缝后仍有 ${leftover} 个孔洞未消化`);
         // 正常情况：out 每项都是一块无孔洞填充（整块被挖空时 out 为空数组 → 该块整块丢弃）。
