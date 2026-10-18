@@ -40,6 +40,13 @@
     （实测 227 孔 340mm² 全丢）。要么留极窄缝，要么换带孔图元。
   · 覆铜 FILL 的 **width 必须 0**（V3 `"width"` / V2 第 5 位）：写 0.2 会让 EDA 内缩 →
     相邻填充之间多出 0.2mil 缝（内层焊盘那处早是 0，覆铜这处 V3.9.18 才补上）。
+  · **拆分完必须把弦还原成 ARC（V3.9.19）**：Clipper 只吃折线，圆弧离散是**内接**的，
+    填充边界比真圆内缩 ≤`FILL_ARC_TOL`(0.01mm=0.39mil)，与保留真圆弧的走线/描边铜之间
+    裂发丝缝（Gerber 里没有）。`fillArcDefs/fillArcIndex/fillArcContaining/fillRingToOpsWithArcs`
+    把「两端同弧」的连续弦段合并回 ARC（并校验弦中点、端点吸附回圆）。指令数 −70%。
+    ⚠️ 别靠压小 `FILL_ARC_TOL` 换精度：0.0005 时顶点涨 3.3 倍（4805→15873）。
+  · `fillRingPoints` 的圆弧**必须自己补声明端点**：`fillArcPoints` 只给中间采样点；
+    旧版只在退化分支补，弧接弧时漏交点 → 层 15 少算 24mm²（V3.9.19 修）。
 - 负片转正片：Clipper 差集 → 残留孔洞开 keyhole 缝（现 0.0002mm）→ 只输出外边界，每块一个 FILL。
   `createComplexPolygon` 是「多块独立多边形」，不做布尔差。
 - FILL 创建：单环用 `createPolygon(平铺)`；`createComplexPolygon` 入参是**多块数组**，单元素嵌套 `[[ring]]`

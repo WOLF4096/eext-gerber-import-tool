@@ -1128,9 +1128,13 @@
                     const a0 = Math.atan2(cur[1] - cy, cur[0] - cx);
                     fillArcPoints(cx, cy, r, a0, sweepDeg * Math.PI / 180, FILL_ARC_TOL)
                         .forEach(p => pts.push(p));
-                } else {
-                    pts.push([op.x, op.y]);
                 }
+                // 弧的**声明端点必须补上**（fillArcPoints 只给中间采样点）。
+                // 历史实现只在「退化弧」分支里 push 端点，正常弧靠「下一个 L 的终点」补 —— 只要
+                // 后面紧跟的是另一条弧（源区域路径、以及圆弧还原后的填充路径都是这种形式），
+                // 两个弧的交点就会被漏掉，弦直接从上一段弧的最后采样点跨到下一段的第一个采样点，
+                // 面积与形状都少一角（实测层 15 因此少算 24mm²）。
+                pts.push([op.x, op.y]);
                 cur = [op.x, op.y];
                 return;
             }
@@ -1372,6 +1376,186 @@
         ];
     }
 
+    // ====================================================================================
+    // 拆分结果的「圆弧还原」
+    // ------------------------------------------------------------------------------------
+    // 为什么需要：Clipper 只吃整数折线，所以圆弧必须先离散成弦（弦高容差 FILL_ARC_TOL）。
+    //   离散是**内接**的：弦永远落在真圆弧的内侧，于是整块填充的边界比 Gerber 里的铜
+    //   小了一点点（最多一个弦高 = 0.01mm = 0.39mil），而且是「每个弦的中点最深、
+    //   弦的端点归零」的梳齿状。走线、描边铜、焊盘都保留真圆弧，只有拆分过的覆铜变成
+    //   折线 —— 于是圆边上的覆铜边缘整体往里缩了一丝，跟旁边的铜（走线 / 描边铜 /
+    //   焊盘铜环）之间就会出现一条发丝缝；Gerber 里没有，因为两边都是真圆弧。
+    //   （实测层 16，同一 0.02° 展平口径：折线版填充合计 1516.93mm²，源区域 1520.43mm² ——
+    //     差的 3.5mm² 就是这些弦高。把容差压到 0.0005 后面积回到 1523.2mm²，
+    //     证明误差全在圆弧上，但顶点数会涨 3.3 倍：4805 → 15873。）
+    //
+    // 做法：拆完不直接输出折线，而是把「两端都落在同一条源圆弧上」的连续弦段重新合成
+    //   一条 ARC 指令。拆分前后几何完全一致（起点/终点吸附到真圆弧），而顶点数反而
+    //   比纯折线少 —— 不必为了精度去压小弦高容差（那会让顶点数涨 3 倍）。
+    // ====================================================================================
+
+    /** 从路径操作数组里抽出圆弧定义（圆心/半径/起始角/扫角，单位 mm / 弧度） */
+    function fillArcDefs(ops, out) {
+        const list = out || [];
+        let cur = null;
+        (ops || []).forEach(op => {
+            if (!op || typeof op.x !== 'number' || typeof op.y !== 'number') return;
+            if (op.cmd === 'A' || op.cmd === 'ARC') {
+                const sweepDeg = (typeof op.sweep === 'number') ? op.sweep
+                    : (typeof op.angle === 'number' ? op.angle : 0);
+                const cx = (typeof op.cx === 'number') ? op.cx : (cur ? cur[0] : op.x);
+                const cy = (typeof op.cy === 'number') ? op.cy : (cur ? cur[1] : op.y);
+                const sx = cur ? cur[0] : cx; const sy = cur ? cur[1] : cy;
+                const r = Math.hypot(sx - cx, sy - cy);
+                const r2 = Math.hypot(op.x - cx, op.y - cy);
+                const sweep = sweepDeg * Math.PI / 180;
+                // 只收「起点终点同半径」的正常圆弧；半径过小或扫角为 0 的当直线处理
+                if (r > 1e-4 && Math.abs(r - r2) < Math.max(1e-3, r * 1e-3) && Math.abs(sweep) > 1e-6) {
+                    list.push({ cx: cx, cy: cy, r: r, a0: Math.atan2(sy - cy, sx - cx), sweep: sweep });
+                }
+                cur = [op.x, op.y];
+                return;
+            }
+            cur = [op.x, op.y];
+        });
+        return list;
+    }
+
+    /** 圆弧定义的包围盒索引（cell = 2mm），供 fillArcContaining 快速筛选候选 */
+    function fillArcIndex(defs) {
+        const CELL = 2;
+        const grid = new Map();
+        const key = (gx, gy) => gx * 65536 + gy;
+        defs.forEach((d, i) => {
+            const x0 = Math.floor((d.cx - d.r - 0.05) / CELL), x1 = Math.floor((d.cx + d.r + 0.05) / CELL);
+            const y0 = Math.floor((d.cy - d.r - 0.05) / CELL), y1 = Math.floor((d.cy + d.r + 0.05) / CELL);
+            for (let gx = x0; gx <= x1; gx++) {
+                for (let gy = y0; gy <= y1; gy++) {
+                    const k = key(gx, gy);
+                    let arr = grid.get(k);
+                    if (!arr) grid.set(k, arr = []);
+                    arr.push(i);
+                }
+            }
+        });
+        return { defs: defs, grid: grid, cell: CELL, key: key };
+    }
+
+    /** 角度是否落在圆弧的角区间内（含端点，m 为容许余量，弧度） */
+    function fillArcInSpan(ang, d, m) {
+        let rel = ang - d.a0;
+        rel = rel % (2 * Math.PI); if (rel < 0) rel += 2 * Math.PI;
+        if (d.sweep >= 0) return rel <= d.sweep + m || rel >= 2 * Math.PI - m;
+        return (2 * Math.PI - rel) <= -d.sweep + m || rel <= m;
+    }
+
+    /** 线段 (p→q) 落在哪条源圆弧上：两端都要贴圆（误差 ≤ eps）且都在角区间内 */
+    function fillArcContaining(idx, p, q, eps) {
+        const CELL = idx.cell;
+        const mx = (p[0] + q[0]) / 2; const my = (p[1] + q[1]) / 2;
+        const gx = Math.floor(mx / CELL); const gy = Math.floor(my / CELL);
+        let best = -1; let bestErr = Infinity;
+        for (let ox = -1; ox <= 1; ox++) {
+            for (let oy = -1; oy <= 1; oy++) {
+                const arr = idx.grid.get(idx.key(gx + ox, gy + oy));
+                if (!arr) continue;
+                for (let t = 0; t < arr.length; t++) {
+                    const k = arr[t]; const d = idx.defs[k];
+                    const e0 = Math.abs(Math.hypot(p[0] - d.cx, p[1] - d.cy) - d.r);
+                    if (e0 > eps) continue;
+                    const e1 = Math.abs(Math.hypot(q[0] - d.cx, q[1] - d.cy) - d.r);
+                    if (e1 > eps) continue;
+                    const m = 0.02;   // 角区间余量（≈ 弦长/半径的量级，防止端点被切掉）
+                    if (!fillArcInSpan(Math.atan2(p[1] - d.cy, p[0] - d.cx), d, m)) continue;
+                    if (!fillArcInSpan(Math.atan2(q[1] - d.cy, q[0] - d.cx), d, m)) continue;
+                    // 中点也必须贴着圆弧：真弦的中点距圆周恰好一个弦高（≤ FILL_ARC_TOL），
+                    // 而一条「两端碰巧落在同一大圆上」的长直边，中点会离圆周 c²/8r（可达 0.05mm）
+                    // —— 不加这一条的话，这种直边会被当成弦替换成圆弧，凭空鼓出来一块。
+                    const e2 = Math.abs(Math.hypot(mx - d.cx, my - d.cy) - d.r);
+                    if (e2 > FILL_ARC_TOL * 2 + 0.004) continue;
+                    const err = e0 + e1;
+                    if (err < bestErr) { bestErr = err; best = k; }
+                }
+            }
+        }
+        return best;
+    }
+
+    /** 把一个点吸附到圆弧上（只沿半径方向挪动，位移 ≤ eps） */
+    function fillSnapToArc(pts, i, d) {
+        const ang = Math.atan2(pts[i][1] - d.cy, pts[i][0] - d.cx);
+        pts[i] = [d.cx + d.r * Math.cos(ang), d.cy + d.r * Math.sin(ang)];
+    }
+
+    /**
+     * 点列 → 路径操作数组，并把落在同一源圆弧上的连续弦段合并成 ARC 指令。
+     * @param {Array}  pts  闭合环点列（不含重复的首点）
+     * @param {object} idx  fillArcIndex 的结果；为空则退化为纯折线
+     * @param {number} eps  判定「点在圆上」的半径容差 (mm)
+     */
+    function fillRingToOpsWithArcs(pts, idx, eps) {
+        const n = pts.length;
+        if (n < 3) return null;
+        if (!idx || !idx.defs.length) return fillPointsToOps(pts);
+
+        // ① 逐段判定：这一段是某条源圆弧的「弦」吗？
+        //    注意环是**闭合**的：第 n-1 段是「末点 → 首点」这条收口边（点列里不重复存首点）。
+        //    漏掉收口边的话，导出路径要靠 fillNormalizeFlatRing 补一条 L —— 收口边正好落在
+        //    圆弧上时就会被补成一根直弦，等于在最大的一段弧上又留了一个弦高。
+        const segArc = new Array(n);
+        for (let i = 0; i < n; i++) segArc[i] = fillArcContaining(idx, pts[i], pts[(i + 1) % n], eps);
+
+        // ② 端点吸附到真圆弧（弦的端点本来就在圆上，这里只修正切割产生的新交点）
+        for (let i = 0; i < n; i++) {
+            if (segArc[i] < 0) continue;
+            fillSnapToArc(pts, i, idx.defs[segArc[i]]);
+            fillSnapToArc(pts, (i + 1) % n, idx.defs[segArc[i]]);
+        }
+
+        // ③ 连续同弧的弦段 → 一条 ARC（扫角按逐段增量累加，方向由几何决定）
+        const P = (t) => pts[t % n];
+        const ops = [{ cmd: 'M', x: pts[0][0], y: pts[0][1] }];
+        let i = 0;
+        while (i < n) {
+            const k = segArc[i];
+            if (k < 0) {
+                ops.push({ cmd: 'L', x: P(i + 1)[0], y: P(i + 1)[1] });
+                i++;
+                continue;
+            }
+            // 同一段弧不跨环首尾合并（首尾各出一条 ARC，几何完全一样，省掉取模绕圈）
+            let j = i;
+            while (j + 1 < n && segArc[j + 1] === k) j++;
+            const d = idx.defs[k];
+            let sweep = 0;
+            for (let t = i; t <= j; t++) {
+                const a0 = Math.atan2(P(t)[1] - d.cy, P(t)[0] - d.cx);
+                const a1 = Math.atan2(P(t + 1)[1] - d.cy, P(t + 1)[0] - d.cx);
+                let da = a1 - a0;
+                while (da > Math.PI) da -= 2 * Math.PI;
+                while (da < -Math.PI) da += 2 * Math.PI;
+                sweep += da;
+            }
+            const deg = sweep * 180 / Math.PI;
+            if (!isFinite(deg) || Math.abs(deg) < 0.05) {
+                // 退化（几乎零扫角）→ 当直线，别给 EDA 送一条没有几何意义的 ARC
+                ops.push({ cmd: 'L', x: P(j + 1)[0], y: P(j + 1)[1] });
+            } else {
+                // 单条 ARC 的扫角控制在 165° 以内（两点圆弧过大时 EDA 侧容错性差）
+                const parts = Math.max(1, Math.ceil(Math.abs(deg) / 165));
+                const aStart = Math.atan2(P(i)[1] - d.cy, P(i)[0] - d.cx);
+                for (let s = 1; s <= parts; s++) {
+                    const aEnd = aStart + sweep * s / parts;
+                    const ex = (s === parts) ? P(j + 1)[0] : d.cx + d.r * Math.cos(aEnd);
+                    const ey = (s === parts) ? P(j + 1)[1] : d.cy + d.r * Math.sin(aEnd);
+                    ops.push({ cmd: 'ARC', x: ex, y: ey, sweep: deg / parts, cx: d.cx, cy: d.cy });
+                }
+            }
+            i = j + 1;
+        }
+        return ops;
+    }
+
     /**
      * 负片区域 → 多个无孔洞填充区域（“负片转正片 + 拆分”的唯一入口）。
      * @param {Array}  outerOps     外环（路径操作数组，mm）
@@ -1392,6 +1576,13 @@
             console.warn('未加载 ClipperLib：负片挖空无法拆分，本块按整块填充输出');
             return [fillPointsToOps(outer)];
         }
+
+        // 源圆弧索引（外环 + 所有挖空环）：拆分后用来把弦段还原成 ARC 指令。
+        // 见上方「拆分结果的圆弧还原」—— 不还原的话填充边界会比 Gerber 靠内一个弦高。
+        const arcDefs = fillArcDefs(outerOps, []);
+        (holeOpsList || []).forEach(ops => fillArcDefs(ops, arcDefs));
+        const arcIdx = arcDefs.length ? fillArcIndex(arcDefs) : null;
+        const arcEps = Math.max(0.002, FILL_ARC_TOL * 1.6);   // 判定「点在圆上」的半径容差
 
         // ---- ① 布尔差：外环 −（挖空环并集）----
         const subjPaths = [fillToIntPath(outer)];
@@ -1500,6 +1691,8 @@
         // 正确做法是减少开缝数量、并把缝宽压到不可见：见 FILL_SLIT_HALF / 树状开缝。
 
         // ---- ③ 输出外边界（清理顶点后显式闭合）----
+        // 输出走 fillRingToOpsWithArcs：落在同一条源圆弧上的连续弦段会重新合成 ARC，
+        // 几何与 Gerber 完全一致（纯折线版本最多比真圆弧靠内一个弦高 0.01mm）。
         const out = [];
         const srcPaths = finalPaths || outers.concat(holesOfResult);
         let leftover = 0;
@@ -1507,13 +1700,20 @@
             if (!p || p.length < 3) return;
             if (!ClipperLib.Clipper.Orientation(p)) { leftover++; return; }   // 只取外环
             const pts = fillCleanRing(fillFromIntPath(p));
-            if (pts.length >= 3 && Math.abs(fillRingArea(pts)) > FILL_PIECE_MIN_AREA) out.push(fillPointsToOps(pts));
+            if (pts.length >= 3 && Math.abs(fillRingArea(pts)) > FILL_PIECE_MIN_AREA) {
+                const ops = fillRingToOpsWithArcs(pts, arcIdx, arcEps);
+                // 圆弧还原后顶点会变少：整圆只剩「M + 2×ARC」3 条，不能再按点数卡门槛
+                if (ops && ops.length >= 3) out.push(ops);
+            }
         });
         if (leftover) console.warn(`负片拆分：开缝后仍有 ${leftover} 个孔洞未消化`);
         // 正常情况：out 每项都是一块无孔洞填充（整块被挖空时 out 为空数组 → 该块整块丢弃）。
         // 只有「有外环但全被过滤掉」这种异常才退回到未开缝的外环（至少保住铜的形状）。
         if (out.length) return out;
-        return outers.map(p => fillPointsToOps(fillCleanRing(fillFromIntPath(p))));
+        return outers.map(p => {
+            const pts = fillCleanRing(fillFromIntPath(p));
+            return fillRingToOpsWithArcs(pts, arcIdx, arcEps) || fillPointsToOps(pts);
+        });
     }
 
     // --- 辅助：获取当前环境信息 ---

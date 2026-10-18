@@ -1506,8 +1506,11 @@
     /**
      * 把内部路径数组（M/L/A/ARC + i,j/sweep/cx,cy 三种弧表示）统一转成折线点列（mm）。
      * 标准版的 TRACK / SOLIDREGION 都只吃点列，圆弧一律采样成短直线。
+     * @param {number} [stepDeg] 采样角步长（度），默认 6
+     * @param {number} [tolMM]  绝对弦高容差（mm）：给了就按「半径 + 容差」反算角步长，
+     *   半径越大的弧步长越小，保证内缩量不超过 tolMM（不给则一律用 stepDeg）
      */
-    function stdFlattenPath(path, stepDeg) {
+    function stdFlattenPath(path, stepDeg, tolMM) {
         const pts = [];
         if (!Array.isArray(path) || path.length === 0) return pts;
         let cur = null;
@@ -1549,7 +1552,14 @@
             if (ccw) { while (d <= 1e-9) d += 2 * Math.PI; } else { while (d >= -1e-9) d -= 2 * Math.PI; }
             const isFull = Math.abs(ex - cur.x) < 1e-6 && Math.abs(ey - cur.y) < 1e-6;
             if (isFull) d = ccw ? 2 * Math.PI : -2 * Math.PI;
-            const step = (stepDeg || 6) * Math.PI / 180;
+            // 步长：给了绝对弦高容差就按本段半径算角步长（弦高 = r·(1−cos(step/2))），
+            // 再夹在 [0.35°, stepDeg] 之间 —— 太小的步长会把顶点数炸开，太大又不准。
+            let step = (stepDeg || 6) * Math.PI / 180;
+            if (tolMM > 0 && r > tolMM) {
+                const s = 2 * Math.acos(Math.max(-1, Math.min(1, 1 - tolMM / r)));
+                const lo = 0.35 * Math.PI / 180;
+                step = Math.min(step, Math.max(lo, s));
+            }
             const n = Math.max(2, Math.ceil(Math.abs(d) / step));
             for (let k = 1; k <= n; k++) {
                 const a = a0 + d * k / n;
@@ -1861,7 +1871,10 @@
         (uni.fills || []).forEach(f => {
             // 标准版不支持 FPC 补强层（58/59），直接跳过
             if (f.layerId === 58 || f.layerId === 59) return;
-            const pts = stdFlattenPath(f.path, 6);
+            // 弦高容差 0.002mm：固定 6° 采样在半径大的弧上会有万分之一毫米级的内缩
+            // （r=10mm 时弦高 0.0137mm），导出的填充边界比 Gerber 略细，与相邻走线/焊盘
+            // 之间会出现一条发丝缝。这里按绝对弦高定步长（本板实测只多 86 个点）。
+            const pts = stdFlattenPath(f.path, 6, 0.002);
             if (pts.length < 3) return;
             pts.forEach(q => grow(stdX(q.x), stdY(q.y)));
             shapes.push(stdSolidRegion(STD_LAYER(f.layerId), stdPathStr(pts, true), nextGid(), stdNet(f)));
