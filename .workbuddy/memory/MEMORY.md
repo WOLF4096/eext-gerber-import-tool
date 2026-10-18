@@ -178,5 +178,11 @@ PCB「字高」= cap height：`em = capMil/(capHeight/upem)`。缺字跳过并�
 - 校验脚本：`Temp/scripts/checks/ui_polish_check.js`、`ui_log_check.js`。
 
 ## 17. 文档联动
-功能改动同步：`CHANGELOG.md` → `README.md` → `iframe/ImportGerber.html`（导出页提示+协议）→ `iframe/About.html`。
-版本号改 `extension.json` + `package.json` → `npm run build`（HTML 也进包）。
+- **每次改动两份更新日志都要写**（长期规则）：
+  · `CHANGELOG.md`（根，**面向用户**）：**每行 40~60 字**（写完必须数字数），只写「新增/修复/优化」
+    了什么，不写解决方式与实现细节，**不出现任何文件名**；一个版本可写多行；
+  · `docs/开发日志.md`（**详细开发日志**）：保留完整历史 + 根因、方案、实测数据、回归结论，
+    旧版本条目绝不删改；根 CHANGELOG 里 **V1.0.0~V3.3.2 的条目已冻结、保持原样**（不再整理）。
+  新版本流程：先把细节写进 `docs/开发日志.md`，再在根 `CHANGELOG.md` 写摘要。
+- 功能改动同步：`README.md` → `iframe/ImportGerber.html`（导出页提示+协议）→ `iframe/About.html`；
+  `docs/README.md` 的索引表补链接。版本号改 `extension.json` + `package.json` → `npm run build`（HTML 也进包）。
