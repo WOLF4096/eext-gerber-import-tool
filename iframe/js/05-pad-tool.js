@@ -35,7 +35,12 @@
 
         
         // --- 1. 提取阶段 (修改：钻孔图层数据强制转换为 Image 图元) ---
-        extractRawData: (files) => {
+        // opts.textAsPoly：把「G04 Text Start…Text End」段里的 G01（02/01 位移+绘制）
+        // 当作 PolygonModel 段处理 —— 标准版没有折线/笔画文字图元，文字笔画只能是
+        // 带线宽的折线（TRACK），不留神就会被整段丢掉。专业版仍按文字折线（TEXT）走，
+        // 所以这个开关**只由标准版导出传入**，画布与专业版导出保持原样。
+        extractRawData: (files, opts) => {
+            const textAsPoly = !!(opts && opts.textAsPoly);
             const rawPads = []; 
             const rawVias = []; 
             const rawTracks = []; 
@@ -593,8 +598,12 @@
                         merged.forEach(m => {
                             if (mode === "IMAGE") {
                                 rawImages.push({ layerId, width: m.width, path: m.path });
-                            } else if (mode === "TEXT") {
+                            } else if (mode === "TEXT" && !textAsPoly) {
                                 rawTextLines.push({ layerId, width: m.width, path: m.path });
+                            } else if (mode === "TEXT") {
+                                // 标准版：Text 段的 G01 按 PolygonModel 处理 —— 落 rawPolys
+                                // （isStroke=true → 标准版导出成带线宽的多点 TRACK）。
+                                rawPolys.push({ layerId, width: m.width, path: m.path, isStroke: true, fromText: true });
                             } else {
                                 let targetLayer = layerId;
                                 // 56 是 DrillDrawing, 导出时通常归类到 Document(13) 或保持 56
@@ -1304,8 +1313,14 @@
             // ⚠️ 只用「中心 ±2.5mil」匹配时，异形/多边形焊盘的引脚锚点常偏在一侧
             // （开关类焊盘实测偏 27mil），会整批匹配不上 → 焊盘编号退化成 "1"、
             // 组合（groupId）丢失。这就是「异形焊盘在有飞针文件时丢失组合和编号」的原因。
-            const flyIndex = (config && config.tryNetlist && typeof flyingProbeData !== 'undefined' && flyingProbeData)
+            // 【2026-10-18】索引与「尝试生成网络」开关**无关**：焊盘编号、元件位号（以及
+            // 焊盘所属元件组合 groupId）都来自飞针文件，只有**网络名**才受该开关控制。
+            // 之前把整个索引挂在 config.tryNetlist 上 → 一取消勾选，编号全退化成 "1"、
+            // 组合全丢、位号一条都不导（用户看到的「关了网络，编号和位号也没了」）。
+            const flyIndex = (typeof flyingProbeData !== 'undefined' && flyingProbeData)
                 ? buildFlyingPinIndex(flyingProbeData) : { pins: [], comps: [] };
+            /** 是否采用飞针文件里的 NET_NAME（仅勾选「尝试生成网络」时采用） */
+            const useFlyingNet = !!(config && config.tryNetlist);
             const compCounts = {};
             const hasNetlist = flyIndex.pins.length > 0;
             if (hasNetlist) {
@@ -1424,7 +1439,9 @@
                     const prim0 = pad.top || pad.bottom || pad.innerRep || (pad.inners && pad.inners[0]);
                     const match = flyingPinAt(flyIndex, pad.x, pad.y, padMatchBoxMM(prim0));
                     if (match && !match.isPadOnly) {
-                        netName = match.net ? String(match.net) : ""; // 飞针文件的 NET_NAME 优先
+                        // 网络名：不勾选「尝试生成网络」时**不用**飞针文件的 NET_NAME
+                        // （编号 / 位号 / 组合照旧取用，见上面的 useFlyingNet 注释）
+                        if (useFlyingNet && match.net) netName = String(match.net);
                         pinNumber = match.num || "1";
                         const cName = match.comp;
                         if (cName && compCounts[cName] > 1) groupId = cName;
@@ -1923,7 +1940,9 @@
             // 未勾选时只做画布标注、不产生任何图元（该层的显隐/勾选状态见 03-state.js）。
             // 位号现在按面拆成两个图层（顶层 / 底层元件位号），各自只管自己那一面：
             // 任一层勾选就生成，但每一行还要按飞针文件的 LAYER 再过滤一次。
-            if (config && config.tryNetlist && (isRefdesLayerOn('T') || isRefdesLayerOn('B'))
+            // 位号只跟「位号图层是否勾选」有关，与「尝试生成网络」无关
+            // （勾掉网络只是不写网络名，位号本身仍要导出）。
+            if ((isRefdesLayerOn('T') || isRefdesLayerOn('B'))
                 && typeof flyingProbeData !== 'undefined' && flyingProbeData) {
                 try {
                     const rows = flyingProbeData.components.rows;
@@ -1936,6 +1955,11 @@
 
                     if (idxName >= 0 && idxX >= 0) {
                         let textCount = 0;
+                        // 飞针文件的坐标单位（lengthUnit，实测 mil）→ 专业版源码坐标（mil）。
+                        // 不换算时 mm 单位的飞针文件会把位号缩小 39.37 倍挤在原点附近。
+                        const fpScaleMM = (typeof flyingLengthScaleMM === 'function')
+                            ? flyingLengthScaleMM(flyingProbeData) : 1;
+                        const fpScaleMil = fpScaleMM / 0.0254;
                         rows.forEach(row => {
                             const name = row[idxName];
                             // 飞针文件会把孤立焊盘登记成 PAD / PAD1 / PAD23… 这类占位元件，
@@ -1944,8 +1968,8 @@
                                 return; 
                             }
                             const layerStr = row[idxLayer]; 
-                            const x = parseFloat(row[idxX]); 
-                            const y = parseFloat(row[idxY]); 
+                            const x = parseFloat(row[idxX]) * fpScaleMil; 
+                            const y = parseFloat(row[idxY]) * fpScaleMil; 
                             const angle = parseFloat(row[idxAngle] || 0);
 
                             // 【2026-10-17】专业版一律写**装配层**，按元件所在面分开：

@@ -1399,7 +1399,12 @@
     const STD_IS_COPPER = (internalId) => internalId === 1 || internalId === 2 || (internalId >= 15 && internalId <= 46);
 
     // 标准版图层表 / 对象表 / 设计规则（照抄参考文件，保证与官方模板一致）
-    const STD_LAYERS = [
+    //
+    // ⚠️「标准版的板子是几层」**完全由这张 layers 表决定**：内层行（21…52）的
+    //    visible / config 只要是 false，即使 shape 里写了 21/22 的图元，EDA 打开时
+    //    也只当 2 层板 —— 内层铜整片看不见（四层板导出后内层是空的）。
+    //    所以内层行不能写死，必须按板子的实际层数动态启用（buildStdLayers）。
+    const STD_LAYER_HEAD = [
         '1~TopLayer~#cc6633~true~false~true~',
         '2~BottomLayer~#6699ff~true~false~true~',
         '3~TopSilkLayer~#FFCC00~true~false~true~',
@@ -1415,45 +1420,61 @@
         '13~TopAssembly~#33CC99~false~false~false~',
         '14~BottomAssembly~#5555FF~false~false~false~',
         '15~Mechanical~#F022F0~false~false~false~',
-        '19~3DModel~#ffffff~false~false~false~',
-        '21~Inner1~#999966~false~false~false~~',
-        '22~Inner2~#0099cc~false~false~false~~',
-        '23~Inner3~#339999~false~false~false~~',
-        '24~Inner4~#BC8E00~false~false~false~~',
-        '25~Inner5~#70DBFA~false~false~false~~',
-        '26~Inner6~#00CC66~false~false~false~~',
-        '27~Inner7~#9966FF~false~false~false~~',
-        '28~Inner8~#800080~false~false~false~~',
-        '29~Inner9~#008080~false~false~false~~',
-        '30~Inner10~#15935F~false~false~false~~',
-        '31~Inner11~#000080~false~false~false~~',
-        '32~Inner12~#00B400~false~false~false~~',
-        '33~Inner13~#2E4756~false~false~false~~',
-        '34~Inner14~#99842F~false~false~false~~',
-        '35~Inner15~#FFFFAA~false~false~false~~',
-        '36~Inner16~#99842F~false~false~false~~',
-        '37~Inner17~#2E4756~false~false~false~~',
-        '38~Inner18~#3535FF~false~false~false~~',
-        '39~Inner19~#8000BC~false~false~false~~',
-        '40~Inner20~#43AE5F~false~false~false~~',
-        '41~Inner21~#C3ECCE~false~false~false~~',
-        '42~Inner22~#728978~false~false~false~~',
-        '43~Inner23~#39503F~false~false~false~~',
-        '44~Inner24~#0C715D~false~false~false~~',
-        '45~Inner25~#5A8A80~false~false~false~~',
-        '46~Inner26~#2B937E~false~false~false~~',
-        '47~Inner27~#23999D~false~false~false~~',
-        '48~Inner28~#45B4E3~false~false~false~~',
-        '49~Inner29~#215DA1~false~false~false~~',
-        '50~Inner30~#4564D7~false~false~false~~',
-        '51~Inner31~#6969E9~false~false~false~~',
-        '52~Inner32~#9069E9~false~false~false~~',
+        '19~3DModel~#ffffff~false~false~false~'
+    ];
+    // 内层颜色沿用官方模板（21…52 共 32 层）
+    const STD_INNER_COLORS = [
+        '#999966', '#0099cc', '#339999', '#BC8E00', '#70DBFA', '#00CC66', '#9966FF', '#800080',
+        '#008080', '#15935F', '#000080', '#00B400', '#2E4756', '#99842F', '#FFFFAA', '#99842F',
+        '#2E4756', '#3535FF', '#8000BC', '#43AE5F', '#C3ECCE', '#728978', '#39503F', '#0C715D',
+        '#5A8A80', '#2B937E', '#23999D', '#45B4E3', '#215DA1', '#4564D7', '#6969E9', '#9069E9'
+    ];
+    const STD_LAYER_TAIL = [
         '99~ComponentShapeLayer~#00CCCC~false~false~false~0.4',
         '100~LeadShapeLayer~#CC9999~false~false~false~',
         '101~ComponentMarkingLayer~#66FFCC~false~false~false~',
         'Hole~Hole~#222222~~false~true~',
         'DRCError~DRCError~#FAD609~~false~true~'
     ];
+    /**
+     * 生成标准版 layers 表：内层按板子层数启用。
+     * 字段：id~名称~颜色~visible~active~config~transparency~type
+     * 启用的内层一律写 `type=Signal`（信号层，正片）：导入的 Gerber 内层就是普通铜箔，
+     * 用 TRACK / SOLIDREGION 表达；若留空被当成内电层（负片），这些铜反而会变成"挖空"。
+     * 未启用的内层保持官方模板原样（`~~`，类型留空）。
+     * @param {number} innerCount 内层层数（总铜层数 − 2）
+     */
+    function buildStdLayers(innerCount) {
+        const n = Math.max(0, Math.min(STD_INNER_COLORS.length, innerCount | 0));
+        const out = STD_LAYER_HEAD.slice();
+        for (let i = 0; i < STD_INNER_COLORS.length; i++) {
+            const on = (i < n);
+            out.push((21 + i) + '~Inner' + (i + 1) + '~' + STD_INNER_COLORS[i]
+                + '~' + (on ? 'true' : 'false') + '~false~' + (on ? 'true' : 'false')
+                + (on ? '~0~Signal' : '~~'));
+        }
+        return out.concat(STD_LAYER_TAIL);
+    }
+    /**
+     * 本次导出要启用几层内层：① UI 的「板层数」（#cfg-copper-layers，与专业版通道同源）；
+     * ② Gerber 里真实存在的内层文件（15…46）—— 数据比设置更权威，取大值。
+     */
+    function stdInnerLayerCount(config) {
+        let n = 0;
+        if (config && typeof config.copperLayers === 'number' && isFinite(config.copperLayers)) {
+            n = config.copperLayers - 2;
+        } else if (typeof document !== 'undefined' && document.getElementById('cfg-copper-layers')) {
+            n = (parseInt(document.getElementById('cfg-copper-layers').value, 10) || 2) - 2;
+        }
+        if (typeof loadedFiles !== 'undefined' && loadedFiles) {
+            loadedFiles.forEach(f => {
+                const id = f && f.layerId;
+                if (id >= 15 && id <= 46) n = Math.max(n, id - 14);
+            });
+        }
+        return Math.max(0, Math.min(STD_INNER_COLORS.length, n));
+    }
+
     const STD_OBJECTS = [
         'All~true~false', 'Component~true~true', 'Prefix~true~true', 'Name~true~false',
         'Track~true~true', 'Pad~true~true', 'Via~true~true', 'Hole~true~true',
@@ -1579,7 +1600,11 @@
      * @returns {object} 可直接 JSON.stringify 的标准版 PCB 源码
      */
     function buildStandardSource(config) {
-        const rawData = PadTool.extractRawData(loadedFiles.filter(f => f.visible));
+        // textAsPoly：标准版没有文字笔画图元 —— 「G04 Text Start…End」段里的 G01
+        // 一律按 PolygonModel 处理（落 rawPolys → 带线宽的 TRACK），否则这些笔画
+        // 会跟着 rawTextLines 一起被丢掉（丝印/文档层的文字整片消失）。
+        // 只在本通道（标准版）打开，专业版导出与画布仍是文字折线。
+        const rawData = PadTool.extractRawData(loadedFiles.filter(f => f.visible), { textAsPoly: true });
         const uni = PadTool.consolidate(
             rawData.rawPads || [], rawData.rawVias || [], rawData.rawTracks || [],
             rawData.rawPolys || [], rawData.rawFills || [], rawData.drills || [],
@@ -1966,6 +1991,10 @@
                 const ciX = cFields.indexOf('X_COORDINATE');
                 const ciY = cFields.indexOf('Y_COORDINATE');
                 const ciLayer = cFields.indexOf('LAYER');
+                // 飞针文件的坐标单位（实测 mil）：不换算会把位号写到板外几十米，
+                // BBox 跟着被撑爆 —— 导入后整块板缩成一个小点，看起来就是「文本不能用」。
+                const fpScaleMM = (typeof flyingLengthScaleMM === 'function')
+                    ? flyingLengthScaleMM(flyingProbeData) : 1;
                 let nText = 0, nMiss = 0;
                 const missSet = new Set();
                 if (ciName >= 0 && ciX >= 0 && ciY >= 0) {
@@ -1975,7 +2004,7 @@
                         // 位号按面分开导出：该面的位号图层没勾选就跳过
                         const isBottomRow = ciLayer >= 0 ? /^b/i.test(String(row[ciLayer] || '')) : false;
                         if (typeof isRefdesLayerOn === 'function' && !isRefdesLayerOn(isBottomRow ? 'B' : 'T')) return;
-                        const mmX = parseFloat(row[ciX]), mmY = parseFloat(row[ciY]);
+                        const mmX = parseFloat(row[ciX]) * fpScaleMM, mmY = parseFloat(row[ciY]) * fpScaleMM;
                         if (!isFinite(mmX) || !isFinite(mmY)) return;
                         // 先量宽度（锚点 0,0），再按「水平居中 + 垂直居中」算基线位置
                         const probe = fontTextToPath(String(name), emStd, { x: 0, y: 0 });
@@ -2009,6 +2038,12 @@
         // 兜底：一个图元都没生成时，BBox 用原点，避免出现 Infinity
         if (!isFinite(bx0)) { bx0 = STD_ORIGIN_X; bx1 = STD_ORIGIN_X; by0 = STD_ORIGIN_Y; by1 = STD_ORIGIN_Y; }
 
+        // 内层层数：必须在 layers 表里真正启用，否则标准版只按 2 层板打开
+        const innerLayerCount = stdInnerLayerCount(config);
+        if (innerLayerCount > 0) {
+            appLog(`标准版图层：${innerLayerCount + 2} 层板（启用内层 ${innerLayerCount} 层）`);
+        }
+
         return {
             head: {
                 docType: '3',
@@ -2021,7 +2056,7 @@
             },
             canvas: STD_CANVAS,
             shape: shapes,
-            layers: STD_LAYERS,
+            layers: buildStdLayers(innerLayerCount),
             objects: STD_OBJECTS,
             BBox: {
                 x: stdNum(bx0),

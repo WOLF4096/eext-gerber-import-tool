@@ -88,8 +88,8 @@
     }
 
     // --- [新增] UUID 生成辅助函数 (无连字符格式) ---
-    function generateUUID() {        return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-            var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+    function generateUUID() {        return 'xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+            let r = Math.random() * 16 | 0; let v = c == 'x' ? r : (r & 0x3 | 0x8);
             return v.toString(16);
         });
     }
@@ -247,9 +247,9 @@
             const modal = document.getElementById('heavy-import-modal');
             const text = document.getElementById('heavy-import-text');
             if (!modal) { resolve(true); return; }
-            const mb = (bytes / 1024 / 1024);
+            // const mb = (bytes / 1024 / 1024);
             if (text) {
-                text.textContent = `本次 Gerber 数据约 ${(bytes / 1024).toFixed(0)} KB（${mb >= 1 ? mb.toFixed(1) + ' MB' : '<1 MB'}），`
+                text.textContent = `本次 Gerber 数据约 ${(bytes / 1024).toFixed(0)} KB（> 500KB），`
                     + `图元数量较多，写入画布可能需要几十秒，期间界面会卡住。`;
             }
             modal.style.display = 'flex';
@@ -270,7 +270,7 @@
     // 因此这里同时从「扩展名」和「内容特征」两个方向拦截。
 
     // 明确不是 Gerber 的扩展名
-    var NON_GERBER_EXT = {
+    let NON_GERBER_EXT = {
         zip: 1, rar: 1, '7z': 1, gz: 1, tar: 1, bz2: 1, xz: 1,
         json: 1, xml: 1, html: 1, htm: 1,
         png: 1, jpg: 1, jpeg: 1, gif: 1, bmp: 1, tif: 1, tiff: 1, webp: 1, svg: 1, ico: 1,
@@ -380,13 +380,13 @@
                 const n = Math.max(0, Math.floor(num(1, 0)));
                 const points = [];
                 for (let i = 0; i < n; i++) {
-                    const x = a[2 + i * 2], y = a[3 + i * 2];
+                    const x = a[2 + i * 2]; const y = a[3 + i * 2];
                     if (typeof x === 'number' && typeof y === 'number' && isFinite(x) && isFinite(y)) points.push({ x, y });
                 }
                 if (points.length >= 3) prims.push({ code, exposure, kind: 'poly', points });
             } else if (code === 5) {
                 const n = Math.max(0, Math.floor(num(1, 0)));
-                const cx = num(2, 0), cy = num(3, 0), dia = num(4, 0), rot = num(5, 0);
+                const cx = num(2, 0); const cy = num(3, 0); const dia = num(4, 0); const rot = num(5, 0);
                 const points = [];
                 for (let i = 0; i < n; i++) {
                     const ang = (rot + i * 360 / n) * Math.PI / 180;
@@ -418,13 +418,13 @@
         const out = [];
         if (!shape || !Array.isArray(shape.prims)) return out;
         const sc = (typeof scale === 'number' && isFinite(scale)) ? scale : 1;
-        const sx = (v) => cx + v * sc, sy = (v) => cy + v * sc;
+        const sx = (v) => cx + v * sc; const sy = (v) => cy + v * sc;
 
         shape.prims.forEach((p) => {
             if (p.kind === 'circle') {
                 const r = Math.abs(p.dia) * sc / 2;
                 if (!(r > 0)) return;
-                const px = sx(p.cx), py = sy(p.cy);
+                const px = sx(p.cx); const py = sy(p.cy);
                 out.push({ cmd: 'M', x: px - r, y: py });
                 out.push({ cmd: 'A', x: px + r, y: py, i: r, j: 0, mode: 3, startX: px - r, startY: py });
                 out.push({ cmd: 'A', x: px - r, y: py, i: -r, j: 0, mode: 3, startX: px + r, startY: py });
@@ -435,24 +435,24 @@
                 });
                 out.push({ cmd: 'L', x: sx(p.points[0].x), y: sy(p.points[0].y) });
             } else if (p.kind === 'rect') {
-                const hw = p.w * sc / 2, hh = p.h * sc / 2;
-                const rad = (p.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
-                const bx = sx(p.cx), by = sy(p.cy);
+                const hw = p.w * sc / 2; const hh = p.h * sc / 2;
+                const rad = (p.rot || 0) * Math.PI / 180; const cos = Math.cos(rad); const sin = Math.sin(rad);
+                const bx = sx(p.cx); const by = sy(p.cy);
                 const corners = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
                 const startIdx = out.length;
                 corners.forEach(([x, y], i) => {
-                    const X = bx + x * cos - y * sin, Y = by + x * sin + y * cos;
+                    const X = bx + x * cos - y * sin; const Y = by + x * sin + y * cos;
                     out.push(i === 0 ? { cmd: 'M', x: X, y: Y } : { cmd: 'L', x: X, y: Y });
                 });
                 out.push({ cmd: 'L', x: out[startIdx].x, y: out[startIdx].y });
             } else if (p.kind === 'line') {
-                const rad = (p.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+                const rad = (p.rot || 0) * Math.PI / 180; const cos = Math.cos(rad); const sin = Math.sin(rad);
                 const rot = (x, y) => [x * cos - y * sin, x * sin + y * cos];
-                const [ax, ay] = rot(p.x1, p.y1), [bx2, by2] = rot(p.x2, p.y2);
-                const dx = bx2 - ax, dy = by2 - ay, len = Math.sqrt(dx * dx + dy * dy);
+                const [ax, ay] = rot(p.x1, p.y1); const [bx2, by2] = rot(p.x2, p.y2);
+                const dx = bx2 - ax; const dy = by2 - ay; const len = Math.sqrt(dx * dx + dy * dy);
                 if (!(len > 0)) return;
                 const hw = Math.abs(p.w) * sc / 2;
-                const nx = -dy / len * hw, ny = dx / len * hw;
+                const nx = -dy / len * hw; const ny = dx / len * hw;
                 const startIdx = out.length;
                 [[ax, ay], [bx2, by2]].forEach(([x, y]) => {
                     out.push({ cmd: 'M', x: sx(x) + nx, y: sy(y) + ny });
@@ -494,20 +494,20 @@
             return p.points.map(pt => [pt.x * sc, pt.y * sc]);
         }
         if (p.kind === 'rect') {
-            const hw = p.w * sc / 2, hh = p.h * sc / 2;
-            const rad = (p.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
-            const bx = p.cx * sc, by = p.cy * sc;
+            const hw = p.w * sc / 2; const hh = p.h * sc / 2;
+            const rad = (p.rot || 0) * Math.PI / 180; const cos = Math.cos(rad); const sin = Math.sin(rad);
+            const bx = p.cx * sc; const by = p.cy * sc;
             return [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]].map(([x, y]) =>
                 [bx + x * cos - y * sin, by + x * sin + y * cos]);
         }
         if (p.kind === 'line') {
-            const rad = (p.rot || 0) * Math.PI / 180, cos = Math.cos(rad), sin = Math.sin(rad);
+            const rad = (p.rot || 0) * Math.PI / 180; const cos = Math.cos(rad); const sin = Math.sin(rad);
             const rot = (x, y) => [x * cos - y * sin, x * sin + y * cos];
-            const [ax, ay] = rot(p.x1, p.y1), [bx2, by2] = rot(p.x2, p.y2);
-            const dx = bx2 - ax, dy = by2 - ay, len = Math.sqrt(dx * dx + dy * dy);
+            const [ax, ay] = rot(p.x1, p.y1); const [bx2, by2] = rot(p.x2, p.y2);
+            const dx = bx2 - ax; const dy = by2 - ay; const len = Math.sqrt(dx * dx + dy * dy);
             if (!(len > 0)) return null;
             const hw = Math.abs(p.w) * sc / 2;
-            const nx = -dy / len * hw, ny = dx / len * hw;
+            const nx = -dy / len * hw; const ny = dx / len * hw;
             return [[ax + nx, ay + ny], [bx2 + nx, by2 + ny], [bx2 - nx, by2 - ny], [ax - nx, ay - ny]]
                 .map(([x, y]) => [x * sc, y * sc]);
         }
@@ -519,7 +519,7 @@
      * @returns {Array<Array<[number,number]>>|null} 相对中心、已乘 sc 的 mm 环；无法计算返回 null
      */
     function macroBuildRings(shape, sc) {
-        const dark = [], clear = [];
+        const dark = []; const clear = [];
         // Clipper 约定：同一批 subject 里**方向相反**的多边形会被当成孔洞做减法。
         // 而宏基元的方向是随机的（圆/矩形按逆时针给点，线段生成的四边形是顺时针），
         // 所以必须先统一成同一方向（这里统一为逆时针），否则圆角会被整块挖掉。
@@ -561,7 +561,7 @@
 
     /** Clipper PolyTree → 环数组（外环在前，孔洞在后） */
     function macroTreeToRings(tree) {
-        const outers = [], holes = [];
+        const outers = []; const holes = [];
         const walk = (node) => {
             const kids = node.Childs();
             for (let i = 0; i < kids.length; i++) {
@@ -632,6 +632,20 @@
     }
 
     /**
+     * 飞针文件的坐标单位倍率：文件单位 → **mm**。
+     * `lengthUnit` 实测为 `mil`（嘉立创导出默认），也见过 `mm` / `inch`。
+     * 任何读飞针原始坐标的地方都必须先过这个函数 —— 手工按「当作 mm」用会差 39.37 倍
+     * （实测后果：标准版 TEXT 位号飞到板外十几米，BBox 被撑到 4 万多单位，
+     *  导入后整块板看起来「打不开 / 用不了」）。
+     */
+    function flyingLengthScaleMM(fp) {
+        const lu = String((fp && fp.lengthUnit) || 'mil').toLowerCase();
+        if (lu === 'mm' || lu === 'metric') return 1;
+        if (lu === 'inch' || lu === 'in') return 25.4;
+        return 0.0254;   // mil（缺省）
+    }
+
+    /**
      * 解析飞针数据，返回：
      *   pins : [{ x, y, num, comp, name, net, isPadOnly }] —— 坐标单位 **mil**（匹配时用 PadTool.toMil 对齐）
      *   comps: [{ x, y, ref, isPadOnly }]                  —— 坐标单位 **mm**（画布上直接当世界坐标用）
@@ -641,10 +655,9 @@
     function buildFlyingPinIndex(fp) {
         const out = { pins: [], comps: [] };
         if (!fp) return out;
-        // 归一化倍率：文件单位 → mil / mm
-        const lu = String(fp.lengthUnit || 'mil').toLowerCase();
-        const kPin = (lu === 'mm' || lu === 'metric') ? (1 / 0.0254) : ((lu === 'inch' || lu === 'in') ? 1000 : 1);
-        const kComp = (lu === 'mm' || lu === 'metric') ? 1 : ((lu === 'inch' || lu === 'in') ? 25.4 : 0.0254);
+        // 归一化倍率：文件单位 → mil / mm（kComp 由 flyingLengthScaleMM 统一给出）
+        const kComp = flyingLengthScaleMM(fp);
+        const kPin = kComp / 0.0254;
         // LAYER 字段 → 面：'B' / 'bottom' → 'B'，其余（'T' / 空）→ 'T'
         const normSide = (v) => (/^b/i.test(String(v || '').trim()) ? 'B' : 'T');
         try {
@@ -711,7 +724,7 @@
     function padMatchBoxMM(prim) {
         if (!prim) return null;
         if (prim.shape === 'POLYGON' && Array.isArray(prim.path) && prim.path.length) {
-            let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+            let x0 = Infinity; let x1 = -Infinity; let y0 = Infinity; let y1 = -Infinity;
             prim.path.forEach(pt => {
                 if (typeof pt.x !== 'number' || !isFinite(pt.x)) return;
                 if (pt.x < x0) x0 = pt.x;
@@ -722,7 +735,7 @@
             if (isFinite(x0) && x1 > x0 && y1 > y0) return { x0: x0, x1: x1, y0: y0, y1: y1 };
         }
         if (prim.w > 0 && prim.h > 0) {
-            const hw = prim.w / 2, hh = prim.h / 2;
+            const hw = prim.w / 2; const hh = prim.h / 2;
             return { x0: prim.x - hw, x1: prim.x + hw, y0: prim.y - hh, y1: prim.y + hh };
         }
         return null;
@@ -752,8 +765,8 @@
 
     /** 遍历矩形范围内的所有引脚（像素/世界单位都是 mil，闭区间向外取整到格） */
     function forEachPinInRect(index, grid, x0, x1, y0, y1, cb) {
-        const c0 = grid.cellOf(x0), c1 = grid.cellOf(x1);
-        const r0 = grid.cellOf(y0), r1 = grid.cellOf(y1);
+        const c0 = grid.cellOf(x0); const c1 = grid.cellOf(x1);
+        const r0 = grid.cellOf(y0); const r1 = grid.cellOf(y1);
         // 极端大框（整板级焊盘）退化成线性扫描，避免遍历上万格
         if ((c1 - c0 + 1) * (r1 - r0 + 1) > 40000) {
             for (let i = 0; i < index.pins.length; i++) cb(index.pins[i]);
@@ -779,7 +792,7 @@
     function flyingPinAt(index, xMM, yMM, boxMM, side) {
         if (!index || !index.pins || !index.pins.length) return null;
         const sideOk = (pt) => (!side || !pt.side || pt.side === side);
-        const px = PadTool.toMil(xMM), py = PadTool.toMil(yMM);
+        const px = PadTool.toMil(xMM); const py = PadTool.toMil(yMM);
         const tol = 2.5;   // mil，与既有专业版图元生成保持一致
         const grid = ensurePinGrid(index);
 
@@ -793,8 +806,8 @@
 
         // ② 落在焊盘包围盒内、离中心最近的引脚
         if (boxMM) {
-            const x0 = PadTool.toMil(boxMM.x0) - tol, x1 = PadTool.toMil(boxMM.x1) + tol;
-            const y0 = PadTool.toMil(boxMM.y0) - tol, y1 = PadTool.toMil(boxMM.y1) + tol;
+            const x0 = PadTool.toMil(boxMM.x0) - tol; const x1 = PadTool.toMil(boxMM.x1) + tol;
+            const y0 = PadTool.toMil(boxMM.y0) - tol; const y1 = PadTool.toMil(boxMM.y1) + tol;
             let best = null;
             forEachPinInRect(index, grid, x0, x1, y0, y1, (pt) => {
                 if (!sideOk(pt)) return;
@@ -1034,7 +1047,7 @@
         if (typeof ring._fa === 'number') return ring._fa;
         let s = 0;
         for (let i = 0; i < ring.length; i++) {
-            const a = ring[i], b = ring[(i + 1) % ring.length];
+            const a = ring[i]; const b = ring[(i + 1) % ring.length];
             s += a[0] * b[1] - b[0] * a[1];
         }
         ring._fa = s / 2;
@@ -1051,7 +1064,7 @@
     /** 去掉末点与首点重合（闭合环在算法里不重复存首点） */
     function fillDropClosingDup(pts) {
         while (pts.length > 1) {
-            const a = pts[0], b = pts[pts.length - 1];
+            const a = pts[0]; const b = pts[pts.length - 1];
             if (Math.abs(a[0] - b[0]) < 1e-9 && Math.abs(a[1] - b[1]) < 1e-9) pts.pop();
             else break;
         }
@@ -1061,7 +1074,7 @@
     function fillDropDupes(pts) {
         const out = [];
         for (let i = 0; i < pts.length; i++) {
-            const p = pts[i], q = out.length ? out[out.length - 1] : null;
+            const p = pts[i]; const q = out.length ? out[out.length - 1] : null;
             if (q && Math.abs(q[0] - p[0]) < 1e-9 && Math.abs(q[1] - p[1]) < 1e-9) continue;
             out.push(p);
         }
@@ -1149,7 +1162,7 @@
         const res = [];
         const n = out.length;
         for (let i = 0; i < n; i++) {
-            const a = out[(i - 1 + n) % n], b = out[i], c = out[(i + 1) % n];
+            const a = out[(i - 1 + n) % n]; const b = out[i]; const c = out[(i + 1) % n];
             const cross = Math.abs((b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]));
             const base = Math.hypot(c[0] - a[0], c[1] - a[1]) || 1;
             if (cross / base < md) continue;
@@ -1180,7 +1193,7 @@
         // 只处理「坐标打头」的路径形式；['CIRCLE', …] / ['R', …] 等图元形式不碰
         if (typeof flat[0] !== 'number' || typeof flat[1] !== 'number') return flat;
         const tol = (typeof tolMil === 'number') ? tolMil : 1e-3;
-        const sx = flat[0], sy = flat[1];
+        const sx = flat[0]; const sy = flat[1];
 
         // 解析为线段序列
         const segs = [];
@@ -1196,7 +1209,7 @@
 
         // ① 去零长线段（ARC 不参与：零长圆弧可能是整圆）
         const kept = [];
-        let px = sx, py = sy;
+        let px = sx; let py = sy;
         for (const s of segs) {
             if (s.op === 'L' && Math.abs(s.x - px) <= tol && Math.abs(s.y - py) <= tol) continue;
             kept.push(s); px = s.x; py = s.y;
@@ -1235,7 +1248,7 @@
             path.push({ X: X, Y: Y });
         }
         if (path.length > 1) {
-            const a = path[0], b = path[path.length - 1];
+            const a = path[0]; const b = path[path.length - 1];
             if (a.X === b.X && a.Y === b.Y) path.pop();
         }
         return path;
@@ -1264,7 +1277,7 @@
     function fillHoleSlitRect(holePath, beyondX) {
         const n = holePath.length;
         if (n < 3) return null;
-        let y0 = Infinity, y1 = -Infinity;
+        let y0 = Infinity; let y1 = -Infinity;
         for (let i = 0; i < n; i++) {
             if (holePath[i].Y < y0) y0 = holePath[i].Y;
             if (holePath[i].Y > y1) y1 = holePath[i].Y;
@@ -1277,14 +1290,14 @@
             const y = Math.round(y0 + (y1 - y0) * cands[k]);
             const xs = [];
             for (let i = 0; i < n; i++) {
-                const p = holePath[i], q = holePath[(i + 1) % n];
-                const a = p.Y > y, b = q.Y > y;
+                const p = holePath[i]; const q = holePath[(i + 1) % n];
+                const a = p.Y > y; const b = q.Y > y;
                 if (a === b) continue;
                 xs.push(p.X + (q.X - p.X) * (y - p.Y) / (q.Y - p.Y));
             }
             if (xs.length < 2) continue;
             xs.sort((u, v) => u - v);
-            let bestA = null, bestB = null;
+            let bestA = null; let bestB = null;
             for (let i = 0; i + 1 < xs.length; i += 2) {
                 if (bestA === null || xs[i + 1] - xs[i] > bestB - bestA) { bestA = xs[i]; bestB = xs[i + 1]; }
             }
@@ -1332,7 +1345,7 @@
         clipPaths.forEach(pp => pp.forEach(p => { if (p.X > maxX) maxX = p.X; }));
         const beyondX = maxX + FILL_SCALE;          // 开缝方向：向右伸出 1mm（足够到区域外）
 
-        const outers = [], holesOfResult = [];
+        const outers = []; const holesOfResult = [];
         try {
             const cpr = new ClipperLib.Clipper();
             cpr.AddPaths(subjPaths, ClipperLib.PolyType.ptSubject, true);
@@ -1466,7 +1479,7 @@
         }
 
         // ① 读当前文档源码（需求判据）
-        let source = undefined;
+        let source;
         try {
             if (eda.sys_FileManager && typeof eda.sys_FileManager.getDocumentSource === 'function') {
                 source = await eda.sys_FileManager.getDocumentSource();
@@ -1536,7 +1549,7 @@
         // 允许 G04 / ; 前缀，名称里可有 Pro / Client，版本号后可跟哈希段
         const re = /(?:G04|;)\s*(EasyEDA(?:\s+Pro)?(?:\s+Client)?)\s+v([0-9][^\s,]*)\s*,\s*(\d{4}-\d{2}-\d{2}[ T][\d:]+)/i;
         const files = (typeof rawFilesCache !== 'undefined' && Array.isArray(rawFilesCache)) ? rawFilesCache : [];
-        let software = null, time = null, raw = '';
+        let software = null; let time = null; let raw = '';
         for (const f of files) {
             if (!f || !f.content) continue;
             const m = re.exec(f.content);
@@ -1653,7 +1666,7 @@
             cur = { x: op.x, y: op.y };
         });
         while (pts.length > 1) {
-            const a = pts[0], b = pts[pts.length - 1];
+            const a = pts[0]; const b = pts[pts.length - 1];
             if (Math.abs(a.x - b.x) < 1e-9 && Math.abs(a.y - b.y) < 1e-9) pts.pop();
             else break;
         }
@@ -1676,12 +1689,12 @@
         const stack = [[0, n - 1]];
         while (stack.length) {
             const seg = stack.pop();
-            const i0 = seg[0], i1 = seg[1];
+            const i0 = seg[0]; const i1 = seg[1];
             if (i1 - i0 < 2) continue;
-            const a = pts[i0], b = pts[i1];
-            const dx = b.x - a.x, dy = b.y - a.y;
+            const a = pts[i0]; const b = pts[i1];
+            const dx = b.x - a.x; const dy = b.y - a.y;
             const len2 = dx * dx + dy * dy;
-            let best = -1, bestD = t2;
+            let best = -1; let bestD = t2;
             for (let i = i0 + 1; i < i1; i++) {
                 const p0 = pts[i];
                 let d2;
@@ -1715,21 +1728,21 @@
             const v = netPathToVertices(prim.path);
             return v.length >= 3 ? v : null;
         }
-        const w = prim.w, h = prim.h;
+        const w = prim.w; const h = prim.h;
         if (!(w > 0) || !(h > 0)) return null;
         const rot = (prim.rotation || 0) * Math.PI / 180;
-        const ux = Math.cos(rot), uy = Math.sin(rot);   // w 的朝向
-        const vx = -uy, vy = ux;                        // h 的朝向
+        const ux = Math.cos(rot); const uy = Math.sin(rot);   // w 的朝向
+        const vx = -uy; const vy = ux;                        // h 的朝向
         const at = (a, b) => ({ x: prim.x + a * ux + b * vx, y: prim.y + a * uy + b * vy });
         if (prim.shape === 'RECT') {
-            const hw = w / 2, hh = h / 2;
+            const hw = w / 2; const hh = h / 2;
             return [at(hw, hh), at(-hw, hh), at(-hw, -hh), at(hw, -hh)];
         }
         // OVAL 等：胶囊（长边 = max(w,h)，两端半圆半径 = min(w,h)/2）
-        const long = Math.max(w, h), short = Math.min(w, h);
-        const r = short / 2, d = (long - short) / 2;
-        const e1x = (w >= h) ? ux : vx, e1y = (w >= h) ? uy : vy;   // 长轴单位向量
-        const e2x = -e1y, e2y = e1x;
+        const long = Math.max(w, h); const short = Math.min(w, h);
+        const r = short / 2; const d = (long - short) / 2;
+        const e1x = (w >= h) ? ux : vx; const e1y = (w >= h) ? uy : vy;   // 长轴单位向量
+        const e2x = -e1y; const e2y = e1x;
         const pts = [];
         const N = 8;
         for (let i = 0; i <= N; i++) {
@@ -1779,8 +1792,8 @@
     function netPointInPoly(px, py, vertices) {
         let inside = false;
         for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
-            const xi = vertices[i].x, yi = vertices[i].y;
-            const xj = vertices[j].x, yj = vertices[j].y;
+            const xi = vertices[i].x; const yi = vertices[i].y;
+            const xj = vertices[j].x; const yj = vertices[j].y;
             if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
         }
         return inside;
@@ -1791,7 +1804,7 @@
     }
 
     function netLineHitRect(x1, y1, x2, y2, r) {
-        const l = r.x - r.w / 2, rr = r.x + r.w / 2, t = r.y - r.h / 2, b = r.y + r.h / 2;
+        const l = r.x - r.w / 2; const rr = r.x + r.w / 2; const t = r.y - r.h / 2; const b = r.y + r.h / 2;
         if (netPointInRect(x1, y1, r) || netPointInRect(x2, y2, r)) return true;
         return netSegmentsIntersect(x1, y1, x2, y2, l, t, rr, t) ||
             netSegmentsIntersect(x1, y1, x2, y2, l, b, rr, b) ||
@@ -1806,7 +1819,7 @@
         if (p.shape === 'POLY' && p.vertices && p.vertices.length) {
             const v = p.vertices;
             for (let i = 0; i < v.length; i++) {
-                const a = v[i], b = v[(i + 1) % v.length];
+                const a = v[i]; const b = v[(i + 1) % v.length];
                 out.push([a.x, a.y, b.x, b.y]);
             }
         } else if (p.shape === 'line') {
@@ -1827,8 +1840,8 @@
                 ]);
             }
         } else {
-            const hw = (p.w || 0) / 2, hh = (p.h || 0) / 2;
-            const l = p.x - hw, r = p.x + hw, t = p.y - hh, b = p.y + hh;
+            const hw = (p.w || 0) / 2; const hh = (p.h || 0) / 2;
+            const l = p.x - hw; const r = p.x + hw; const t = p.y - hh; const b = p.y + hh;
             out.push([l, t, r, t], [r, t, r, b], [r, b, l, b], [l, b, l, t]);
         }
         p._edges = out;
@@ -1845,14 +1858,14 @@
                 y0: Math.min(p.y1, p.y2) - r, y1: Math.max(p.y1, p.y2) + r
             };
         } else if (p.shape === 'POLY' && p.vertices && p.vertices.length) {
-            let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+            let x0 = Infinity; let x1 = -Infinity; let y0 = Infinity; let y1 = -Infinity;
             p.vertices.forEach(v => {
                 if (v.x < x0) x0 = v.x; if (v.x > x1) x1 = v.x;
                 if (v.y < y0) y0 = v.y; if (v.y > y1) y1 = v.y;
             });
             bb = { x0, x1, y0, y1 };
         } else {
-            const hw = (p.w || 0) / 2, hh = (p.h || 0) / 2;
+            const hw = (p.w || 0) / 2; const hh = (p.h || 0) / 2;
             bb = { x0: p.x - hw, x1: p.x + hw, y0: p.y - hh, y1: p.y + hh };
         }
         p._bbox = bb;
@@ -1861,7 +1874,7 @@
 
     /** 两层是否有公共铜层（'ALL' = 多层/通孔，与任意铜层相连） */
     function netLayersConnected(a, b) {
-        const A = a.layers, B = b.layers;
+        const A = a.layers; const B = b.layers;
         if (A === 'ALL' || B === 'ALL') return true;
         // 快速路径：绝大多数图元只落在一层（单层导线/焊盘），直接比一个数，
         // 避免数组 indexOf（每次调用都要走一遍 C++/JS 边界，几十万次累积很可观）
@@ -1902,12 +1915,12 @@
         const cells = new Map();        // 2D 格子 → 边下标
         const bands = new Map();        // y 分带 → 边下标（射线法用）
         for (let i = 0; i < vs.length; i++) {
-            const p0 = vs[i], p1 = vs[(i + 1) % vs.length];
+            const p0 = vs[i]; const p1 = vs[(i + 1) % vs.length];
             const id = edges.push([p0.x, p0.y, p1.x, p1.y]) - 1;
-            const ex0 = Math.min(p0.x, p1.x), ex1 = Math.max(p0.x, p1.x);
-            const ey0 = Math.min(p0.y, p1.y), ey1 = Math.max(p0.y, p1.y);
-            const ix0 = Math.floor(ex0 / NET_POLY_CELL), ix1 = Math.floor(ex1 / NET_POLY_CELL);
-            const iy0 = Math.floor(ey0 / NET_POLY_CELL), iy1 = Math.floor(ey1 / NET_POLY_CELL);
+            const ex0 = Math.min(p0.x, p1.x); const ex1 = Math.max(p0.x, p1.x);
+            const ey0 = Math.min(p0.y, p1.y); const ey1 = Math.max(p0.y, p1.y);
+            const ix0 = Math.floor(ex0 / NET_POLY_CELL); const ix1 = Math.floor(ex1 / NET_POLY_CELL);
+            const iy0 = Math.floor(ey0 / NET_POLY_CELL); const iy1 = Math.floor(ey1 / NET_POLY_CELL);
             for (let ix = ix0; ix <= ix1; ix++) {
                 for (let iy = iy0; iy <= iy1; iy++) {
                     const k = netPolyCellKey(ix, iy);
@@ -1931,8 +1944,8 @@
         if (!poly._pi && (poly.vertices || []).length < NET_POLY_INDEX_MIN) return netShapeEdges(poly);
         const pi = netPolyEdgeIndex(poly);
         const out = [];
-        const ix0 = Math.floor(x0 / NET_POLY_CELL), ix1 = Math.floor(x1 / NET_POLY_CELL);
-        const iy0 = Math.floor(y0 / NET_POLY_CELL), iy1 = Math.floor(y1 / NET_POLY_CELL);
+        const ix0 = Math.floor(x0 / NET_POLY_CELL); const ix1 = Math.floor(x1 / NET_POLY_CELL);
+        const iy0 = Math.floor(y0 / NET_POLY_CELL); const iy1 = Math.floor(y1 / NET_POLY_CELL);
         for (let ix = ix0; ix <= ix1; ix++) {
             for (let iy = iy0; iy <= iy1; iy++) {
                 const arr = pi.cells.get(netPolyCellKey(ix, iy));
@@ -1973,7 +1986,7 @@
         // 跨次复用同一份缓存会拿到上一次的结论）
         if (!polyA._ovl) polyA._ovl = new Map();
         if (polyA._ovl.has(polyB)) return polyA._ovl.get(polyB);
-        const aVerts = polyA.vertices, bVerts = polyB.vertices;
+        const aVerts = polyA.vertices; const bVerts = polyB.vertices;
         let out = null;
         try {
             const A = fillToIntPath(aVerts.map(v => [v.x, v.y]));
@@ -2010,7 +2023,7 @@
         if (a.src && a.src === b.src) return true;
         if (!netLayersConnected(a, b)) return false;
         // 先做包围盒粗筛（便宜且绝不会漏判：真正相接的图元包围盒必然相交）
-        const ba = netBBox(a), bb = netBBox(b);
+        const ba = netBBox(a); const bb = netBBox(b);
         if (ba.x1 < bb.x0 || bb.x1 < ba.x0 || ba.y1 < bb.y0 || bb.y1 < ba.y0) return false;
 
         const aPoly = a.shape === 'POLY' && a.vertices && a.vertices.length >= 3;
@@ -2031,8 +2044,8 @@
             // ① 边相交只可能在**两者包围盒的交集**里发生 —— 把候选边限制在这个矩形内。
             //    这一步对「覆铜 × 覆铜」尤其关键：两块相邻覆铜的包围盒各自覆盖整板，
             //    但交集常常只是中间一条窄带；按整板取边会退化成几千 × 几千次求交。
-            const ix0 = Math.max(pbb.x0, obb.x0), iy0 = Math.max(pbb.y0, obb.y0);
-            const ix1 = Math.min(pbb.x1, obb.x1), iy1 = Math.min(pbb.y1, obb.y1);
+            const ix0 = Math.max(pbb.x0, obb.x0); const iy0 = Math.max(pbb.y0, obb.y0);
+            const ix1 = Math.min(pbb.x1, obb.x1); const iy1 = Math.min(pbb.y1, obb.y1);
             // 两块巨型多边形（覆铜 / 内层平面）走 Clipper 布尔求交，避免千万级边求交
             if (poly.vertices.length >= 800 && other.vertices && other.vertices.length >= 800) {
                 const ov = netPolysOverlapByClipper(poly, other);
@@ -2046,7 +2059,7 @@
             if (eA && eB) {
                 for (let i = 0; i < eA.length; i++) {
                     for (let j = 0; j < eB.length; j++) {
-                        const la = eA[i], lb = eB[j];
+                        const la = eA[i]; const lb = eB[j];
                         if (netSegmentsIntersect(la[0], la[1], la[2], la[3], lb[0], lb[1], lb[2], lb[3])) return true;
                     }
                 }
@@ -2094,7 +2107,7 @@
             return false;
         }
         if (a.shape === 'line' && b.shape === 'line') return netLinesTouching(a, b);
-        let n = null, r = null;
+        let n = null; let r = null;
         if (a.shape === 'line') { n = a; r = b; } else if (b.shape === 'line') { n = b; r = a; }
         if (n && r) {
             if (r.shape === 'ROUND') {
@@ -2107,7 +2120,7 @@
             }
         }
         if (a.shape === 'ROUND' && b.shape === 'ROUND') {
-            const dx = a.x - b.x, dy = a.y - b.y, lim = (a.r || 0) + (b.r || 0);
+            const dx = a.x - b.x; const dy = a.y - b.y; const lim = (a.r || 0) + (b.r || 0);
             return dx * dx + dy * dy < lim * lim;
         }
         return Math.abs(a.x - b.x) < ((a.w || 0) + (b.w || 0)) / 2 && Math.abs(a.y - b.y) < ((a.h || 0) + (b.h || 0)) / 2;
@@ -2143,7 +2156,7 @@
             const seed = (o.padNet && o.padNet.get(pad)) || '';
             const isCircle = !prim0 || /ELLIPSE|CIRCLE/i.test(String(prim0.shape || ''));
             if (isCircle) {
-                let w = Infinity, h = Infinity;
+                let w = Infinity; let h = Infinity;
                 prims0.forEach(x => {
                     if (x.w > 0) w = Math.min(w, x.w);
                     if (x.h > 0) h = Math.min(h, x.h);
@@ -2187,18 +2200,18 @@
                     return;
                 }
                 const r = ch / (2 * Math.sin(th / 2));
-                const mx = (t.x1 + t.x2) / 2, my = (t.y1 + t.y2) / 2;
-                const nx = -(t.y2 - t.y1) / ch, ny = (t.x2 - t.x1) / ch;
+                const mx = (t.x1 + t.x2) / 2; const my = (t.y1 + t.y2) / 2;
+                const nx = -(t.y2 - t.y1) / ch; const ny = (t.x2 - t.x1) / ch;
                 const h = Math.sqrt(Math.max(0, r * r - (ch / 2) * (ch / 2)));
                 const sign = (t.angle >= 0) ? 1 : -1;      // 正角 = 逆时针，圆心在弦左侧
-                const cx = mx + nx * h * sign, cy = my + ny * h * sign;
+                const cx = mx + nx * h * sign; const cy = my + ny * h * sign;
                 const a0 = Math.atan2(t.y1 - cy, t.x1 - cx);
                 const sweep = sign * th;
                 const N = Math.max(2, Math.min(12, Math.ceil(Math.abs(sweep) / (Math.PI / 8))));
-                let px = t.x1, py = t.y1;
+                let px = t.x1; let py = t.y1;
                 for (let k = 1; k <= N; k++) {
                     const a = a0 + sweep * (k / N);
-                    const qx = cx + r * Math.cos(a), qy = cy + r * Math.sin(a);
+                    const qx = cx + r * Math.cos(a); const qy = cy + r * Math.sin(a);
                     prims.push({ id: 'T' + i + '_' + k, src: t, layers, shape: 'line', x1: px, y1: py, x2: qx, y2: qy, w, net: '', isFlying: false });
                     px = qx; py = qy;
                 }
@@ -2225,7 +2238,7 @@
             const layers = [p.layerId];
             const path = p.path || [];
             const STEP = Math.PI / 8;   // 22.5°
-            let prev = null, si = 0;
+            let prev = null; let si = 0;
             path.forEach(op => {
                 if (!op || typeof op.x !== 'number' || !isFinite(op.x) ||
                     typeof op.y !== 'number' || !isFinite(op.y)) return;
@@ -2244,18 +2257,18 @@
                 const th = Math.min(Math.abs(angle || 0) * Math.PI / 180, Math.PI * 2);
                 if (ch < 1e-9 || th < 1e-9) { prev = op; return; }
                 const r = ch / (2 * Math.sin(th / 2));
-                const mx = (prev.x + op.x) / 2, my = (prev.y + op.y) / 2;
-                const nx = -(op.y - prev.y) / ch, ny = (op.x - prev.x) / ch;
+                const mx = (prev.x + op.x) / 2; const my = (prev.y + op.y) / 2;
+                const nx = -(op.y - prev.y) / ch; const ny = (op.x - prev.x) / ch;
                 const hh = Math.sqrt(Math.max(0, r * r - (ch / 2) * (ch / 2)));
                 const sign = (angle >= 0) ? 1 : -1;
-                const cx = mx + nx * hh * sign, cy = my + ny * hh * sign;
+                const cx = mx + nx * hh * sign; const cy = my + ny * hh * sign;
                 const a0 = Math.atan2(prev.y - cy, prev.x - cx);
                 const sweep = sign * th;
                 const N = Math.max(2, Math.min(12, Math.ceil(Math.abs(sweep) / STEP)));
-                let ax = prev.x, ay = prev.y;
+                let ax = prev.x; let ay = prev.y;
                 for (let k = 1; k <= N; k++) {
                     const a = a0 + sweep * (k / N);
-                    const qx = cx + r * Math.cos(a), qy = cy + r * Math.sin(a);
+                    const qx = cx + r * Math.cos(a); const qy = cy + r * Math.sin(a);
                     prims.push({
                         id: `Y${i}_${si++}`, src: p, layers, shape: 'line',
                         x1: ax, y1: ay, x2: qx, y2: qy, w, net: '', isFlying: false
@@ -2294,7 +2307,7 @@
             if (parent[id] !== id) parent[id] = find(parent[id]);
             return parent[id];
         };
-        return { find, union(a, b) { const x = find(a), y = find(b); if (x !== y) parent[x] = y; } };
+        return { find, union(a, b) { const x = find(a); const y = find(b); if (x !== y) parent[x] = y; } };
     }
 
     /**
@@ -2320,12 +2333,12 @@
         //    C(500,2)=12 万对/格 → 全板 800 万对（实测 1.6MB 的板子光是配对就 5 秒）。
         //    改 1.5mm 后每格约 45 个图元，候选对降到 1/10 量级；插入时图元跨的格子更多，
         //    但那只是数组 push，成本远低于几何判定。
-        const GRID = 1.0, PAD = 0.5;
+        const GRID = 1.0; const PAD = 0.5;
         const grid = {};
         prims.forEach(p => {
             const bb = netBBox(p);
-            const x0 = Math.floor((bb.x0 - PAD) / GRID), x1 = Math.floor((bb.x1 + PAD) / GRID);
-            const y0 = Math.floor((bb.y0 - PAD) / GRID), y1 = Math.floor((bb.y1 + PAD) / GRID);
+            const x0 = Math.floor((bb.x0 - PAD) / GRID); const x1 = Math.floor((bb.x1 + PAD) / GRID);
+            const y0 = Math.floor((bb.y0 - PAD) / GRID); const y1 = Math.floor((bb.y1 + PAD) / GRID);
             for (let x = x0; x <= x1; x++) {
                 for (let y = y0; y <= y1; y++) {
                     const k = x + ',' + y;
@@ -2353,9 +2366,9 @@
         // 发生过冲突合并的分量根：定名时必须丢弃原有名字，改用新的 NET*
         const conflictRoots = new Set();
         const tryUnion = (a, b) => {
-            const ra = uf.find(a.id), rb = uf.find(b.id);
+            const ra = uf.find(a.id); const rb = uf.find(b.id);
             if (ra === rb) return false;
-            const la = labelsOf[ra], lb = labelsOf[rb];
+            const la = labelsOf[ra]; const lb = labelsOf[rb];
             let conflict = false;
             if (la && lb) {
                 let same = false;
@@ -2375,18 +2388,18 @@
             return true;
         };
 
-        let _statPairs = 0, _statConn = 0, _statConnT = 0;
+        let _statPairs = 0; let _statConn = 0; let _statConnT = 0;
         const _prof = (typeof DEBUG !== 'undefined') && DEBUG;
         const _profT0 = _prof ? performance.now() : 0;
         for (const k in grid) {
             const cell = grid[k];
             if (cell.length < 2) continue;
             const cut = k.indexOf(',');
-            const cx = Number(k.substring(0, cut)), cy = Number(k.substring(cut + 1));
+            const cx = Number(k.substring(0, cut)); const cy = Number(k.substring(cut + 1));
             for (let i = 0; i < cell.length; i++) {
-                const a = cell[i], ba = netBBox(a);
+                const a = cell[i]; const ba = netBBox(a);
                 for (let j = i + 1; j < cell.length; j++) {
-                    const b = cell[j], bb = netBBox(b);
+                    const b = cell[j]; const bb = netBBox(b);
                     // 包围盒不相交 → 绝不可能相连（而且能顺手去掉「同一个图元被塞进多个格子」的重复）
                     const ox0 = ba.x0 > bb.x0 ? ba.x0 : bb.x0;
                     const oy0 = ba.y0 > bb.y0 ? ba.y0 : bb.y0;
