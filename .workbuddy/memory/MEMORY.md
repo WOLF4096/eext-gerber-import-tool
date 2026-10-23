@@ -5,11 +5,19 @@
 ## 1. 结构与铁律
 - 嘉立创EDA**专业版**扩展；产品 = `iframe/` 单页应用，`src/index.ts` 是壳，改功能只改 `iframe/`。
 - `iframe/js/` 数字前缀 = 加载顺序（不可调，**经典 script 禁 type=module**）；`.js/.css` 带 UTF-8 BOM；别反缩进（模板字面量敏感空白）。
-- ⚠️ **HTML 资源路径靠 `<base>` 运行时定**：`ImportGerber.html`/`About.html` 的 `<head>` 最前面有内联脚本，同步 XHR 探 `js/reward.js`，先试 `/iframe/` 再试文档所在目录，命中者写成 `<base href>`；引用本身写相对路径（`js/x.js`、`css/style.css`、`../images/x.png`）。
-  **不要写死 `/iframe/...`**（Pages 子路径部署全站 404）；**也别以为相对路径在 EDA 里能用** —— `openIFrame` 参数是 `htmlFileName`，EDA 按文件名取页面，文档 URL 不是 `/iframe/xxx.html`。新增资源照此办理，别再改回固定写法。
+- ⚠️ **V3.9.23 起的资源路径铁律：EDA 绝对路径优先 + 相对路径兜底**。每处资源写两条：
+  第 ① 条 `/iframe/js/x.js`（EDA 内）、第 ② 条 `js/x.js` / `../images/x.png`（演示/本地/Pages）。
+  第 ② 条由 `g2pcbAlt()`（`document.write`，写在原位不乱序）、`g2pcbImg()`（onerror 换 src）、`fetch` 两条 try 触发，
+  **只在第 ① 条取不到时才发**。CSS 同理：`<link href="/iframe/css/…">` + `g2pcbAlt('css/…')`。
+  判定：`<head>` 最先加载 `iframe/js/00-env.js`，**它执行过 = 绝对路径可达 = 在 EDA 里**（只认执行与否，不依赖 onload/onerror 时机）。
+  新增资源照此办理。⛔ 别再改回：`<base>` 自适应（EDA 里 XHR 不可靠，已废弃）、全相对（EDA 白屏）、
+  无条件写两个 script 标签（站点根=项目根时两条都 200，脚本执行两次 → `const` 重声明直接抛错）。
 - 版本以 `extension.json` 为准（`package.json` 同步）→ `npm run build`。临时文件 `Temp/`、分析文档 `docs/`（不进包）。
 - 打包排除清单 = 根目录 **`.edaignore`**（`build/packaged.ts` 读取，必须跟踪；新目录/无关文件先加这里再 build）。
-  `.workbuddy/`、`.idea/`、`Temp/`、`tools/`、`docs/`、`src/`、`config/`、`build/` 均已排除；运行期图片只留 logo/reward_qrcode/wx。
+  `.workbuddy/`、`.idea/`、`Temp/`、`tools/`、`docs/`、`src/`、`config/`、`build/` 均已排除。
+  ⚠️ **`images/Test.png`、`az.png`、`logo1.png` 不要加进排除清单、也不要删**（用户 2026-10-24 明确要求）：
+  `README.md` 是扩展市场的**详情页**，里面 `![演示](images/Test.png)`、`![安装](images/az.png)` 直接引用；
+  `logo1.png` 当前没有引用点，但同样按保留处理。**运行期**扩展内只引用 logo / reward_qrcode / wx。
 - 顶层 `const` 是全局词法作用域：裸名可访问，`window.xxx` 读不到。
 
 ## 2. 处理模式
