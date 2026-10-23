@@ -40,11 +40,28 @@
 		}
 
 		/* --- 滚动条：与主工具（iframe/css/style.css 的全局规则）保持一致 --- */
-		::-webkit-scrollbar { width: 8px; height: 8px; }
-		::-webkit-scrollbar-track { background: var(--bg); }
-		::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
-		::-webkit-scrollbar-thumb:hover { background: #555; }
-		* { scrollbar-width: thin; scrollbar-color: #444 var(--bg); }
+		::-webkit-scrollbar {
+			width: 8px;
+			height: 8px;
+		}
+
+		::-webkit-scrollbar-track {
+			background: var(--bg);
+		}
+
+		::-webkit-scrollbar-thumb {
+			background: #444;
+			border-radius: 4px;
+		}
+
+		::-webkit-scrollbar-thumb:hover {
+			background: #555;
+		}
+
+		* {
+			scrollbar-width: thin;
+			scrollbar-color: #444 var(--bg);
+		}
 
 		.page {
 			max-width: 860px;
@@ -342,8 +359,7 @@
 						onclick="showRewardDialog({ title: '感觉不错？', show: 'reward' })">请开发者喝蜜雪</button>
 					<button class="support-btn"
 						onclick="showRewardDialog({ title: '联系开发者', show: 'wechat' })">联系开发者</button>
-					<a class="support-btn"
-						href="https://github.com/WOLF4096/eext-gerber-import-tool/issues"
+					<a class="support-btn" href="https://github.com/WOLF4096/eext-gerber-import-tool/issues"
 						target="_blank" rel="noopener noreferrer">反馈问题</a>
 				</div>
 				<p class="support-note">「反馈问题」附上报错的 Gerber 样本更容易定位问题。</p>
@@ -362,7 +378,6 @@
 
 			<h3>1. 打开工具</h3>
 			<p>在嘉立创 EDA 专业版中，打开或新建一个 <strong>PCB 文档</strong>，从顶部菜单 <strong>「Gerber工具 → 导入Gerber」</strong> 打开主界面。
-				本页（关于）可从 <strong>「Gerber工具 → 关于」</strong> 打开。</p>
 
 			<h3>2. 导入文件（三选一）</h3>
 			<ol>
@@ -371,10 +386,12 @@
 				<li><strong>直接拖拽</strong>：把压缩包或文件拖到工具窗口任意位置。</li>
 			</ol>
 			<p>压缩包内若含飞针测试文件 <code>FlyingProbeTesting.json</code>，工具会自动读取，并按文件里的 <code>LAYER</code> 字段（T/B）在画布上分成四层：
-				<strong>顶层元件位号</strong>、<strong>顶层焊盘名称</strong>（引脚编号 + 网络名）、<strong>底层元件位号</strong>、<strong>底层焊盘名称</strong>。
+				<strong>顶层元件位号</strong>、<strong>顶层焊盘名称</strong>（引脚编号 +
+				网络名）、<strong>底层元件位号</strong>、<strong>底层焊盘名称</strong>。
 				焊盘名称两层<strong>仅在画布显示</strong>；两个位号层勾选后会随导出写入文字，字高 30 mil
-				（专业版写<strong>装配层</strong>，顶层 9 / 底层 10 并按面镜像；标准版写<strong>文档层</strong>，以 <code>TEXT</code> 轮廓输出），
-				且各自只写自己那一面。「顶面 / 底面」图层组整组勾选或取消时，同面的两层标注跟着显示/隐藏。</p>
+				（专业版写<strong>装配层</strong>；标准版写<strong>文档层</strong>，
+				且各自只写自己那一面。「顶面 / 底面」图层组整组勾选或取消时，同面的两层标注跟着显示/隐藏。
+			</p>
 
 			<h3>3. 配置</h3>
 			<ul>
@@ -413,15 +430,15 @@
 					</tr>
 					<tr>
 						<td><strong>导出嘉立创 EDA</strong></td>
-						<td>生成 <code>.epro2</code>（专业版 V3）/ <code>.epcb</code>（专业版 V2）工程文件，或标准版 <code>.json</code></td>
+						<td>生成 <code>.epro2</code>（专业版 V3）/ <code>.epro</code>（专业版 V2）工程文件，或标准版 <code>.json</code></td>
 						<td class="c">视版本</td>
-						<td class="c">本地文件</td>
+						<td class="c">—</td>
 					</tr>
 					<tr>
 						<td><strong>导出位图 PDF</strong></td>
 						<td>按按键 / 分层输出，DPI 可自定义</td>
 						<td class="c">—</td>
-						<td class="c">本地文件</td>
+						<td class="c">—</td>
 					</tr>
 				</tbody>
 			</table>
@@ -435,7 +452,7 @@
 			<ul>
 				<li>数万个图元走「通过图元导入」可能造成 EDA 卡顿，建议改用「导出 PCB 文件」后再导入。</li>
 				<li>画布渲染结果 <strong>不等于</strong> 导入结果，也不能保证 100% 准确；生成网络同样不保证 100% 准确，请人工复核。</li>
-				<li><strong>FPC 补强</strong>（<code>*StiffenerLayer_*</code>）只能「通过源码导入」写入；图元通道会跳过补强并提示，也不会切换板材类型。</li>
+				<li><strong>FPC 补强</strong>只能「通过源码导入」写入；图元导入通道不支持 FPC 补强。</li>
 				<li><strong>大板（&gt;500KB）</strong>：通过源码导入前会弹窗提示可能卡顿（可【继续导入】或【关闭】，建议改用「导出专业版 V3」）；
 					「导出选项」页面底部有<strong>运行日志</strong>，会实时显示当前步骤与预计剩余时间；缩放/平移期间走快照渲染，停手后自动补全清晰画面。</li>
 				<li>工具生成的工程文件<strong>仅供参考</strong>，严禁未经人工复核直接用于 PCB 生产制造。</li>
@@ -459,7 +476,7 @@
 		</section>
 
 		<footer>
-			<div id="foot-line">Gerber 转 PCB · 开源辅助工具 · Apache-2.0</div>
+			<div id="foot-line">Gerber 转 PCB (G2PCB) · 开源辅助工具 · Apache-2.0</div>
 			<div style="margin-top:4px">本工具非嘉立创 / EasyEDA 官方产品，与官方无隶属关系。</div>
 		</footer>
 	</div>

@@ -90,7 +90,7 @@ function main() {
 		streamFiles: true,
 		compression: 'DEFLATE',
 		compressionOptions: {
-			level: 6,
+			level: 9,
 		},
 	}).pipe(fs.createWriteStream(__dirname + '/dist/' + extensionConfig.name + '_v' + extensionConfig.version + '.eext'));
 }

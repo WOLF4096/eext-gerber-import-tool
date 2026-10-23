@@ -9,10 +9,10 @@
 // ====================================================================================
 
 (function () {
-	'use strict';
+	
 
 	function setText(id, text) {
-		var el = document.getElementById(id);
+		let el = document.getElementById(id);
 		if (el && text) el.textContent = text;
 	}
 
@@ -23,14 +23,14 @@
 
 	function applyManifest(manifest) {
 		if (!manifest) return;
-		var ver = stripHash(manifest.version);
+		let ver = stripHash(manifest.version);
 		if (ver) {
 			setText('meta-version', '版本 v' + ver);
-			setText('foot-line', (manifest.displayName || 'Gerber 转 PCB') + ' v' + ver + ' · 开源辅助工具 · ' + (manifest.license || 'Apache-2.0'));
+			setText('foot-line', (manifest.displayName || 'Gerber 转 PCB (G2PCB)') + ' v' + ver + ' · 开源辅助工具 · ' + (manifest.license || 'Apache-2.0'));
 		}
-		var desc = manifest.description;
+		let desc = manifest.description;
 		if (desc) {
-			var sub = document.querySelector('.hero-sub');
+			let sub = document.querySelector('.hero-sub');
 			if (sub) sub.setAttribute('title', desc);
 		}
 	}
@@ -39,7 +39,7 @@
 		try {
 			if (typeof eda === 'undefined' || !eda.sys_FileSystem ||
 				typeof eda.sys_FileSystem.getExtensionFile !== 'function') return null;
-			var file = await eda.sys_FileSystem.getExtensionFile('/extension.json');
+			let file = await eda.sys_FileSystem.getExtensionFile('/extension.json');
 			if (!file) return null;
 			return JSON.parse(await file.text());
 		} catch (e) {
@@ -49,7 +49,7 @@
 
 	async function tryFetch() {
 		try {
-			var res = await fetch('/extension.json', { cache: 'no-store' });
+			let res = await fetch('/extension.json', { cache: 'no-store' });
 			if (!res || !res.ok) return null;
 			return await res.json();
 		} catch (e) {
@@ -58,7 +58,7 @@
 	}
 
 	async function boot() {
-		var manifest = await tryEdaFile();
+		let manifest = await tryEdaFile();
 		if (!manifest) manifest = await tryFetch();
 		applyManifest(manifest);
 	}
