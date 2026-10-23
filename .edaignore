@@ -25,11 +25,4 @@
 debug.log
 DEV.md
 npm run build.cmd
-
-# 文档配图 / 未使用资源，运行期不需要（images/logo.png、reward_qrcode.png、wx.png 为运行期必需，保留）
-/images/Test.png
-/images/az.png
-/images/logo1.png
-
-# IDE / 编辑器本机配置，与扩展运行无关
 /.idea/
