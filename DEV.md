@@ -243,6 +243,7 @@ iframe/
 ├── css/
 │   └── style.css            全部界面样式
 └── js/
+    ├── 00-env.js           路径探测标记（判定走 EDA 绝对路径还是相对路径）
     ├── jszip.min.js         第三方库（ZIP 打包）
     ├── jspdf.umd.min.js     第三方库（PDF 生成）
     ├── clipper.js           Clipper 6.4.2（多边形布尔运算，负片转正片用）
@@ -279,7 +280,8 @@ iframe/
 
 ### 本地调试前端 UI
 
-页面里的资源全是绝对路径（`/iframe/...`），且大量调用 `eda.*`，直接双击 HTML 打开会 404 + 报错。
+页面里的资源按「EDA 绝对路径 + 相对路径」两条写，探测后二选一（见下方「资源路径规则」）。
+页面还大量调用 `eda.*`：直接双击 HTML 打开时资源能加载，但 `eda` 不存在，界面会落进演示模式分支。
 `tools/serve.py` 起了个只服务本机的调试站点（`tools/` 已在 `.edaignore` 里排除，不进扩展包）：
 
 ```bash
@@ -311,8 +313,25 @@ python tools/serve.py --no-reload         # 关掉自动刷新
 并在「导入参数」页顶部显示一行「演示模式 · 本机第 N 次打开」。写不进去（隐私模式 / 禁用 cookie / `file://`）只降级文案，不影响演示本身。
 EDA 内的导入 / 导出次数仍由 `reward.js` 的 `importExportCount` 统计，两者互不干扰。
 
-> ⚠️ 页面资源是绝对路径 `/iframe/...`。部署到 GitHub Pages 的**项目子路径**时，`/iframe/js/...` 会解析到域名根而 404，
-> 必须把 HTML 里的 `/iframe/` 改成相对路径（或用静态站根路径托管），否则演示只有骨架、脚本全丢。
+### 资源路径规则（EDA 绝对路径优先 + 相对路径兜底）
+
+两种环境没有单一写法能同时成立：
+
+- **EDA 扩展**：`openIFrame` 是按**文件名**从扩展包里取页面渲染的，文档 URL 不是 `/iframe/xxx.html`，相对路径会解析到别处；
+- **GitHub Pages**：项目**子路径**部署（`/eext-gerber-import-tool/iframe/`），`/iframe/js/x.js` 会丢掉仓库名前缀而 404。
+
+所以每处资源都写两条请求，第 ② 条只在第 ① 条取不到时才发：
+
+```html
+<script src="/iframe/js/01-templates.js"></script>
+<script>g2pcbAlt('js/01-templates.js');</script>
+```
+
+- 判定：`<head>` 最前面先按绝对路径加载 `iframe/js/00-env.js`，**它执行过 = 绝对路径可达 = 在 EDA 里**。
+  只认「执行过没有」，不依赖 `onload` / `onerror` 时机 —— 解析阻塞型脚本严格按文档顺序执行。
+- **不要改成「无条件写两个 script 标签」**：站点根 = 项目根时两条都能取到，脚本会执行两次，`const` 重声明直接抛错。
+- 图片（`onerror` 换 `src`）、`extension.json`（两条 `fetch`）同理，都是同一个套路。
+- 代价：EDA 内只多 1 次极小的探测请求；演示模式首屏会多 22 条 404 并串行加载（第 ② 条无法被预扫描）。
 
 ## 九、构建
 

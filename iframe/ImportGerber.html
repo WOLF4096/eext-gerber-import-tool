@@ -5,12 +5,49 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Gerber 查看 / Gerber 转 PCB / 导出PDF文件</title>
-	<!-- EDA环境 -->
-	<script src="js/jszip.min.js"></script>
-	<script src="js/jspdf.umd.min.js"></script>
-	<script src="js/clipper.js"></script>
+	<!-- ==========================================================================
+	     资源路径：EDA 优先 + 相对路径兜底，一个文件写两条请求。
+	     · EDA 扩展内          → 绝对路径：/iframe/js/x.js、/images/x.png、/extension.json
+	     · 演示 / 本地 / Pages → 相对路径：js/x.js、../images/x.png、../extension.json
+	     每处资源的第 ① 条一律是 EDA 绝对路径（原样保留），第 ② 条是相对路径；
+	     只有第 ① 条取不到时才请求第 ② 条 —— 既不会重复加载，也不会重复执行。
+	     判定：先按 EDA 绝对路径加载一次 00-env.js（扩展包内必然存在）。
+	     它执行过 = 绝对路径可达 = 在 EDA 里；没执行 = 演示模式。
+	     ========================================================================== -->
+	<script src="/iframe/js/00-env.js"></script>
+	<script>
+		// 探测脚本是否执行过 → 决定后续用绝对路径还是相对路径
+		window.G2PCB_EDA = !!window.__G2PCB_EDA_PROBE__;
 
-	<link rel="stylesheet" href="css/style.css">
+		/**
+		 * 相对路径兜底（第 ② 条请求）。rel 例：'js/01-templates.js'、'css/style.css'
+		 * EDA 内第 ① 条已成功，这里直接返回，不发多余请求。
+		 */
+		window.g2pcbAlt = function (rel) {
+			if (window.G2PCB_EDA) return;
+			if (/\.css$/i.test(rel)) document.write('<link rel="stylesheet" href="' + rel + '">');
+			else document.write('<script src="' + rel + '"><\/script>');
+		};
+
+		/** 图片双请求：绝对路径失败 → 相对路径；两条都失败才隐藏（保持原 onerror 行为） */
+		window.g2pcbImg = function (el, rel) {
+			if (!el) return;
+			var first = el.getAttribute('src');
+			el.onerror = function () {
+				if (el.getAttribute('src') === first) { el.setAttribute('src', rel); return; }
+				el.style.display = 'none';
+			};
+		};
+	</script>
+	<script src="/iframe/js/jszip.min.js"></script>
+	<script>g2pcbAlt('js/jszip.min.js');</script>
+	<script src="/iframe/js/jspdf.umd.min.js"></script>
+	<script>g2pcbAlt('js/jspdf.umd.min.js');</script>
+	<script src="/iframe/js/clipper.js"></script>
+	<script>g2pcbAlt('js/clipper.js');</script>
+
+	<link rel="stylesheet" href="/iframe/css/style.css">
+	<script>g2pcbAlt('css/style.css');</script>
 </head>
 
 <body>
@@ -372,33 +409,50 @@
 	</div>
 	<!-- ==========================================================================
          应用脚本：以下顺序不可调整 —— 后置模块依赖前置模块的全局定义。
-           jszip / jspdf 已在上方 <head> 中加载。
-         EDA 扩展 / 本地 serve.py / GitHub Pages 子路径三种环境一律使用相对路径，
-         因为页面 URL 始终位于 /iframe/ 下，相对路径在三种环境下都成立。
+           jszip / jspdf / clipper 已在上方 <head> 中加载。
+         每行都是两条请求：第 ① 条 EDA 绝对路径（/iframe/js/…），
+         第 ② 条同文件的相对路径（js/…），只在第 ① 条取不到时才请求。
          ========================================================================== -->
-	<script src="js/01-templates.js"></script>
-	<script src="js/02-config.js"></script>
-	<script src="js/03-state.js"></script>
-	<script src="js/04-gerber-parser.js"></script>
+	<script src="/iframe/js/01-templates.js"></script>
+	<script>g2pcbAlt('js/01-templates.js');</script>
+	<script src="/iframe/js/02-config.js"></script>
+	<script>g2pcbAlt('js/02-config.js');</script>
+	<script src="/iframe/js/03-state.js"></script>
+	<script>g2pcbAlt('js/03-state.js');</script>
+	<script src="/iframe/js/04-gerber-parser.js"></script>
+	<script>g2pcbAlt('js/04-gerber-parser.js');</script>
 	<!-- 处理模式模块：一个模式一个文件，由注册表路由。
          顺序 = registry（注册表）→ industry-common（行业公用）→ 各模式模块
          当前仅保留两个已实现的模式：easyedapro（内部标准）、rs274x（行业标准） -->
-	<script src="js/processors/registry.js"></script>
-	<script src="js/processors/industry-common.js"></script>
-	<script src="js/processors/industry-rs274x.js"></script>
-	<script src="js/processors/jlc-internal.js"></script>
-	<script src="js/05-pad-tool.js"></script>
-	<script src="js/06-utils.js"></script>
+	<script src="/iframe/js/processors/registry.js"></script>
+	<script>g2pcbAlt('js/processors/registry.js');</script>
+	<script src="/iframe/js/processors/industry-common.js"></script>
+	<script>g2pcbAlt('js/processors/industry-common.js');</script>
+	<script src="/iframe/js/processors/industry-rs274x.js"></script>
+	<script>g2pcbAlt('js/processors/industry-rs274x.js');</script>
+	<script src="/iframe/js/processors/jlc-internal.js"></script>
+	<script>g2pcbAlt('js/processors/jlc-internal.js');</script>
+	<script src="/iframe/js/05-pad-tool.js"></script>
+	<script>g2pcbAlt('js/05-pad-tool.js');</script>
+	<script src="/iframe/js/06-utils.js"></script>
+	<script>g2pcbAlt('js/06-utils.js');</script>
 	<!-- 演示模式（非 EDA）使用次数：纯本机 cookie，不联网 -->
-	<script src="js/demo-usage.js"></script>
+	<script src="/iframe/js/demo-usage.js"></script>
+	<script>g2pcbAlt('js/demo-usage.js');</script>
 	<!-- 赞赏引导：导入/导出计数 + 「感觉不错？」弹窗（主工具与关于页共用） -->
-	<script src="js/reward.js"></script>
-	<script src="js/07-file-io.js"></script>
-	<script src="js/08-export.js"></script>
-	<script src="js/09-ui.js"></script>
-	<script src="js/10-init.js"></script>
+	<script src="/iframe/js/reward.js"></script>
+	<script>g2pcbAlt('js/reward.js');</script>
+	<script src="/iframe/js/07-file-io.js"></script>
+	<script>g2pcbAlt('js/07-file-io.js');</script>
+	<script src="/iframe/js/08-export.js"></script>
+	<script>g2pcbAlt('js/08-export.js');</script>
+	<script src="/iframe/js/09-ui.js"></script>
+	<script>g2pcbAlt('js/09-ui.js');</script>
+	<script src="/iframe/js/10-init.js"></script>
+	<script>g2pcbAlt('js/10-init.js');</script>
 	<!-- 内置字体轮廓（由 tools/font-outline.js 生成）：标准版 TEXT 图元需要自带字形路径 -->
-	<script src="js/11-font-outline.js"></script>
+	<script src="/iframe/js/11-font-outline.js"></script>
+	<script>g2pcbAlt('js/11-font-outline.js');</script>
 </body>
 
 </html>

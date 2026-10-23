@@ -5,6 +5,40 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>关于 · Gerber 转 PCB</title>
+	<!-- ==========================================================================
+	     资源路径：EDA 优先 + 相对路径兜底，一个文件写两条请求。
+	     · EDA 扩展内          → 绝对路径：/iframe/js/x.js、/images/x.png、/extension.json
+	     · 演示 / 本地 / Pages → 相对路径：js/x.js、../images/x.png、../extension.json
+	     每处资源的第 ① 条一律是 EDA 绝对路径（原样保留），第 ② 条是相对路径；
+	     只有第 ① 条取不到时才请求第 ② 条 —— 既不会重复加载，也不会重复执行。
+	     判定：先按 EDA 绝对路径加载一次 00-env.js（扩展包内必然存在）。
+	     它执行过 = 绝对路径可达 = 在 EDA 里；没执行 = 演示模式。
+	     ========================================================================== -->
+	<script src="/iframe/js/00-env.js"></script>
+	<script>
+		// 探测脚本是否执行过 → 决定后续用绝对路径还是相对路径
+		window.G2PCB_EDA = !!window.__G2PCB_EDA_PROBE__;
+
+		/**
+		 * 相对路径兜底（第 ② 条请求）。rel 例：'js/01-templates.js'、'css/style.css'
+		 * EDA 内第 ① 条已成功，这里直接返回，不发多余请求。
+		 */
+		window.g2pcbAlt = function (rel) {
+			if (window.G2PCB_EDA) return;
+			if (/\.css$/i.test(rel)) document.write('<link rel="stylesheet" href="' + rel + '">');
+			else document.write('<script src="' + rel + '"><\/script>');
+		};
+
+		/** 图片双请求：绝对路径失败 → 相对路径；两条都失败才隐藏（保持原 onerror 行为） */
+		window.g2pcbImg = function (el, rel) {
+			if (!el) return;
+			var first = el.getAttribute('src');
+			el.onerror = function () {
+				if (el.getAttribute('src') === first) { el.setAttribute('src', rel); return; }
+				el.style.display = 'none';
+			};
+		};
+	</script>
 	<style>
 		:root {
 			--bg: #1e1e1e;
@@ -315,7 +349,8 @@
 <body>
 	<div class="page">
 		<header class="hero">
-			<img id="app-logo" src="../images/logo.png" alt="logo" onerror="this.style.display='none'">
+			<img id="app-logo" src="/images/logo.png" alt="logo"
+				onerror="g2pcbImg(this, '../images/logo.png')">
 			<div>
 				<h1>Gerber 转 PCB</h1>
 				<div class="hero-sub">
@@ -481,9 +516,12 @@
 		</footer>
 	</div>
 
-	<!-- 赞赏引导：计数与「感觉不错？」弹窗（与主工具共用） -->
-	<script src="js/reward.js"></script>
-	<script src="js/about.js"></script>
+	<!-- 赞赏引导：计数与「感觉不错？」弹窗（与主工具共用）
+	     每条都是两条请求：EDA 绝对路径 /iframe/js/… → 相对路径 js/… -->
+	<script src="/iframe/js/reward.js"></script>
+	<script>g2pcbAlt('js/reward.js');</script>
+	<script src="/iframe/js/about.js"></script>
+	<script>g2pcbAlt('js/about.js');</script>
 </body>
 
 </html>

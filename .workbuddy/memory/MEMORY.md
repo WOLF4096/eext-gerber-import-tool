@@ -4,7 +4,9 @@
 
 ## 1. 结构与铁律
 - 嘉立创EDA**专业版**扩展；产品 = `iframe/` 单页应用，`src/index.ts` 是壳，改功能只改 `iframe/`。
-- `iframe/js/` 数字前缀 = 加载顺序（不可调，**经典 script 禁 type=module**）；HTML 里**一律用相对路径**（`js/x.js`、`css/style.css`、`../images/x.png`）——写 `/iframe/...` 会让 GitHub Pages 子路径部署全站 404；`.js/.css` 带 UTF-8 BOM；别反缩进（模板字面量敏感空白）。
+- `iframe/js/` 数字前缀 = 加载顺序（不可调，**经典 script 禁 type=module**）；`.js/.css` 带 UTF-8 BOM；别反缩进（模板字面量敏感空白）。
+- ⚠️ **HTML 资源路径靠 `<base>` 运行时定**：`ImportGerber.html`/`About.html` 的 `<head>` 最前面有内联脚本，同步 XHR 探 `js/reward.js`，先试 `/iframe/` 再试文档所在目录，命中者写成 `<base href>`；引用本身写相对路径（`js/x.js`、`css/style.css`、`../images/x.png`）。
+  **不要写死 `/iframe/...`**（Pages 子路径部署全站 404）；**也别以为相对路径在 EDA 里能用** —— `openIFrame` 参数是 `htmlFileName`，EDA 按文件名取页面，文档 URL 不是 `/iframe/xxx.html`。新增资源照此办理，别再改回固定写法。
 - 版本以 `extension.json` 为准（`package.json` 同步）→ `npm run build`。临时文件 `Temp/`、分析文档 `docs/`（不进包）。
 - 打包排除清单 = 根目录 **`.edaignore`**（`build/packaged.ts` 读取，必须跟踪；新目录/无关文件先加这里再 build）。
   `.workbuddy/`、`.idea/`、`Temp/`、`tools/`、`docs/`、`src/`、`config/`、`build/` 均已排除；运行期图片只留 logo/reward_qrcode/wx。

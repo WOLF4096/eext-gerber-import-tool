@@ -23,8 +23,11 @@
 	const PROMPT_STEP = 10;                       // 每 10 次弹一次
 	const FALLBACK_KEY = 'eext-gerber-import-tool.reward'; // localStorage 兜底键
 	const ISSUE_URL = 'https://github.com/WOLF4096/eext-gerber-import-tool/issues';
-	const IMG_REWARD = '../images/reward_qrcode.png'; // 赞赏码（请开发者喝蜜雪）
-	const IMG_WECHAT = '../images/wx.png';            // 微信二维码（联系开发者）
+	// 两条请求：EDA 绝对路径优先（/images/…），失败再退回相对路径（../images/…）
+	const IMG_REWARD = '/images/reward_qrcode.png';        // 赞赏码（请开发者喝蜜雪）
+	const IMG_WECHAT = '/images/wx.png';                   // 微信二维码（联系开发者）
+	const IMG_REWARD_REL = '../images/reward_qrcode.png';  // 演示模式相对路径
+	const IMG_WECHAT_REL = '../images/wx.png';             // 演示模式相对路径
 
 	// --- 会话内缓存（EDA 接口读取有开销，且写入失败时保证本次会话计数不丢） ---
 	let countCache = null;      // 累计次数
@@ -203,8 +206,8 @@
 	`;
 
 	const IMG_META = {
-		reward: { src: IMG_REWARD, cap: '微信扫码 · 请开发者喝蜜雪' },
-		wechat: { src: IMG_WECHAT, cap: '微信扫码联系开发者' }
+		reward: { src: IMG_REWARD, rel: IMG_REWARD_REL, cap: '微信扫码 · 请开发者喝蜜雪' },
+		wechat: { src: IMG_WECHAT, rel: IMG_WECHAT_REL, cap: '微信扫码联系开发者' }
 	};
 
 	/** 弹窗不存在时创建（幂等） */
@@ -236,7 +239,13 @@
 	function rewardShowImage(kind) {
 		ensureDialog();
 		const meta = IMG_META[kind] || IMG_META.reward;
-		document.getElementById('rw-img').src = meta.src;
+		const img = document.getElementById('rw-img');
+		// 两条请求：先 EDA 绝对路径，取不到再换相对路径
+		img.onerror = function () {
+			if (img.getAttribute('src') === meta.src) { img.setAttribute('src', meta.rel); return; }
+			img.onerror = null;
+		};
+		img.setAttribute('src', meta.src);
 		document.getElementById('rw-cap').textContent = meta.cap;
 		document.getElementById('rw-img-area').style.display = 'block';
 	}
