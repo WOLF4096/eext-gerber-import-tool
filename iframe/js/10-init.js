@@ -188,6 +188,46 @@
         appLog('已按新的单位 / 精度重新渲染');
     };
 
+    // ====================================================================================
+    // 环境显隐（演示模式）
+    // ====================================================================================
+
+    /**
+     * 按运行环境显隐「只有 EDA 里才有意义」的入口。
+     * HTML 中这些节点默认 display:none，所以浏览器直开演示时不会闪一下；
+     * EDA 里再恢复它们各自的布局方式（标题是 flex，按钮区是 block）。
+     * @param {boolean} isEdaEnv 是否处于 EDA 环境
+     */
+    function applyEnvVisibility(isEdaEnv) {
+        const setDisplay = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = value;
+        };
+        setDisplay('eda-export-title', isEdaEnv ? 'flex' : 'none');              // 获取当前板子
+        setDisplay('in-eda-gerber', isEdaEnv ? 'block' : 'none');                // 同上：按钮区
+        setDisplay('ui-export-canvas-title', isEdaEnv ? 'flex' : 'none');        // 导出至当前 PCB 画布
+        setDisplay('ui-export-canvas-btn-wrapper', isEdaEnv ? 'block' : 'none'); // 源码 / 图元导入
+    }
+
+    /**
+     * 演示模式提示：把本机打开次数写进 cookie，并显示一行提示。
+     * 写失败（隐私模式 / 禁用 cookie）只降级文案，不影响演示本身。
+     */
+    function showDemoUsageHint() {
+        const hint = document.getElementById('demo-usage-hint');
+        const usage = window.DemoUsage && typeof window.DemoUsage.bump === 'function' ? window.DemoUsage.bump() : null;
+        if (!usage) return;
+
+        if (typeof appLog === 'function') {
+            appLog('演示模式：本机第 ' + usage.opens + ' 次打开' + (usage.saved ? '' : '（cookie 写入失败）'));
+        }
+        if (!hint) return;
+        hint.textContent = usage.saved
+            ? '演示模式 · 本机第 ' + usage.opens + ' 次打开（导入 / 导出需在 EDA 内使用）'
+            : '演示模式 · 导入 / 导出需在 EDA 内使用（浏览器已禁用 cookie，本次未计数）';
+        hint.style.display = 'block';
+    }
+
     // --- 初始化入口 ---
     document.addEventListener('DOMContentLoaded', () => {
         initLayerSelect();
@@ -195,39 +235,22 @@
         // 初始化用户协议复选框对应的按钮外观：默认未勾选 → 导入 / 导出嘉立创EDA 按钮呈锁定态
         if (typeof syncAgreementButtons === 'function') syncAgreementButtons();
         
-        // 检测是否在嘉立创 EDA 环境中
+        // 检测是否在嘉立创 EDA 环境中（README 的「打开演示」是浏览器直开本页，此时为 false）
         const isEdaEnv = typeof eda !== 'undefined';
-        
-        // 获取相关 DOM 元素
-        const titleExport = document.getElementById('ui-export-canvas-title'); // 导出标题
-        const btnExportWrapper = document.getElementById('ui-export-canvas-btn-wrapper'); // 导出按钮组
-        
-        const titleImportEda = document.getElementById('eda-export-title'); // [获取当前板子] 标题
-        const divImportEda = document.getElementById('in-eda-gerber');     // [导入当前...] 按钮区域
+
+        // 「获取当前板子」与「通过源码 / 图元导入」都依赖 EDA：前者读 EDA 里打开的工程，
+        // 后者写入当前 PCB 文档。HTML 里这几块默认 display:none（避免演示页闪一下），
+        // 这里按环境统一恢复或保持隐藏。
+        applyEnvVisibility(isEdaEnv);
 
         if (!isEdaEnv) {
-            // --- 情况 A: 普通浏览器环境 ---
-            // 1. 隐藏 [导出至 PCB 画布] (这是原来就有的逻辑)
-            if (titleExport) titleExport.textContent = ''; // 或者 style.display = 'none'
-            if (btnExportWrapper) btnExportWrapper.style.display = 'none';
-
-            // 2. [新增] 隐藏 [获取当前板子] 区域
-            if (titleImportEda) titleImportEda.style.display = 'none';
-            if (divImportEda) divImportEda.style.display = 'none';
-
+            // --- 情况 A: 演示环境（浏览器直开 / GitHub Pages） ---
+            // EDA 专属入口已隐藏；这里补一句演示提示，并把本机使用次数写进 cookie
+            showDemoUsageHint();
         } else {
             // --- 情况 B: EDA 环境 ---
-            // 1. 显示 [导出至 PCB 画布]
-            if (titleExport) titleExport.style.display = 'flex';
-            if (btnExportWrapper) btnExportWrapper.style.display = 'block';
-            
-            // 2. [新增] 显示 [获取当前板子] 区域
-            if (titleImportEda) titleImportEda.style.display = 'flex';
-            if (divImportEda) divImportEda.style.display = 'block';
-
-            // --- [新增] 检测当前是否处于 PCB 画布 ---
-            // 「通过源码导入 / 通过图元导入」写的是当前打开的 PCB 文档；
-            // 从开始页 / 原理图 / 符号库打开时读不到 PCB 源码 → 这两个入口禁用。
+            // 检测当前是否处于 PCB 画布：从开始页 / 原理图 / 符号库打开时读不到 PCB 源码 →
+            // 「通过源码导入 / 通过图元导入」禁用（按钮仍可见，只是锁定并给出提示）。
             if (typeof refreshPcbContext === 'function') {
                 refreshPcbContext();
                 // 用户切到其它文档再切回来时重新检测（iframe 重新获得焦点 / 页面重新可见）

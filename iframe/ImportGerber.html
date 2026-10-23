@@ -5,13 +5,9 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Gerber 查看 / Gerber 转 PCB / 导出PDF文件</title>
-	<!-- 浏览器环境 -->
-	<!-- <script src="js/jszip.min.js"></script>
-    <script src="js/jspdf.umd.min.js"></script> -->
 	<!-- EDA环境 -->
 	<script src="/iframe/js/jszip.min.js"></script>
 	<script src="/iframe/js/jspdf.umd.min.js"></script>
-	<!-- Clipper：整数坐标多边形布尔运算（负片转正片要算「外环 − 挖空并集」）。Boost Software License -->
 	<script src="/iframe/js/clipper.js"></script>
 
 	<link rel="stylesheet" href="/iframe/css/style.css">
@@ -38,8 +34,13 @@
 		</div>
 		<!-- 导入参数 -->
 		<div id="tab-config" class="tab-content active">
-			<div class="section-title" id="eda-export-title">获取当前板子</div>
-			<div style="padding: 0 15px;" id="in-eda-gerber">
+			<!-- 演示模式提示（仅非 EDA 环境显示，文案与本机打开次数由 10-init.js 写入） -->
+			<div id="demo-usage-hint"
+				style="display: none; margin: 10px 15px; padding: 6px 8px; font-size: 11px; line-height: 1.5; color: #4ec9b0; border: 1px solid #2a4a44; border-radius: 3px; background: #10201d;">
+			</div>
+			<!-- 「获取当前板子」只在 EDA 里可用：读的是 EDA 中已打开的工程。默认隐藏，避免浏览器直开演示时闪一下 -->
+			<div class="section-title" id="eda-export-title" style="display: none;">获取当前板子</div>
+			<div style="padding: 0 15px; display: none;" id="in-eda-gerber">
 				<button class="btn-block btn-success" onclick="importCurrentGerber()">
 					导入当前板子 Gerber 图形
 				</button>
@@ -200,7 +201,8 @@
 				</ul>
 			</div>
 
-			<div class="section-title" id="ui-export-canvas-title">导出至当前 PCB 画布</div>
+			<!-- 「通过源码 / 通过图元导入」写的是当前打开的 PCB 文档，浏览器直开演示时没有真实目标，默认隐藏 -->
+			<div class="section-title" id="ui-export-canvas-title" style="display: none;">导出至当前 PCB 画布</div>
 
 			<div class="control-group">
 				<div class="control-row" style="display: flex; justify-content: space-between; align-items: center;">
@@ -232,7 +234,7 @@
 				</div>
 			</div>
 
-			<div style="padding: 0 15px;" id="ui-export-canvas-btn-wrapper">
+			<div style="padding: 0 15px; display: none;" id="ui-export-canvas-btn-wrapper">
 				<div style="display: flex; gap: 10px; margin-top: 5px;">
 					<button class="btn-block btn-success agree-gated pcb-gated is-locked"
 						onclick="confirmPcbAction(() => handleExportToCanvas('source'))" style="flex: 1;">
@@ -387,6 +389,8 @@
 	<script src="/iframe/js/processors/jlc-internal.js"></script>
 	<script src="/iframe/js/05-pad-tool.js"></script>
 	<script src="/iframe/js/06-utils.js"></script>
+	<!-- 演示模式（非 EDA）使用次数：纯本机 cookie，不联网 -->
+	<script src="/iframe/js/demo-usage.js"></script>
 	<!-- 赞赏引导：导入/导出计数 + 「感觉不错？」弹窗（主工具与关于页共用） -->
 	<script src="/iframe/js/reward.js"></script>
 	<script src="/iframe/js/07-file-io.js"></script>

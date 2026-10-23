@@ -4,7 +4,8 @@
 **支持客户端版本：嘉立创 EDA 专业版 V2.2.45 ~ V4.x.x**  
 全程离线运行，文件解析、渲染、导出都在本地完成，不上传任何服务器。
 
-> [演示视频](https://pbt-pub.jlc.com/pbt/bbs/8707762781426302976-20260205_220643.mp4)
+**[打开演示页面](https://wolf4096.github.io/eext-gerber-import-tool/iframe/ImportGerber.html)
+| [演示视频](https://pbt-pub.jlc.com/pbt/bbs/8707762781426302976-20260205_220643.mp4)**
 
 ![演示](images/Test.png)
 
