@@ -4,8 +4,10 @@
 
 ## 1. 结构与铁律
 - 嘉立创EDA**专业版**扩展；产品 = `iframe/` 单页应用，`src/index.ts` 是壳，改功能只改 `iframe/`。
-- `iframe/js/` 数字前缀 = 加载顺序（不可调，**经典 script 禁 type=module**）；引用绝对路径 `/iframe/...`；`.js/.css` 带 UTF-8 BOM；别反缩进（模板字面量敏感空白）。
+- `iframe/js/` 数字前缀 = 加载顺序（不可调，**经典 script 禁 type=module**）；HTML 里**一律用相对路径**（`js/x.js`、`css/style.css`、`../images/x.png`）——写 `/iframe/...` 会让 GitHub Pages 子路径部署全站 404；`.js/.css` 带 UTF-8 BOM；别反缩进（模板字面量敏感空白）。
 - 版本以 `extension.json` 为准（`package.json` 同步）→ `npm run build`。临时文件 `Temp/`、分析文档 `docs/`（不进包）。
+- 打包排除清单 = 根目录 **`.edaignore`**（`build/packaged.ts` 读取，必须跟踪；新目录/无关文件先加这里再 build）。
+  `.workbuddy/`、`.idea/`、`Temp/`、`tools/`、`docs/`、`src/`、`config/`、`build/` 均已排除；运行期图片只留 logo/reward_qrcode/wx。
 - 顶层 `const` 是全局词法作用域：裸名可访问，`window.xxx` 读不到。
 
 ## 2. 处理模式
@@ -65,7 +67,7 @@ TEXT 位号：path 只允许 M/L/C/Z，Q 转 C，坐标过 `flyingLengthScaleMM(
 宏基元 6/7 未绘制；`%SR` 未处理；`DEBUG` 硬编码 false；`LCEDA_STD_Head_Source` 空串；api 模式强制 pro_v2（isV3 未用）；标准版不导出埋盲孔；真彩图片离线无解。协议责任条款一字不动。
 
 ## 15. 本地调试
-`python tools/serve.py` → `http://127.0.0.1:8456/iframe/ImportGerber.html`。站点根 = 项目根（引用全 `/iframe/...`），注入 eda mock，改文件自动刷新。⚠️ 本机 `http_proxy=127.0.0.1:2868`，探本机端口加 `--noproxy '*'`。
+`python tools/serve.py` → `http://127.0.0.1:8456/iframe/ImportGerber.html`。站点根 = 项目根（页面在 `/iframe/xxx.html`，故相对路径可直接用），注入 eda mock，改文件自动刷新。⚠️ 本机探本机端口加 `--noproxy '*'`。env 里的 `http_proxy=127.0.0.1:1317` 是死的；**GitHub 唯一可用代理 = `127.0.0.1:7890`**（直连会超时）。
 
 ## 16. 界面 / 日志规范
 日志 `appLog` 一阶段一行「${label}，耗时…」，禁 emoji / `-----`，不写实现细节。勾选行整行可点用 `<label for>`；含链接须 `onAgreeRowClick` 提前 return。

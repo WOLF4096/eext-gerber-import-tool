@@ -6,11 +6,11 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Gerber 查看 / Gerber 转 PCB / 导出PDF文件</title>
 	<!-- EDA环境 -->
-	<script src="/iframe/js/jszip.min.js"></script>
-	<script src="/iframe/js/jspdf.umd.min.js"></script>
-	<script src="/iframe/js/clipper.js"></script>
+	<script src="js/jszip.min.js"></script>
+	<script src="js/jspdf.umd.min.js"></script>
+	<script src="js/clipper.js"></script>
 
-	<link rel="stylesheet" href="/iframe/css/style.css">
+	<link rel="stylesheet" href="css/style.css">
 </head>
 
 <body>
@@ -34,7 +34,7 @@
 		</div>
 		<!-- 导入参数 -->
 		<div id="tab-config" class="tab-content active">
-			<!-- 演示模式提示（仅非 EDA 环境显示，文案与本机打开次数由 10-init.js 写入） -->
+			<!-- 演示模式提示（仅非 EDA 环境显示，文案由 10-init.js 写入） -->
 			<div id="demo-usage-hint"
 				style="display: none; margin: 10px 15px; padding: 6px 8px; font-size: 11px; line-height: 1.5; color: #4ec9b0; border: 1px solid #2a4a44; border-radius: 3px; background: #10201d;">
 			</div>
@@ -373,32 +373,32 @@
 	<!-- ==========================================================================
          应用脚本：以下顺序不可调整 —— 后置模块依赖前置模块的全局定义。
            jszip / jspdf 已在上方 <head> 中加载。
-         EDA 环境使用绝对路径 /iframe/...；若需直接用浏览器打开本文件，
-         请把 /iframe/css/ 与 /iframe/js/ 前缀改为相对路径 css/ 与 js/。
+         EDA 扩展 / 本地 serve.py / GitHub Pages 子路径三种环境一律使用相对路径，
+         因为页面 URL 始终位于 /iframe/ 下，相对路径在三种环境下都成立。
          ========================================================================== -->
-	<script src="/iframe/js/01-templates.js"></script>
-	<script src="/iframe/js/02-config.js"></script>
-	<script src="/iframe/js/03-state.js"></script>
-	<script src="/iframe/js/04-gerber-parser.js"></script>
+	<script src="js/01-templates.js"></script>
+	<script src="js/02-config.js"></script>
+	<script src="js/03-state.js"></script>
+	<script src="js/04-gerber-parser.js"></script>
 	<!-- 处理模式模块：一个模式一个文件，由注册表路由。
          顺序 = registry（注册表）→ industry-common（行业公用）→ 各模式模块
          当前仅保留两个已实现的模式：easyedapro（内部标准）、rs274x（行业标准） -->
-	<script src="/iframe/js/processors/registry.js"></script>
-	<script src="/iframe/js/processors/industry-common.js"></script>
-	<script src="/iframe/js/processors/industry-rs274x.js"></script>
-	<script src="/iframe/js/processors/jlc-internal.js"></script>
-	<script src="/iframe/js/05-pad-tool.js"></script>
-	<script src="/iframe/js/06-utils.js"></script>
+	<script src="js/processors/registry.js"></script>
+	<script src="js/processors/industry-common.js"></script>
+	<script src="js/processors/industry-rs274x.js"></script>
+	<script src="js/processors/jlc-internal.js"></script>
+	<script src="js/05-pad-tool.js"></script>
+	<script src="js/06-utils.js"></script>
 	<!-- 演示模式（非 EDA）使用次数：纯本机 cookie，不联网 -->
-	<script src="/iframe/js/demo-usage.js"></script>
+	<script src="js/demo-usage.js"></script>
 	<!-- 赞赏引导：导入/导出计数 + 「感觉不错？」弹窗（主工具与关于页共用） -->
-	<script src="/iframe/js/reward.js"></script>
-	<script src="/iframe/js/07-file-io.js"></script>
-	<script src="/iframe/js/08-export.js"></script>
-	<script src="/iframe/js/09-ui.js"></script>
-	<script src="/iframe/js/10-init.js"></script>
+	<script src="js/reward.js"></script>
+	<script src="js/07-file-io.js"></script>
+	<script src="js/08-export.js"></script>
+	<script src="js/09-ui.js"></script>
+	<script src="js/10-init.js"></script>
 	<!-- 内置字体轮廓（由 tools/font-outline.js 生成）：标准版 TEXT 图元需要自带字形路径 -->
-	<script src="/iframe/js/11-font-outline.js"></script>
+	<script src="js/11-font-outline.js"></script>
 </body>
 
 </html>

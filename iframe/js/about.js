@@ -3,7 +3,7 @@
 // ------------------------------------------------------------------------------------
 // 只做一件事：把扩展清单（extension.json）里的版本 / 名称填到页面上。
 //   ① 优先用 EDA 扩展接口 sys_FileSystem.getExtensionFile('/extension.json') 取本扩展文件；
-//   ② 取不到再退回 fetch('/extension.json')；
+//   ② 取不到再退回 fetch('../extension.json')；
 //   ③ 两者都失败则保持占位文案「版本 —」，不影响页面其余内容。
 // 不依赖主工具的其它脚本，本页面单独加载。
 // ====================================================================================
@@ -49,7 +49,7 @@
 
 	async function tryFetch() {
 		try {
-			let res = await fetch('/extension.json', { cache: 'no-store' });
+			let res = await fetch('../extension.json', { cache: 'no-store' });
 			if (!res || !res.ok) return null;
 			return await res.json();
 		} catch (e) {

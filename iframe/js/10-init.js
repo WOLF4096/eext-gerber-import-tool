@@ -222,9 +222,7 @@
             appLog('演示模式：本机第 ' + usage.opens + ' 次打开' + (usage.saved ? '' : '（cookie 写入失败）'));
         }
         if (!hint) return;
-        hint.textContent = usage.saved
-            ? '演示模式 · 本机第 ' + usage.opens + ' 次打开（导入 / 导出需在 EDA 内使用）'
-            : '演示模式 · 导入 / 导出需在 EDA 内使用（浏览器已禁用 cookie，本次未计数）';
+        hint.textContent = '演示模式 · 导入画布需在 EDA 内使用';
         hint.style.display = 'block';
     }
 

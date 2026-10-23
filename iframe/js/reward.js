@@ -23,8 +23,8 @@
 	const PROMPT_STEP = 10;                       // 每 10 次弹一次
 	const FALLBACK_KEY = 'eext-gerber-import-tool.reward'; // localStorage 兜底键
 	const ISSUE_URL = 'https://github.com/WOLF4096/eext-gerber-import-tool/issues';
-	const IMG_REWARD = '/images/reward_qrcode.png'; // 赞赏码（请开发者喝蜜雪）
-	const IMG_WECHAT = '/images/wx.png';            // 微信二维码（联系开发者）
+	const IMG_REWARD = '../images/reward_qrcode.png'; // 赞赏码（请开发者喝蜜雪）
+	const IMG_WECHAT = '../images/wx.png';            // 微信二维码（联系开发者）
 
 	// --- 会话内缓存（EDA 接口读取有开销，且写入失败时保证本次会话计数不丢） ---
 	let countCache = null;      // 累计次数

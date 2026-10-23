@@ -5,10 +5,14 @@
 /dist/
 /node_modules/
 /.eslintcache
-/.edaignore
 debug.log
+
+# .edaignore 是打包排除清单（build/packaged.ts 依赖它），必须进版本库
 
 # 临时文件目录：测试脚本、测试样本、调试与截图产物，均不进版本库
 /Temp/
-# .workbuddy 下的测试脚手架（memory 记忆文件仍跟踪）
-/.workbuddy/tmp/
+
+# IDE 本机配置：与扩展本体无关，不进版本库、也不打包进 eext
+# （.workbuddy/ 承载跨会话项目记忆，需要跟代码一起备份，故不在此忽略；
+#   它仍在 .edaignore 里，不会被装进 eext）
+/.idea/
