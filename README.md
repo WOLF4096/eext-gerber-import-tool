@@ -77,7 +77,7 @@
 
 ### 0.安装
 
-![安装](images/az.png)
+![安装](images/az.jpg)
 
 ### 1. 打开工具
 
@@ -121,14 +121,14 @@
 
 ---
 
-## 七、开发者署名
+## 反馈与支持
 
 | 项目     | 信息                                                                                                       |
 | -------- | ---------------------------------------------------------------------------------------------------------- |
-| 作者     | WOLF4096（独立开发者）                                                                                     |
-| 项目主页 | [github.com/WOLF4096/eext-gerber-import-tool](https://github.com/WOLF4096/eext-gerber-import-tool)         |
-| GitHub   | [github.com/WOLF4096](https://github.com/WOLF4096)                                                         |
+| 作者主页 | [狼黑](https://github.com/WOLF4096)                                                                        |
+| 项目主页 | [Gerber 转 PCB](https://github.com/WOLF4096/eext-gerber-import-tool)                                       |
 | 问题反馈 | [提交 Issue](https://github.com/WOLF4096/eext-gerber-import-tool/issues)（附上报错的 Gerber 样本更易定位） |
-| 开源许可 | Apache-2.0（二次开发请保留原作者署名与许可声明）                                                           |
+| 扩展主页 | [嘉立创 EDA 扩展广场](https://jlc-ext.com/item/darksteel/eext-gerber-import)                               |
+| 开源许可 | Apache-2.0                                                                                                 |
 
-本工具为**非官方**第三方开源扩展，与嘉立创 / EasyEDA 官方无隶属关系。
+> 本工具为 **非官方** 第三方开源扩展。
