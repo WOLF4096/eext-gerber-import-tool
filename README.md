@@ -1,10 +1,14 @@
-# Gerber 转 PCB (G2PCB)
+# 狼黑工具 · Gerber 转 PCB (G2PCB)
 
-**把 Gerber 制造文件 转成 嘉立创 EDA 的 PCB 文件，或直接写进当前 PCB 画布，带网络属性。**  
-**支持客户端版本：嘉立创 EDA 专业版 V2.2.45 ~ V4.x.x**  
+## 一键转换带网络可编辑的PCB。
+
+**把 Gerber 制造文件 转成 嘉立创 EDA 的 PCB 文件，或直接写进当前 PCB 画布，带网络属性。**
+
+**支持客户端版本：嘉立创 EDA 专业版 V2.2.45 ~ V4.x.x**
+
 全程离线运行，文件解析、渲染、导出都在本地完成，不上传任何服务器。
 
-**[打开演示页面](https://wolf4096.github.io/eext-gerber-import-tool/iframe/ImportGerber.html)
+**[打开 Github 演示页面](https://wolf4096.github.io/eext-gerber-import-tool/iframe/ImportGerber.html)
 | [演示视频](https://pbt-pub.jlc.com/pbt/bbs/8707762781426302976-20260205_220643.mp4)**
 
 ![演示](images/Test.png)

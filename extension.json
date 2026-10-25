@@ -2,11 +2,11 @@
 	"name": "eext-gerber-import",
 	"uuid": "0000eext0gerber0import00wolf4096",
 	"displayName": "Gerber 转 PCB (G2PCB)",
-	"description": "Gerber 查看 / 导入PCB画布 / 生成PCB文件 / 导出PDF文件",
+	"description": "一键转换带网络可编辑的PCB。",
 	"version": "3.9.23",
-	"publisher": "wolfblack",
+	"publisher": "狼黑",
 	"engines": {
-		"eda": "^2.2.45"
+		"eda": ">=2.2.45"
 	},
 	"license": "Apache-2.0",
 	"repository": {
