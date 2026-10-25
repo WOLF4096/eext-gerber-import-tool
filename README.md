@@ -29,16 +29,30 @@
 
 ## 安装
 
-**[最新版本下载](https://github.com/WOLF4096/eext-gerber-import-tool/releases)**（Releases 里的 `.eext` 文件）
+### V3 / V4（推荐）
 
-1. 菜单栏「高级 → 扩展管理器」；
-2. 点「导入」，选择下载好的 `.eext` 文件；
-3. 在扩展列表里找到「Gerber 转 PCB (G2PCB)」，点「配置」；
-4. 勾选 **允许外部交互** 与 **显示在顶部菜单**。
+**建议在线安装**
 
-> 第 4 步很关键。不勾「显示在顶部菜单」，装完是看不到菜单的。
+1. 打开嘉立创 EDA 专业版，在菜单栏「高级 → 扩展管理器」，搜索「Gerber 转 PCB (G2PCB)」，点「安装」。
+2. 在「已安装」扩展列表里找到「Gerber 转 PCB (G2PCB)」，点「配置」 → 勾选 **允许外部交互** 与 **显示在顶部菜单**。
+
+**离线安装**
+
+1. 下载插件：【[扩展广场下载](https://jlc-ext.com/item/darksteel/eext-gerber-import)】或【[Github下载](https://github.com/WOLF4096/eext-gerber-import-tool/releases)】
+2. 打开嘉立创 EDA 专业版，在菜单栏「高级 → 扩展管理器」 → 点「导入」，选择下载好的 `.eext` 文件
+3. 在「已安装」扩展列表里找到「Gerber 转 PCB (G2PCB)」，点「配置」 → 勾选 **允许外部交互** 与 **显示在顶部菜单**。
 
 ![安装](images/az.jpg)
+
+> 第 3 步很关键。不勾「显示在顶部菜单」，装完在菜单栏是看不到的。
+
+### V2.2.45
+
+1. 下载插件：【[扩展广场下载](https://jlc-ext.com/item/darksteel/eext-gerber-import)】或【[Github下载](https://github.com/WOLF4096/eext-gerber-import-tool/releases)】
+2. 打开嘉立创 EDA 专业版，在菜单栏「设置 → 扩展 → 扩展管理器 → 导入扩展」 → 选择 `.eext` 文件；
+3. 装好后勾选「允许外部交互」，V2.2.45 默认在菜单栏显示。
+
+> V2.2.45 不支持快捷键。项目本身基于 V2.2.45 开发，全部功能可用；早期 API 不够完善，可能会有兼容性问题。
 
 ## 使用方法
 
