@@ -196,6 +196,7 @@
      * 按运行环境显隐「只有 EDA 里才有意义」的入口。
      * HTML 中这些节点默认 display:none，所以浏览器直开演示时不会闪一下；
      * EDA 里再恢复它们各自的布局方式（标题是 flex，按钮区是 block）。
+     * 注意：「获取当前板子」还额外要求处于 PCB 文档，不在这里管，见 applyPcbContextUI()。
      * @param {boolean} isEdaEnv 是否处于 EDA 环境
      */
     function applyEnvVisibility(isEdaEnv) {
@@ -203,10 +204,10 @@
             const el = document.getElementById(id);
             if (el) el.style.display = value;
         };
-        setDisplay('eda-export-title', isEdaEnv ? 'flex' : 'none');              // 获取当前板子
-        setDisplay('in-eda-gerber', isEdaEnv ? 'block' : 'none');                // 同上：按钮区
         setDisplay('ui-export-canvas-title', isEdaEnv ? 'flex' : 'none');        // 导出至当前 PCB 画布
         setDisplay('ui-export-canvas-btn-wrapper', isEdaEnv ? 'block' : 'none'); // 源码 / 图元导入
+        // 「获取当前板子」不看环境看文档：HTML 里默认 display:none，显隐统一由
+        // 03-state.js applyPcbContextUI() 按「是否处于 PCB 文档」决定（检测完成前保持隐藏）。
     }
 
     /**
@@ -221,6 +222,9 @@
         if (typeof appLog === 'function') {
             appLog('演示模式：本机第 ' + usage.opens + ' 次打开' + (usage.saved ? '' : '（cookie 写入失败）'));
         }
+        // 演示模式下的两个外链入口（项目主页 / 扩展广场）与这行提示一起出现
+        const links = document.getElementById('demo-links');
+        if (links) links.style.display = 'block';
         if (!hint) return;
         hint.textContent = '演示模式 · 导入画布需在 EDA 内使用';
         hint.style.display = 'block';
@@ -250,12 +254,21 @@
             // 检测当前是否处于 PCB 画布：从开始页 / 原理图 / 符号库打开时读不到 PCB 源码 →
             // 「通过源码导入 / 通过图元导入」禁用（按钮仍可见，只是锁定并给出提示）。
             if (typeof refreshPcbContext === 'function') {
-                refreshPcbContext();
-                // 用户切到其它文档再切回来时重新检测（iframe 重新获得焦点 / 页面重新可见）
+                // 首次检测（顺带把文档标识记下，第一轮轮询就不会重复读源码）
+                if (typeof initPcbContext === 'function') initPcbContext();
+                else refreshPcbContext();
+                // 面板开着时用户随时可能切页签（PCB ↔ 原理图 ↔ 符号库），iframe 不会重载，
+                // 所以起一个 200ms 的便宜轮询（只在文档标识变化时才真去读源码），
+                // 切换后最迟 200ms 内「获取当前板子」就会跟着显隐。
+                if (typeof startPcbContextPolling === 'function') startPcbContextPolling();
+                // 焦点 / 可见性恢复时立刻复核一次（走同一个 tick，不重复读源码）
                 let pcbRecheckTimer = null;
                 const schedulePcbRecheck = () => {
                     if (pcbRecheckTimer) clearTimeout(pcbRecheckTimer);
-                    pcbRecheckTimer = setTimeout(() => { refreshPcbContext(true); }, 400);
+                    pcbRecheckTimer = setTimeout(() => {
+                        if (typeof pcbContextTick === 'function') pcbContextTick();
+                        else refreshPcbContext(true);
+                    }, 400);
                 };
                 window.addEventListener('focus', schedulePcbRecheck);
                 document.addEventListener('visibilitychange', () => {

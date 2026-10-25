@@ -168,6 +168,8 @@
     /**
      * 刷新「需要 PCB 画布」按钮的状态。
      * 三态：null（检测中，不锁） / true（可用） / false（禁用并显示提示行）
+     * 同时决定「获取当前板子」（#eda-export-title / #in-eda-gerber）的显隐：
+     * 只有检测确认在 PCB 文档里才显示，其余情况（不在 / 检测中 / 检测失败）一律隐藏。
      */
     function applyPcbContextUI() {
         const off = (isOnPcbCanvas === false);
@@ -179,7 +181,21 @@
             hint.style.display = off ? 'block' : 'none';
             if (off) hint.textContent = pcbContextHintText();
         }
+        // 「获取当前板子」读的是 EDA 里当前打开的工程：非 PCB 文档时整块隐藏（这里不像导入按钮
+        // 那样还能「先勾协议」，置灰没有意义）。显隐只由本函数负责——HTML 里默认 display:none，
+        // 环境门控也在 applyEnvVisibility 里交给这里接管，避免两处各写一次互相打架。
+        // 检测中（null）保持隐藏，检测到 PCB 后才显示，省掉「先亮后灭」的闪烁。
+        if (typeof eda !== 'undefined') {
+            const onBoard = (isOnPcbCanvas === true);
+            const titleEl = document.getElementById('eda-export-title');
+            if (titleEl) titleEl.style.display = onBoard ? 'flex' : 'none';
+            const gerberWrap = document.getElementById('in-eda-gerber');
+            if (gerberWrap) gerberWrap.style.display = onBoard ? 'block' : 'none';
+        }
     }
+
+    /** 进行中的全量检测（并发调用合并到同一个 Promise，避免同时读两份文档源码） */
+    let pcbRefreshInFlight = null;
 
     /**
      * 检测并刷新 PCB 画布状态。
@@ -188,25 +204,135 @@
      */
     async function refreshPcbContext(silent) {
         if (typeof detectPcbCanvasContext !== 'function') return isOnPcbCanvas;
-        try {
-            const r = await detectPcbCanvasContext();
-            const changed = (isOnPcbCanvas !== r.onPcbCanvas);
-            isOnPcbCanvas = r.onPcbCanvas;
-            pcbContextReason = r.reason;
-            if (!silent || changed) {
-                // 只写状态，不写检测依据（原因由画布下方的提示条负责说明）
-                appLog(r.onPcbCanvas ? '已检测到 PCB 画布' : '未检测到 PCB 画布');
+        // 轮询 tick / 焦点复核 / 首次检测可能撞在一起，全量检测要读整份源码，不允许并行
+        if (pcbRefreshInFlight) return pcbRefreshInFlight;
+        pcbRefreshInFlight = (async () => {
+            try {
+                const r = await detectPcbCanvasContext();
+                const changed = (isOnPcbCanvas !== r.onPcbCanvas);
+                isOnPcbCanvas = r.onPcbCanvas;
+                pcbContextReason = r.reason;
+                if (!silent || changed) {
+                    // 只写状态，不写检测依据（原因由画布下方的提示条负责说明）
+                    appLog(r.onPcbCanvas ? '已检测到 PCB 画布' : '未检测到 PCB 画布');
+                }
+                applyPcbContextUI();
+                return isOnPcbCanvas;
+            } catch (e) {
+                isOnPcbCanvas = false;
+                pcbContextReason = '检测异常：' + (e && e.message ? e.message : e);
+                appLog('画布状态：检测失败');
+                applyPcbContextUI();
+                return isOnPcbCanvas;
             }
-            applyPcbContextUI();
-            return isOnPcbCanvas;
-        } catch (e) {
-            isOnPcbCanvas = false;
-            pcbContextReason = '检测异常：' + (e && e.message ? e.message : e);
-            appLog('画布状态：检测失败');
-            applyPcbContextUI();
-            return isOnPcbCanvas;
+        })();
+        try {
+            return await pcbRefreshInFlight;
+        } finally {
+            pcbRefreshInFlight = null;
         }
     }
+
+    /**
+     * 首次检测：跑一次全量检测（要写日志，所以非静默），并把「文档标识」记下来，
+     * 免得 200ms 后的第一轮轮询因为标识未知，把整份源码再读一遍。
+     */
+    async function initPcbContext() {
+        await refreshPcbContext();
+        pcbLastFullCheck = Date.now();
+        pcbDocKey = await currentDocKey();
+        return isOnPcbCanvas;
+    }
+
+    // ----------------------------------------------------------------------------------
+    // PCB 画布状态轮询（200ms）
+    // ------------------------------------------------------------------------------------
+    // 面板开着时用户随时可能切页签（PCB → 原理图画布 → 再切回来），此时 iframe 不会重载，
+    // focus / visibilitychange 也未必触发，所以用一个 200ms 的轮询兜住。
+    //
+    // 轮询本身必须**足够便宜**：每次只用 dmt_SelectControl.getCurrentDocumentInfo() 取
+    // 「文档标识」（类型 + uuid + tabId，单次很轻），标识变了才去跑 detectPcbCanvasContext()
+    // ——后者会读整份文档源码，21MB 的板子按 5Hz 读是不可接受的。
+    // ----------------------------------------------------------------------------------
+
+    const PCB_CONTEXT_POLL_MS = 200;      // 轮询间隔
+    const PCB_CONTEXT_RECHECK_MS = 3000;  // 判为「不在画布」或拿不到文档标识时的复核间隔
+    let pcbPollTimer = null;
+    let pcbPollBusy = false;              // 一个 tick 尚未跑完（含异步）
+    let pcbDocKey = null;                 // 上次全量检测对应的文档标识
+    let pcbLastFullCheck = 0;             // 上次全量检测的时间戳
+
+    /**
+     * 便宜的「当前文档标识」：文档类型 + uuid + tabId。
+     * 只用来判断「文档换了没有」，不参与 PCB 判定本身。
+     * @returns {Promise<string|null>} 取不到时返回 null（调用方退回限速的全量检测）
+     */
+    async function currentDocKey() {
+        try {
+            const sc = (typeof eda !== 'undefined') ? eda.dmt_SelectControl : null;
+            if (!sc || typeof sc.getCurrentDocumentInfo !== 'function') return null;
+            const info = await sc.getCurrentDocumentInfo();
+            if (!info) return '';
+            return [info.documentType, info.uuid, info.tabId].join('|');
+        } catch (e) {
+            return null;
+        }
+    }
+
+    /**
+     * 一次轮询 / 一次手动复核：文档没变就立即返回，变了才重跑全量检测。
+     * 定时器与窗口焦点事件共用本函数，避免两套逻辑各读一遍源码。
+     */
+    async function pcbContextTick() {
+        if (pcbPollBusy) return;                              // 上一轮还没跑完
+        if (document.visibilityState === 'hidden') return;    // 面板不可见时不做
+        const overlay = document.getElementById('loading-overlay');
+        // 解析 / 导出期间遮罩被置成 inline 的 flex（见 07-file-io.js、08-export.js），
+        // 这时别再去读文档源码抢资源；空闲时它是 CSS 的 display:none，inline 值为空
+        if (overlay && overlay.style.display === 'flex') return;
+
+        pcbPollBusy = true;
+        try {
+            const key = await currentDocKey();
+            const now = Date.now();
+            if (key === null) {
+                // 取不到文档标识（旧版 EDA 接口缺失）：退回全量检测，限速到 3s 一次
+                if (now - pcbLastFullCheck < PCB_CONTEXT_RECHECK_MS) return;
+            } else if (key === pcbDocKey) {
+                // 文档没换：已在画布上就什么都不用做；判为「不在」时低频复核，避免一次误判
+                // （比如读源码瞬时失败）把按钮永久藏掉
+                if (isOnPcbCanvas === true) return;
+                if (now - pcbLastFullCheck < PCB_CONTEXT_RECHECK_MS) return;
+            }
+            await refreshPcbContext(true);
+            pcbLastFullCheck = Date.now();
+            // 用检测「之后」的标识对齐：检测期间用户可能又切了文档，那样状态与标识会错配，
+            // 置 null 让下一轮 200ms 立刻重检，而不是把按钮按错的结论一直挂着
+            const keyAfter = await currentDocKey();
+            pcbDocKey = (keyAfter === key) ? keyAfter : null;
+        } catch (e) {
+            // 轮询不允许抛错打断定时器
+        } finally {
+            pcbPollBusy = false;
+        }
+    }
+
+    /** 启动 200ms 轮询（幂等：重复调用只挂一个定时器） */
+    function startPcbContextPolling() {
+        if (pcbPollTimer) return;
+        pcbPollTimer = setInterval(pcbContextTick, PCB_CONTEXT_POLL_MS);
+    }
+
+    /** 停止轮询（目前只在页面卸载时调用，避免定时器泄漏） */
+    function stopPcbContextPolling() {
+        if (!pcbPollTimer) return;
+        clearInterval(pcbPollTimer);
+        pcbPollTimer = null;
+    }
+
+    window.addEventListener('pagehide', () => {
+        if (typeof stopPcbContextPolling === 'function') stopPcbContextPolling();
+    });
 
     /**
      * 需要 PCB 画布的导入入口（HTML 内联 onclick 调用）。
