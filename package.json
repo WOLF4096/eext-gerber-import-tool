@@ -1,10 +1,14 @@
 {
-	"name": "pro-api-sdk",
+	"name": "eext-gerber-import",
 	"version": "3.9.23",
-	"description": "嘉立创EDA & EasyEDA 专业版扩展 API 开发工具",
-	"author": "JLCEDA <support@lceda.cn>",
+	"description": "嘉立创 EDA 专业版扩展：把 Gerber 制造文件转成可编辑、带网络的 PCB（狼黑工具 · Gerber 转 PCB）",
+	"author": "WOLF4096",
 	"license": "Apache-2.0",
-	"homepage": "https://pro.lceda.cn/",
+	"homepage": "https://github.com/WOLF4096/eext-gerber-import-tool",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/WOLF4096/eext-gerber-import-tool"
+	},
 	"scripts": {
 		"compile": "rimraf ./dist/ && ts-node ./config/esbuild.prod.ts",
 		"prepare": "husky",
