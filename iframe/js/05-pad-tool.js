@@ -41,6 +41,10 @@
         // 所以这个开关**只由标准版导出传入**，画布与专业版导出保持原样。
         extractRawData: (files, opts) => {
             const textAsPoly = !!(opts && opts.textAsPoly);
+            // opts.otherAsDocument：「其他」(57) 的图元并入文档层(13)。
+            // 57 在 EDA 里是 Ratline（飞线）层，Gerber 图形按 57 写进去会显示在飞线上；
+            // 专业版导出传 true，UI 与画布的图层归属/配色仍保留 57 原样。
+            const otherAsDocument = !!(opts && opts.otherAsDocument);
             const rawPads = []; 
             const rawVias = []; 
             const rawTracks = []; 
@@ -417,7 +421,8 @@
             };
 
             files.forEach(file => {
-                const layerId = file.layerId;
+                // 手动选成「其他」的文件，导出时按文档层生成图元（见 otherAsDocument 注释）
+                const layerId = (otherAsDocument && file.layerId === 57) ? 13 : file.layerId;
                 const fileUnit = file.data.units; 
                 // toMM：把「仍是文件单位」的量换算成 mm —— 光圈参数、宏参数、钻孔原文数值都用它。
                 // 注意：cmd.x / cmd.y / cmd.i / cmd.j / cmd.path 里的坐标在解析阶段**已经**换算成 mm，

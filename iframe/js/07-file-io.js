@@ -195,14 +195,18 @@
             const parseResult = parser.parse(fileObj.content, configOverride, parserFeatures);
             if (parseResult.commands.length === 0) return; 
 
-            let matchedId = 57; 
+            // 兜底归属：认不出层类型（= 未指定）时进「文档层」(13)。
+            // 57「其他」在 EDA 里是 Ratline（飞线）层，Gerber 图形写进去会跑到飞线上，
+            // 所以它只保留为下拉框里的手动选项，不再作为默认归属。
+            let matchedId = 13;
             for (let rule of fileNameRules) { if (rule.regex.test(fileObj.name)) { matchedId = rule.layerId; break; } }
             // 处理器可覆盖「按文件名猜」的结果（例如 Gerber X2 用 %TF.FileFunction 直接定层）。
-            // 取「更具体」的那个：处理器给不出意见(57)时沿用内置规则的结果，
+            // 取「更具体」的那个：处理器给不出意见（返回 57「其他」）时沿用内置规则的结果，
             // 以免 *_silkscreen_bottom.gbr 这类命名被泛化规则回退成顶层。
+            // 返回 57 一律视为「没识别出来」，不再作为归属 —— 兜底统一走文档层。
             if (typeof processor.resolveLayerId === 'function') {
                 const overrideId = processor.resolveLayerId(fileObj, parseResult, matchedId);
-                if (typeof overrideId === 'number' && (overrideId !== 57 || matchedId === 57)) {
+                if (typeof overrideId === 'number' && overrideId !== 57) {
                     matchedId = overrideId;
                 }
             }

@@ -814,7 +814,9 @@
 
         // 2. 提取数据（仅导出勾选的图层）
         stepBegin('提取图层数据');
-        const rawData = PadTool.extractRawData(loadedFiles.filter(f => f.visible));
+        // otherAsDocument：手动选成「其他」(57) 的文件，图元层号按文档层(13)生成。
+        // 57 是 EDA 的 Ratline（飞线）层，Gerber 图形写进去会跑到飞线上。
+        const rawData = PadTool.extractRawData(loadedFiles.filter(f => f.visible), { otherAsDocument: true });
         stepEnd('提取图层数据');
         
         // 3. 聚合数据
