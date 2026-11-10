@@ -1109,7 +1109,11 @@
                             const hh = holeDef[2];
                             holeDef = ["ROUND", Math.min(hw, hh), Math.max(hw, hh)];
                         }
-                        eda.pcb_PrimitivePad.create(
+                        // specialPad 里可能带「0 尺寸」的占位形状（单面板把没有铜的那一面压掉，
+                        // 见 05-pad-tool.js）。万一 EDA 认为 0 尺寸不合法而拒收整颗焊盘，
+                        // 这里退回「不带 specialPad」再建一次 —— 顶多那一面多一圈铜，
+                        // 总比整颗焊盘连钻孔一起消失要好。
+                        const createPad = (special) => eda.pcb_PrimitivePad.create(
                             line[4],                          // layer: 层编号
                             line[5]?.toString() || "",        // padNumber: 焊盘编号，转为字符串
                             line[6],                          // x: X坐标
@@ -1123,7 +1127,7 @@
                             line[14] || 0,                    // holeRotation: 孔旋转角度
                             !!line[15],                       // metallization: 是否金属化
                             line[16] || 0,                    // padType: 焊盘类型
-                            line[11] || [],                   // specialPad: 特殊焊盘
+                            special || [],                    // specialPad: 特殊焊盘
                             // 阻焊和助焊扩展
                             (line[17] !== null || line[18] !== null || line[19] !== null || line[20] !== null) ? {
                                 "topSolderMask": line[17],
@@ -1140,6 +1144,14 @@
                             } : null,
                             !!line[25]                        // primitiveLock: 是否锁定
                         );
+
+                        // 带 specialPad 的焊盘如果被拒（返回空），重试一次不带的。
+                        const special = Array.isArray(line[11]) ? line[11] : [];
+                        let created = createPad(special);
+                        if (special.length && created && typeof created.then === 'function') {
+                            created = created.then(r => (r ? r : createPad([])));
+                        }
+                        trackFail('PAD', created);
                     } catch (error) {
                         console.error('创建PAD失败:', error);
                     }

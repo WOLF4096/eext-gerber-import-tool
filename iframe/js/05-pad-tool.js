@@ -33,6 +33,159 @@
             return Math.max(0, Math.min(100, ratio));
         },
 
+        // --- 工具：多边形焊盘 → 长圆（OVAL）/ 圆 拟合 ---
+        // AD 的 ROUNDEDRECT 宏、嘉立创的跑道形宏在 Gerber 里都是「几个小圆 + 矩形」的并集，
+        // 展开后只能当自定义多边形焊盘。自定义焊盘在 EDA 里**不能逐层设置铜环**（实测导入后
+        // specialPad 被清空），单面板就会变成双面焊盘；能还原成标准焊盘的就尽量还原。
+        // 判定：凸包 + 最小外接矩形，长圆的所有包络点到中轴线距离都等于半宽；
+        // 圆角矩形会差一个 (√2-1)·r，按相对偏差区分。
+        _pathSamples: (path) => {
+            const pts = [];
+            let cur = null;
+            for (const op of path) {
+                if (!op) continue;
+                if (op.cmd === 'M' || op.cmd === 'L') {
+                    if (typeof op.x === 'number' && typeof op.y === 'number') {
+                        pts.push({ x: op.x, y: op.y });
+                        cur = { x: op.x, y: op.y };
+                    }
+                    continue;
+                }
+                if (op.cmd !== 'A' && op.cmd !== 'ARC') continue;
+                const ex = op.x, ey = op.y;
+                const sx = (typeof op.startX === 'number') ? op.startX : (cur ? cur.x : null);
+                const sy = (typeof op.startY === 'number') ? op.startY : (cur ? cur.y : null);
+                let cx = null, cy = null, r = 0;
+                if (typeof op.i === 'number' && typeof op.j === 'number' && sx !== null) {
+                    cx = sx + op.i; cy = sy + op.j; r = Math.sqrt(op.i * op.i + op.j * op.j);
+                } else if (typeof op.cx === 'number' && typeof op.cy === 'number') {
+                    cx = op.cx; cy = op.cy; r = sx !== null ? Math.hypot(sx - cx, sy - cy) : 0;
+                }
+                if (cx === null || !(r > 0)) {
+                    if (typeof ex === 'number') { pts.push({ x: ex, y: ey }); cur = { x: ex, y: ey }; }
+                    continue;
+                }
+                let a0 = Math.atan2(sy - cy, sx - cx);
+                let a1 = Math.atan2(ey - cy, ex - cx);
+                let d = a1 - a0;
+                while (d <= 1e-9) d += Math.PI * 2;
+                const isFull = Math.abs(sx - ex) < 1e-9 && Math.abs(sy - ey) < 1e-9;
+                const span = isFull ? Math.PI * 2 : d;
+                const n = Math.max(6, Math.ceil(span / (Math.PI / 18)));
+                for (let k = 0; k <= n; k++) {
+                    const a = a0 + span * k / n;
+                    pts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+                }
+                if (typeof ex === 'number') cur = { x: ex, y: ey };
+            }
+            return pts;
+        },
+
+        _convexHull: (points) => {
+            const p = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+            const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+            const lower = [];
+            for (const q of p) {
+                while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+                lower.push(q);
+            }
+            const upper = [];
+            for (let i = p.length - 1; i >= 0; i--) {
+                const q = p[i];
+                while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+                upper.push(q);
+            }
+            lower.pop(); upper.pop();
+            return lower.concat(upper);
+        },
+
+        _minAreaRect: (hull) => {
+            let best = null;
+            for (let i = 0; i < hull.length; i++) {
+                const a = hull[i], b = hull[(i + 1) % hull.length];
+                const ex = b.x - a.x, ey = b.y - a.y;
+                const len = Math.sqrt(ex * ex + ey * ey);
+                if (len < 1e-9) continue;
+                const ux = ex / len, uy = ey / len;
+                let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+                for (const p of hull) {
+                    const u = (p.x - a.x) * ux + (p.y - a.y) * uy;
+                    const v = -(p.x - a.x) * uy + (p.y - a.y) * ux;
+                    if (u < minU) minU = u; if (u > maxU) maxU = u;
+                    if (v < minV) minV = v; if (v > maxV) maxV = v;
+                }
+                const area = (maxU - minU) * (maxV - minV);
+                if (!best || area < best.area) {
+                    const cu = (minU + maxU) / 2, cv = (minV + maxV) / 2;
+                    best = {
+                        area: area,
+                        angle: Math.atan2(uy, ux) * 180 / Math.PI,
+                        L: maxU - minU, W: maxV - minV,
+                        cx: a.x + ux * cu - uy * cv,
+                        cy: a.y + uy * cu + ux * cv
+                    };
+                }
+            }
+            return best;
+        },
+
+        fitPolygonToOval: (prim) => {
+            if (!prim || prim.shape !== 'POLYGON' || !Array.isArray(prim.path) || prim.path.length < 4) return false;
+            const pts = PadTool._pathSamples(prim.path);
+            if (pts.length < 8) return false;
+
+            // ① 圆：所有点到质心的距离一致
+            let gx = 0, gy = 0;
+            for (const p of pts) { gx += p.x; gy += p.y; }
+            gx /= pts.length; gy /= pts.length;
+            let rMin = Infinity, rMax = -Infinity;
+            for (const p of pts) {
+                const r = Math.hypot(p.x - gx, p.y - gy);
+                if (r < rMin) rMin = r;
+                if (r > rMax) rMax = r;
+            }
+            if (rMax > 0 && (rMax - rMin) <= Math.max(0.005, rMax * 0.01)) {
+                prim.shape = 'ELLIPSE';
+                prim.w = rMax * 2; prim.h = rMax * 2; prim.rotation = 0;
+                prim.path = null;
+                return true;
+            }
+
+            // ② 长圆：到中轴线的距离恒等于半宽
+            const hull = PadTool._convexHull(pts);
+            if (hull.length < 4) return false;
+            const rect = PadTool._minAreaRect(hull);
+            if (!rect || !(rect.L > 0) || !(rect.W > 0)) return false;
+            const L = Math.max(rect.L, rect.W);
+            const W = Math.min(rect.L, rect.W);
+            let ang = rect.angle;
+            if (rect.W > rect.L) ang += 90;
+            const rad = ang * Math.PI / 180;
+            const ux = Math.cos(rad), uy = Math.sin(rad);
+            const half = (L - W) / 2;
+            const ax = rect.cx - ux * half, ay = rect.cy - uy * half;
+            const bx = rect.cx + ux * half, by = rect.cy + uy * half;
+            let maxDev = 0;
+            for (const p of hull) {
+                const dx = bx - ax, dy = by - ay;
+                const l2 = dx * dx + dy * dy;
+                let t = l2 > 0 ? ((p.x - ax) * dx + (p.y - ay) * dy) / l2 : 0;
+                t = Math.max(0, Math.min(1, t));
+                const d = Math.hypot(p.x - (ax + t * dx), p.y - (ay + t * dy));
+                const dev = Math.abs(d - W / 2);
+                if (dev > maxDev) maxDev = dev;
+            }
+            if (maxDev > Math.max(0.02, W * 0.02)) return false;
+
+            let deg = ((ang % 180) + 180) % 180;
+            if (deg > 90) deg -= 180;                      // 归一化到 (-90, 90]
+            prim.shape = 'OVAL';
+            prim.w = L; prim.h = W;
+            prim.rotation = parseFloat(deg.toFixed(3)) || 0;
+            prim.path = null;
+            return true;
+        },
+
         
         // --- 1. 提取阶段 (修改：钻孔图层数据强制转换为 Image 图元) ---
         // opts.textAsPoly：把「G04 Text Start…Text End」段里的 G01（02/01 位移+绘制）
@@ -1179,19 +1332,19 @@
 
                 // [新增] 合并检查函数
                 const tryMergeDrillToPad = (node, drill) => {
-                    // 核心修复：
-                    // 如果不是槽孔(Slot)，且该位置并没有同时具备 Top 和 Bottom 焊盘
-                    // (即：它是一个单面焊盘，比如只有 Bottom)，
-                    // 那么强行合并会导致它变成 Layer12 多层焊盘，从而错误地增加顶层铜环。
-                    // 这里的策略是：不合并。让 Pad 保持单层，让 Drill 变成独立的 Via。
-                    const isSingleSide = (!node.top || !node.bottom);
-                    
-                    if (!drill.isSlot && isSingleSide) {
-                        return; // 跳过合并 -> 结果：单层焊盘 + 独立过孔 (Visual效果正确)
-                    }
-
-                    // 执行合并
-                    if (!node.drill || drill.isSlot) node.drill = drill;
+                    // 历史上这里对「单面焊盘」不合并圆孔 —— 因为合并会把焊盘拉成 Layer12，
+                    // 另一面凭空多出一圈铜环。现在 generatePrimitives 会按「只有一面有铜」
+                    // 保持单层（layerId 1 / 2），合并是安全的，而且更贴近实际：
+                    // 否则单面板的插件孔会变成跨层过孔，顶层又冒出一圈铜。
+                    //
+                    // ⚠️ 两条必须守住：
+                    // 1. 没有任何铜层焊盘（只有阻焊/钢网开窗）的节点不能挂孔 ——
+                    //    generatePrimitives 会因「没有主图形」跳过整个焊盘，孔跟着消失。
+                    // 2. 一个焊盘只能挂一个孔：位置已被占用时，这个孔留作独立过孔，
+                    //    不能标记成已消费（否则静默丢孔）。
+                    if (!node.top && !node.bottom && !node.innerRep) return;
+                    if (node.drill && !(drill.isSlot && !node.drill.isSlot)) return;
+                    node.drill = drill;
                     processedDrills.add(drill);
                     drill.isConsumed = true;
                 };
@@ -1272,7 +1425,29 @@
                     } 
                 });
             });
-            
+
+            // ---- 多边形焊盘 → 长圆/圆 ----
+            // 跑道形焊盘（AD 的 ROUNDEDRECT 宏、嘉立创自定义焊盘等）在 Gerber 里是
+            // 「小圆 + 矩形」的并集，展开后只能当自定义多边形。自定义焊盘在 EDA 里无法
+            // 逐层设置铜环（导入后 specialPad 被清空），单面板会变成双面焊盘 ——
+            // 能还原成标准焊盘的先还原，剩下的才按多边形走。
+            let fittedOval = 0, fittedCircle = 0;
+            const fitOne = (prim) => {
+                if (!prim || prim.shape !== 'POLYGON') return;
+                if (PadTool.fitPolygonToOval(prim)) {
+                    if (prim.shape === 'OVAL') fittedOval++; else fittedCircle++;
+                }
+            };
+            unifiedPads.forEach(pad => {
+                fitOne(pad.top);
+                fitOne(pad.bottom);
+                fitOne(pad.innerRep);
+                if (Array.isArray(pad.inners)) pad.inners.forEach(fitOne);
+            });
+            if (fittedOval || fittedCircle) {
+                console.log(`多边形焊盘拟合：长圆 ${fittedOval} 个，圆 ${fittedCircle} 个`);
+            }
+
             const remainingVias = drills.filter(d => !d.isConsumed).map(d => {
                 // 就近（0.05mm）找该钻孔对应的过孔铜盘 / 阻焊盘节点
                 const viaNode = findViaNode(d.x, d.y);
@@ -1532,7 +1707,19 @@
                     }
                     const mainPrim = pad.top || pad.bottom || pad.innerRep;
                     if (mainPrim) {
-                        targets.push({ layerId: 12, prim: mainPrim, holeShape: holeShape, holeRotation: holeRotation, isPlated: pad.drill.isPlated });
+                        // ⚠️ 通孔焊盘必须放多层(12)：EDA 只给 MULTI 焊盘画钻孔。
+                        //    放到 TOP(1) / BOTTOM(2) 会被当成贴片焊盘，孔直接不渲染
+                        //    —— V3.9.28 把单面焊盘改成单层后，LT 的 255 个孔（含 180 条槽）
+                        //    在 EDA 里全部消失，就是这个原因。
+                        // 单面板「只有一面有铜」的场合，用 specialPad 把没铜的那一面压到钻孔大小：
+                        // 钻孔照常出现，顶层却不会凭空长出一圈铜环。
+                        targets.push({
+                            layerId: 12, prim: mainPrim,
+                            holeShape: holeShape, holeRotation: holeRotation,
+                            isPlated: pad.drill.isPlated,
+                            blankTop: !pad.top && !!pad.bottom,
+                            blankBottom: !pad.bottom && !!pad.top
+                        });
                     }
                 } else {
                     // === 无钻孔的情况 (Surface Mount / SMT / Blind Inner) ===
@@ -1785,7 +1972,38 @@
                             return Math.abs(o1.w - o2.w) < 0.005 && Math.abs(o1.h - o2.h) < 0.005 && Math.abs((o1.rotation||0) - (o2.rotation||0)) < 0.1 && (o1.radiusRatio||0) === (o2.radiusRatio||0) && o1.shape === o2.shape;
                         };
                         
-                        if (!(isEq(t, b) && (i ? isEq(t, i) : true))) {
+                        if (tgt.blankTop || tgt.blankBottom) {
+                            // 单面通孔焊盘（只有一面有铜）：
+                            //   defaultPad = 钻孔本身（形状与孔完全一致）
+                            //   有铜的那一面用 specialPad 覆盖回真实铜形，另加一条 [12,12] 管住 MULTI。
+                            // ⚠️ 只写 [1,1] 时 EDA 不认（实测导入后 specialPad 被清空，顶层照样长铜），
+                            //    必须把 1 / 2 / 12 三层都写全。
+                            // ⚠️ 不能用 0×0：EDA 判非法，同样会清空整条 specialPad。
+                            // ⚠️ specialPad 不能自带角度，只跟着 padAngle 转；槽孔方向与焊盘转角不一致时
+                            //    退回短边圆，避免长圆歪出去露铜。
+                            const holeW = (tgt.holeShape && tgt.holeShape.length >= 3) ? tgt.holeShape[1] : 0;
+                            const holeH = (tgt.holeShape && tgt.holeShape.length >= 3) ? tgt.holeShape[2] : 0;
+                            if (holeH > 0) {
+                                let relDeg = 0;
+                                if (typeof tgt.holeRotation === 'number' && isFinite(tgt.holeRotation)) {
+                                    relDeg = ((tgt.holeRotation - rotation) % 180 + 180) % 180;
+                                    if (relDeg > 90) relDeg = 180 - relDeg;
+                                }
+                                const blank = (relDeg <= 0.5 && holeW > holeH)
+                                    ? ["OVAL", holeW, holeH]
+                                    : ["OVAL", holeH, holeH];
+                                const real = defaultShape;
+                                defaultShape = blank;
+                                if (tgt.blankTop) {
+                                    specialPads.push([1, 1, blank]);
+                                    specialPads.push([2, 2, real]);
+                                } else {
+                                    specialPads.push([2, 2, blank]);
+                                    specialPads.push([1, 1, real]);
+                                }
+                                specialPads.push([12, 12, real]);
+                            }
+                        } else if (!(isEq(t, b) && (i ? isEq(t, i) : true))) {
                             const processInner = (p) => {
                                 // 简单处理：如果是 Polygon，这里暂不支持转为内层特殊焊盘形状，回退到 Rect
                                 if (p.shape === 'POLYGON') return ["RECT", 10, 10]; 
@@ -1834,7 +2052,15 @@
                             "centerX": padXMil, "centerY": padYMil, "padAngle": rotation, 
                             "hole": tgt.holeShape ? { "holeType": tgt.holeShape[0], "width": tgt.holeShape[1], "height": tgt.holeShape[2] } : null, 
                             "defaultPad": padInfoObj, 
-                            "specialPad": specialPads.map(sp => ({ "startLayer": sp[0], "endLayer": sp[1], "pad": { "padType": sp[2][0], "width": sp[2][1], "height": sp[2][2], "radius": sp[2][3]||0 } })), 
+                            "specialPad": specialPads.map(sp => {
+                                const s = sp[2];
+                                // 异形焊盘（POLYGON）没有 width/height，直接把顶点路径带上，
+                                // 否则会被写成 width:undefined 的坏形状。
+                                if (s && s[0] === 'POLYGON') {
+                                    return { "startLayer": sp[0], "endLayer": sp[1], "pad": { "padType": "POLYGON", "path": s[1] } };
+                                }
+                                return { "startLayer": sp[0], "endLayer": sp[1], "pad": { "padType": s[0], "width": s[1], "height": s[2], "radius": s[3] || 0 } };
+                            }), 
                             "padOffsetX": 0, "padOffsetY": 0, "relativeAngle": relRotation, 
                             "plated": tgt.isPlated !== undefined ? tgt.isPlated : true, 
                             "padType": "NORMAL", 
