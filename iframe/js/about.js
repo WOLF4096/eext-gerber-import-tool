@@ -20,7 +20,7 @@
 			brief: '读 Gerber / 钻孔文件，还原成可编辑的 PCB',
 			scope: ['PCB'],
 			version: 'V2.2.45 ~ 4',
-			demoUrl: 'https://pbt-pub.jlc.com/pbt/bbs/8707762781426302976-20260205_220643.mp4',
+			demoUrl: 'https://jlc-prod-pbt-pub.oss-cn-shenzhen.aliyuncs.com/pbt/bbs/8806409112543649792-Gerber%E8%BD%ACPCB%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91.mp4',
 			steps: [
 				'在 PCB 文档里打开「Gerber工具 → 导入Gerber」',
 				'选 .zip、多个 Gerber / 钻孔文件，或直接把文件拖进窗口',

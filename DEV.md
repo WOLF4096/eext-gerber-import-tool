@@ -8,7 +8,7 @@
 
 > 当前版本 **3.9.19**（版本号以 `extension.json` 为准，变更历史见 [CHANGELOG.md](CHANGELOG.md)）
 
-> [演示视频](https://pbt-pub.jlc.com/pbt/bbs/8707762781426302976-20260205_220643.mp4)
+> [演示视频](https://jlc-prod-pbt-pub.oss-cn-shenzhen.aliyuncs.com/pbt/bbs/8806409112543649792-Gerber%E8%BD%ACPCB%E6%BC%94%E7%A4%BA%E8%A7%86%E9%A2%91.mp4)
 
 ![演示](images/Test.png)
 
@@ -324,7 +324,9 @@ EDA 内的导入 / 导出次数仍由 `reward.js` 的 `importExportCount` 统计
 
 ```html
 <script src="/iframe/js/01-templates.js"></script>
-<script>g2pcbAlt('js/01-templates.js');</script>
+<script>
+	g2pcbAlt('js/01-templates.js');
+</script>
 ```
 
 - 判定：`<head>` 最前面先按绝对路径加载 `iframe/js/00-env.js`，**它执行过 = 绝对路径可达 = 在 EDA 里**。
