@@ -216,8 +216,8 @@
         return line;
     }
 
-    // --- 大数据量导入确认（>500KB 走「通过源码导入」前弹窗） ---
-    const HEAVY_IMPORT_BYTES = 500 * 1024;
+    // --- 大数据量导入确认（>1MB 走「通过源码导入」前弹窗） ---
+    const HEAVY_IMPORT_BYTES = 1024 * 1024;
     /** 当前已加载 Gerber 的总字节数（按文本长度估算，含所有图层） */
     function loadedGerberBytes() {
         if (typeof rawFilesCache === 'undefined' || !rawFilesCache) return 0;
@@ -249,7 +249,7 @@
             if (!modal) { resolve(true); return; }
             // const mb = (bytes / 1024 / 1024);
             if (text) {
-                text.textContent = `本次 Gerber 数据约 ${(bytes / 1024).toFixed(0)} KB（> 500KB），`
+                text.textContent = `本次 Gerber 数据约 ${(bytes / 1024 / 1024).toFixed(1)} MB（> 1MB），`
                     + `图元数量较多，写入画布可能需要几十秒，期间界面会卡住。`;
             }
             modal.style.display = 'flex';
@@ -2050,10 +2050,23 @@
         const files = (typeof rawFilesCache !== 'undefined' && Array.isArray(rawFilesCache)) ? rawFilesCache : [];
         let best = null;   // { name, raw, hasVer }
         let time = null;
+        // Altium 关掉 X2 属性后不会写软件名，但会留下几处「暗记」。
+        // 四条特征命中 ≥3 条才认（见 docs 的 LT/AD 分析报告）：
+        //   ① G04 Layer_Physical_Order=   ② G04:AMPARAMS|DCode=
+        //   ③ 刀具行带 F/S（T1F00S00C0.65） ④ 钻孔头四件套（;Layer_Color / ;FILE_FORMAT / METRIC,TZ / ;TYPE=PLATED）
+        const altiumHits = [false, false, false, false];
+        const scanAltiumTraits = (h) => {
+            if (!altiumHits[0] && /G04\s*Layer_Physical_Order\s*=/i.test(h)) altiumHits[0] = true;
+            if (!altiumHits[1] && /G04\s*:\s*AMPARAMS/i.test(h)) altiumHits[1] = true;
+            if (!altiumHits[2] && /^T\d+F\d+S\d+C[\d.]+/m.test(h)) altiumHits[2] = true;
+            if (!altiumHits[3] && /;Layer_Color/i.test(h) && /;FILE_FORMAT/i.test(h)
+                && /METRIC\s*,\s*T[LZ]/i.test(h) && /;TYPE\s*=\s*PLATED/i.test(h)) altiumHits[3] = true;
+        };
         for (const f of files) {
             if (!f || !f.content) continue;
             // 来源信息都在文件头，2MB 的图形层只看前 128KB 就够
             const head = f.content.length > 131072 ? f.content.slice(0, 131072) : f.content;
+            scanAltiumTraits(head);
             if (!time) {
                 const t = matchCreationTime(head);
                 if (t) time = t;
@@ -2066,6 +2079,11 @@
                 if (hit && (!best || (!best.hasVer && hit.hasVer))) best = hit;
             }
             if (best && best.hasVer && time) break;
+        }
+        // 明写的软件名一个都没有 → 退到弱识别：Altium 的暗记够多就按 Altium Designer 显示
+        if (!best) {
+            const n = altiumHits.filter(Boolean).length;
+            if (n >= 3) best = { name: 'Altium Designer', raw: `Altium 特征命中 ${n}/4`, hasVer: false };
         }
         const software = best ? best.name : null;
         const raw = best ? best.raw : '';

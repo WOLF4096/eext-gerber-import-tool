@@ -429,10 +429,10 @@
         // --- [性能保护] 大数据量先提示 ---
         // 实测 1.6MB 的 Gerber：生成图元 + 网络约 8s，编辑器解析源码再卡若干秒。
         // 「通过源码导入」是同步塞给编辑器的，期间界面完全无响应，用户会以为卡死。
-        // 超过 500KB 先弹窗说明，让用户自己决定【继续导入】还是改用导出文件。
+        // 超过 1MB 先弹窗说明，让用户自己决定【继续导入】还是改用导出文件。
         const heavyBytes = (typeof loadedGerberBytes === 'function') ? loadedGerberBytes() : 0;
         if (method === 'source' && heavyBytes > HEAVY_IMPORT_BYTES) {
-            appLog(`数据量 ${(heavyBytes / 1024).toFixed(0)}KB > 500KB，提示可能卡顿`);
+            appLog(`数据量 ${(heavyBytes / 1024 / 1024).toFixed(1)}MB > 1MB，提示可能卡顿`);
             const goOn = await confirmHeavyImport(heavyBytes);
             if (!goOn) {
                 appLog('已取消导入：用户选择关闭（数据量较大）。');
