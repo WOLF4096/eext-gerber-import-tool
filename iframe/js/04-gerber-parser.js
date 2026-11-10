@@ -35,6 +35,8 @@
                 // 是否已经有过「当前点」。Gerber 允许文件第一段直接 D01 而没有前置 D02，
                 // 此时当前点未定义，不能拿初始的 (0,0) 当起点用。
                 hasPoint: false,
+                // 槽孔 rout 模式（Excellon M15/M16）：下刀后记下起点，抬刀时清空
+                routStart: null,
                 // 模态操作码：无 D 码的坐标行要沿用上一次的 D01/D02/D03
                 dCode: null
             };
@@ -245,6 +247,32 @@
                 }
             }
 
+            // --- 槽孔 rout 模式（Excellon M15 / M16）---
+            // Altium / Protel 导出的 *-SlotHoles.TXT 用「G00 定位 → M15 下刀 → G01 铣切 → M16 抬刀」
+            // 表达槽孔；G85 是另一种单行写法。M 码行不含坐标，必须在这里拦掉，
+            // 否则会落到下面的坐标扫描里被当成普通钻孔点。
+            if (this.state.isDrill) {
+                const mc = line.match(/^M(\d+)/);
+                if (mc) {
+                    const code = parseInt(mc[1], 10);
+                    if (code === 15) {
+                        // 下刀：起点就是刚才 G00 定位的位置。
+                        // 顺手删掉紧邻的同点闪绘圆孔 —— 整条槽会盖住它，
+                        // 留着就会变成「槽的一端多出一颗圆孔」。
+                        const last = this.commands[this.commands.length - 1];
+                        if (last && last.type === 3
+                            && Math.abs(last.x - this.state.x) < 1e-9
+                            && Math.abs(last.y - this.state.y) < 1e-9) {
+                            this.commands.pop();
+                        }
+                        this.state.routStart = { x: this.state.x, y: this.state.y };
+                    } else if (code === 16) {
+                        this.state.routStart = null;
+                    }
+                    return;
+                }
+            }
+
             // ... (G36/G37 处理保持不变) ...
             if (line.startsWith('G36')) { this.state.isRegion = true; this.state.regionPath = []; return; }
             if (line.startsWith('G37')) {
@@ -263,10 +291,15 @@
             const regex = /([GXYDGTIJ])([\-\+]?\d*\.?\d*)/g;
             let match, tempD = null, hasCoord = false, tempT = null;
             let foundG = false;
+            // 本行是否是 G00（快速定位）。rout 模式下只有 G01 才是铣切，G00 只移动不切。
+            let isRapid = false;
             
             // --- [修改 1] 新增槽孔状态变量 ---
             let isSlot = false;
-            let slotStart = null; 
+            let slotStart = null;
+            // G85 的两种写法要靠「G85 之后还有没有坐标」区分起点，见下面的收尾逻辑
+            let g85At = null;
+            let coordsAfterG85 = 0;
 
             while ((match = regex.exec(line)) !== null) {
                 const type = match[1];
@@ -295,19 +328,22 @@
 
                 switch(type) {
                     case 'G':
-                        if (val === 1) this.state.interpolationMode = 1;
+                        if (val === 0) isRapid = true;
+                        else if (val === 1) this.state.interpolationMode = 1;
                         else if (val === 2) this.state.interpolationMode = 2; 
                         else if (val === 3) this.state.interpolationMode = 3; 
                         // --- [修改 2] 捕获 G85 槽孔指令 ---
                         else if (val === 85) {
                             isSlot = true;
-                            // G85 后面的 X/Y 是终点，当前 state.x/y 是起点，先保存起点
-                            slotStart = { x: this.state.x, y: this.state.y };
+                            // 先记下「G85 之前的坐标状态」，两种写法的起点不同，收尾时再定：
+                            //   X1Y1G85X2Y2（Altium）  → 起点是 G85 前面的 X1Y1
+                            //   X2Y2G85（标准 X2）    → 起点是本行开始前的位置
+                            g85At = { x: this.state.x, y: this.state.y };
                         }
                         foundG = true;
                         break;
-                    case 'X': if (isFinite(val)) { this.state.x = val; hasCoord = true; } break;
-                    case 'Y': if (isFinite(val)) { this.state.y = val; hasCoord = true; } break;
+                    case 'X': if (isFinite(val)) { this.state.x = val; hasCoord = true; if (isSlot) coordsAfterG85++; } break;
+                    case 'Y': if (isFinite(val)) { this.state.y = val; hasCoord = true; if (isSlot) coordsAfterG85++; } break;
                     case 'I': if (isFinite(val)) this.state.i = val; break;
                     case 'J': if (isFinite(val)) this.state.j = val; break;
                     // 注意：注释行里的裸字母（例如 "; Drill file" 里的 D）会让 valStr 为空、
@@ -326,6 +362,12 @@
             }
 
             // --- [修改 3] 如果检测到槽孔，生成 Type 6 指令并直接返回 ---
+            if (isSlot) {
+                // 两种 G85 写法的起点不同，用「G85 之后还有没有坐标」区分：
+                //   X1Y1G85X2Y2（Altium 等）→ 有后置坐标，起点是 G85 之前的 X1Y1
+                //   X2Y2G85（标准 X2 / KiCad）→ 无后置坐标，起点是本行开始前的位置
+                slotStart = (coordsAfterG85 > 0) ? g85At : { x: prevX, y: prevY };
+            }
             if (isSlot && slotStart) {
                 this.updateBounds(this.state.x, this.state.y);
                 this.commands.push({
@@ -338,6 +380,30 @@
                     polarity: this.state.polarity
                 });
                 return; // 结束，防止被下方逻辑识别为普通钻孔
+            }
+
+            // --- rout 模式槽孔：M15 下刀之后的 G01 铣切段，逐段生成 Type 6 ---
+            // 一条槽可能是多段折线（多个连续 G01），每段各出一条 type 6；
+            // 圆弧槽（G02/G03）这里按「起点→终点」的直线近似，本类样本未出现。
+            if (this.state.routStart && hasCoord && !isRapid) {
+                const rs = this.state.routStart;
+                if (Math.abs(this.state.x - rs.x) > 1e-9 || Math.abs(this.state.y - rs.y) > 1e-9) {
+                    this.updateBounds(this.state.x, this.state.y);
+                    this.state.hasPoint = true;
+                    this.commands.push({
+                        type: 6,
+                        x: this.state.x,
+                        y: this.state.y,
+                        startX: rs.x,
+                        startY: rs.y,
+                        ap: this.state.apertureCode,
+                        polarity: this.state.polarity
+                    });
+                    // 多段铣切：下一段从这里接着走
+                    this.state.routStart = { x: this.state.x, y: this.state.y };
+                }
+                this.state.i = 0; this.state.j = 0;
+                return;
             }
 
             if (this.state.isRegion) {

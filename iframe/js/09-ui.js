@@ -666,6 +666,31 @@
                              bufCtx.globalCompositeOperation = cmd.polarity === 'C' ? 'destination-out' : 'source-over';
                         }
                     }
+                    else if (type === 'P') {
+                        // 正多边形光圈：参数是「外径 X 边数 X 旋转角」。
+                        // ⚠️ 第 2 个参数是**边数**，不是高度 —— 早先这里没有 P 分支，
+                        //    八角形焊盘（%ADD17P,1.64956X8X22.5）在画布上直接是空白。
+                        // 边数与角度用原始参数：p[] 已按文件单位换算成 mm，
+                        // 英寸文件里把 "8 条边" 乘 25.4 会变成 203 条边。
+                        const od = p[0] || 0.1;
+                        const sides = Math.max(3, Math.min(64, Math.round(Number(rawParams[1]) || 3)));
+                        const rot = (rawParams.length >= 3 && isFinite(Number(rawParams[2]))) ? Number(rawParams[2]) : 0;
+                        const pr = od / 2;
+                        bufCtx.beginPath();
+                        for (let k = 0; k < sides; k++) {
+                            const ang = (rot + k * 360 / sides) * Math.PI / 180;
+                            const px = pr * Math.cos(ang), py = pr * Math.sin(ang);
+                            if (k === 0) bufCtx.moveTo(px, py); else bufCtx.lineTo(px, py);
+                        }
+                        bufCtx.closePath();
+                        bufCtx.fill();
+                        // 第 4 个参数是中心孔（少见）
+                        if (p.length >= 4 && p[3] > 0) {
+                            bufCtx.globalCompositeOperation = "destination-out";
+                            bufCtx.beginPath(); bufCtx.arc(0, 0, p[3]/2, 0, Math.PI*2); bufCtx.fill();
+                            bufCtx.globalCompositeOperation = cmd.polarity === 'C' ? 'destination-out' : 'source-over';
+                        }
+                    }
                     
                     bufCtx.restore();
                     bufCtx.beginPath(); bufCtx.moveTo(cmd.x, cmd.y); currX = cmd.x; currY = cmd.y;
@@ -721,8 +746,17 @@
                     bufCtx.stroke(); bufCtx.beginPath();
                     
                     const ap = apertures[cmd.ap];
-                    // 获取钻刀直径
-                    const dia = (ap && ap.params && ap.params[0]) ? ap.params[0] : 0.1;
+                    // 获取钻刀直径（钻孔刀具在解析阶段已换算成 mm）
+                    const dia = (ap && ap.params && ap.params[0] > 0) ? ap.params[0] : 0.1;
+                    // 起点缺失（老数据 / 异常文件）：退回成圆孔，别画出一条 NaN 路径
+                    if (typeof cmd.startX !== 'number' || typeof cmd.startY !== 'number') {
+                        bufCtx.beginPath();
+                        bufCtx.arc(cmd.x, cmd.y, dia / 2, 0, Math.PI * 2);
+                        bufCtx.fill();
+                        bufCtx.beginPath(); bufCtx.moveTo(cmd.x, cmd.y);
+                        currX = cmd.x; currY = cmd.y;
+                        continue;
+                    }
                     
                     // 设置绘制样式：线宽=直径，线端=圆头
                     bufCtx.lineWidth = dia;
@@ -1256,14 +1290,15 @@
         let bbCount = 0; // 埋盲孔 (ID 502)
 
         loadedFiles.forEach(f => {
-            // 统计 Flash 指令 (Type 3) 作为孔的数量
-            // 注意：某些通过 G85 槽孔定义的钻孔可能在 parse 阶段被转换，这里主要统计 Flash
-            const flashCount = f.data.commands.filter(c => c.type === 3).length;
+            // 孔数 = 闪绘圆孔(type 3) + 槽孔(type 6)。
+            // G85 与 M15/M16（rout 模式）的槽孔在解析阶段都统一成 type 6，
+            // 早先只统计 type 3，于是「只有槽孔的钻孔层」会显示成 0 个孔。
+            const holeCount = f.data.commands.filter(c => c.type === 3 || c.type === 6).length;
 
             if (f.layerId === 47 || f.layerId === 500 || f.layerId === 501) {
-                thCount += flashCount;
+                thCount += holeCount;
             } else if (f.layerId === 502) {
-                bbCount += flashCount;
+                bbCount += holeCount;
             }
         });
 

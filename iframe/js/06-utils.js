@@ -299,13 +299,19 @@
         if (bad > scanLen * 0.02) return false;
 
         // 3) 特征标记（只看前 64KB 足够判断）
+        // ⚠️ Excellon 的坐标行常写成「G00X..Y..」「G01X..」—— G 码后面**紧跟** X/Y，
+        //    早先用的 `G0?[0-4]\b` 在 X 之前断言词边界必然失败（X 也是单词字符），
+        //    于是「只有槽孔、没有普通钻点」的 rout 文件（通篇 G00/G01）整份被丢弃。
+        //    同理 `M0?[248]\b` 匹配不了 M48（M4 后面紧跟 8，无词边界），
+        //    `T\d+\s*C` 匹配不了 Altium 的 `T1F00S00C0.6500`。
         const head = content.slice(0, 65536);
         return (
             /%(?:FS|MO|AD|AM|LN|TF|TA|TO|SR|IP|IN|IC|OF|AS|MI)/i.test(head) ||   // 扩展指令
-            /(?:^|[\r\n])\s*G0?[0-4]\b/.test(head) ||                              // G01~G04 / M48 语法块
-            /(?:^|[\r\n])\s*M0?[248]\b/.test(head) ||                              // M02 / M30 / M48
-            /(?:^|[\r\n])\s*T\d+\s*C[\d.]+/i.test(head) ||                          // 钻孔刀具定义
-            /(?:^|[\r\n])\s*X[-+]?\d+(?:\.\d+)?Y[-+]?\d+/.test(head) ||             // 坐标系指令
+            /(?:^|[\r\n])\s*M48\b/.test(head) ||                                   // Excellon 钻孔文件头
+            /(?:^|[\r\n])\s*G0?[0-4](?![0-9])/.test(head) ||                       // G00X.. / G01Y.. / G01* / G04 …
+            /(?:^|[\r\n])\s*M0?[248]\b/.test(head) ||                              // M02 / M30 / M48…
+            /(?:^|[\r\n])\s*T\d+\w*C[\d.]+/i.test(head) ||                         // 刀具定义（兼容 T1F00S00C0.65）
+            /(?:^|[\r\n])\s*[XY][-+]?\d/.test(head) ||                             // 行首坐标 X.. / Y..
             /D0?[123]\s*\*/.test(head) ||                                          // D01/D02/D03 操作码
             /%FS[LTAI]*[XY]\d\d/i.test(head)                                       // 格式声明
         );

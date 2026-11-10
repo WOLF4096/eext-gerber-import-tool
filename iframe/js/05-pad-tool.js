@@ -521,60 +521,47 @@
                 // A. 钻孔文件处理
                 // [修复] 增加 layerId === 502 (埋盲孔)，确保该图层被作为钻孔数据提取
                 if (layerId === 47 || layerId === 500 || layerId === 501 || layerId === 502 || file.name.endsWith('.drl') || file.name.endsWith('.txt')) {
-                    if (rawContent) {
-                        const fileLines = rawContent.split(/\r?\n/);
-                        const tools = {}; let currentTool = null;
-                        const regexToolDef = /T(\d+)[^C]*C([\d.]+)/; const regexToolSel = /T(\d+)(?!C)/; 
-                        // 钻孔原文里的坐标是「无小数点的整数」，必须按文件声明的格式除以 10^dec
-                        // 才能得到文件单位。历史上漏了这一步：只有 2.4 英寸（div=1e4）碰巧接近，
-                        // 其它精度（例如嘉立创专业版 METRIC,LZ,000.00000 的 1e5）就整体差 10 倍。
-                        const fdiv = (file.data.format && file.data.format.divX) ? file.data.format.divX : 10000;
-                        const fInt = (file.data.format && file.data.format.xInt) || 0;
-                        const fDec = (file.data.format && file.data.format.xDec) || 4;
-                        const fZero = (file.data.format && file.data.format.zeroPad) || 'start';
-                        const drillUnitMult = (fileUnit === 'in') ? 25.4 : 1;
-                        const manualToMM = (raw) => {
-                            // 位数不足的坐标要先按零省略策略补位（METRIC,LZ 的 X0019 = 19.000mm），
-                            // 否则槽孔同样会缩到原点附近
-                            if (typeof gerberCoordValue === 'function') {
-                                const v = gerberCoordValue(raw, fInt, fDec, fdiv, fZero);
-                                return (isFinite(v) ? v : 0) * drillUnitMult;
-                            }
-                            const v = parseFloat(raw);
-                            if (!isFinite(v)) return 0;
-                            // 已经带小数点的是绝对值，不再除格式因子
-                            const scaled = String(raw).indexOf('.') !== -1 ? v : v / fdiv;
-                            return scaled * drillUnitMult;
-                        };
-                        for (let line of fileLines) {
-                            line = line.trim();
-                            const matchDef = line.match(regexToolDef); if (matchDef) { tools[matchDef[1]] = matchDef[2]; continue; }
-                            const matchSel = line.match(regexToolSel); if (matchSel) { currentTool = matchSel[1]; continue; }
-                            if (line.includes('G85') && currentTool) {
-                                const coords = line.match(/X([\d.-]+)Y([\d.-]+).*?X([\d.-]+)Y([\d.-]+)/);
-                                if (coords) {
-                                    const x1 = manualToMM(coords[1]); const y1 = manualToMM(coords[2]);
-                                    const x2 = manualToMM(coords[3]); const y2 = manualToMM(coords[4]);
-                                    const dia = manualToMM(tools[currentTool]);
-                                    const cx = (x1 + x2) / 2; const cy = (y1 + y2) / 2;
-                                    const dx = x2 - x1; const dy = y2 - y1;
-                                    const len = Math.sqrt(dx*dx + dy*dy);
-                                    let rotation = Math.atan2(dy, dx) * 180 / Math.PI;
-                                    while (rotation > 90.1) rotation -= 180; while (rotation < -89.9) rotation += 180;
-                                    drills.push({ 
-                                        x: cx, y: cy, w: len + dia, h: dia, 
-                                        rotation: rotation, dia: dia, 
-                                        isPlated: layerId !== 501, 
-                                        isSlot: true,
-                                        pairStart: file.pairStart, // <--- 新增
-                                        pairEnd: file.pairEnd      // <--- 新增
-                                    });
-                                    slotOccupiedPoints.push({x: cx, y: cy}, {x: x1, y: y1}, {x: x2, y: y2});
-                                }
-                            }
-                        }
-                    }
+                    // 槽孔统一由解析器产出的 type 6 提供，两条来源合一：
+                    //   · G85（单行写法，Altium 的 X1Y1G85X2Y2 与标准 X2 的 X2Y2G85）
+                    //   · M15/M16（rout 模式，Altium / Protel 的 *-SlotHoles.TXT 全是这种）
+                    // 旧实现在这里用正则二次解析原文的 G85 行：只认 X1Y1G85X2Y2 一种写法，
+                    // 且完全不认 M15/M16 —— 于是 Altium 的槽孔要么丢失、要么被拆成两个圆孔。
                     file.data.commands.forEach(cmd => {
+                        if (cmd.type === 6) {
+                            const x1 = mmOf(cmd.startX); const y1 = mmOf(cmd.startY);
+                            const x2 = mmOf(cmd.x); const y2 = mmOf(cmd.y);
+                            const ap = file.data.apertures[cmd.ap];
+                            // 钻刀直径在解析阶段已换算成 mm
+                            let dia = (ap && ap.params && ap.params[0]) ? mmOf(ap.params[0]) : 0.1;
+                            if (!(dia > 0)) dia = 0.1;
+                            const dx = x2 - x1; const dy = y2 - y1;
+                            const len = Math.sqrt(dx * dx + dy * dy);
+                            if (len < 1e-6) {
+                                // 退化槽（起点=终点）：当圆孔更合理，否则 EDA 里会得到一条零长槽
+                                drills.push({
+                                    x: x1, y: y1, w: dia, h: dia,
+                                    rotation: 0, dia: dia,
+                                    isPlated: layerId !== 501, isSlot: false,
+                                    pairStart: file.pairStart, pairEnd: file.pairEnd
+                                });
+                                slotOccupiedPoints.push({ x: x1, y: y1 });
+                                return;
+                            }
+                            let rotation = Math.atan2(dy, dx) * 180 / Math.PI;
+                            while (rotation > 90.1) rotation -= 180;
+                            while (rotation < -89.9) rotation += 180;
+                            drills.push({
+                                x: (x1 + x2) / 2, y: (y1 + y2) / 2,
+                                w: len + dia, h: dia,
+                                rotation: rotation, dia: dia,
+                                isPlated: layerId !== 501,
+                                isSlot: true,
+                                pairStart: file.pairStart,
+                                pairEnd: file.pairEnd
+                            });
+                            slotOccupiedPoints.push({ x: x1, y: y1 }, { x: x2, y: y2 });
+                            return;
+                        }
                         if (cmd.type === 3) { 
                             // 坐标已由解析器换算成 mm
                             const cx = mmOf(cmd.x); const cy = mmOf(cmd.y);
@@ -1143,6 +1130,41 @@
                 return null;
             };
 
+            // 槽孔中心常偏离焊盘中心（偏心槽 / 长槽穿过焊盘），0.05mm 的距离容差匹配不上，
+            // 结果整条槽会变成一颗「直径 = 槽长」的独立过孔。这里补一层「中心落在焊盘范围内」的判定。
+            const padBoxOf = (prim) => {
+                if (!prim) return null;
+                if (prim.shape === 'POLYGON' && Array.isArray(prim.path) && prim.path.length) {
+                    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+                    prim.path.forEach(pt => {
+                        if (typeof pt.x !== 'number' || !isFinite(pt.x)) return;
+                        if (pt.x < x0) x0 = pt.x;
+                        if (pt.x > x1) x1 = pt.x;
+                        if (pt.y < y0) y0 = pt.y;
+                        if (pt.y > y1) y1 = pt.y;
+                    });
+                    return (x1 > x0 && y1 > y0) ? { x0: x0, x1: x1, y0: y0, y1: y1 } : null;
+                }
+                if (!(prim.w > 0) || !(prim.h > 0)) return null;
+                const rad = (prim.rotation || 0) * Math.PI / 180;
+                const ac = Math.abs(Math.cos(rad)), as = Math.abs(Math.sin(rad));
+                const hw = (prim.w * ac + prim.h * as) / 2;
+                const hh = (prim.w * as + prim.h * ac) / 2;
+                return { x0: prim.x - hw, x1: prim.x + hw, y0: prim.y - hh, y1: prim.y + hh };
+            };
+            const findPadContaining = (d) => {
+                let bestKey = null, bestDist = Infinity;
+                for (const [k, node] of map) {
+                    const box = padBoxOf(node.top || node.bottom || node.inners[0]);
+                    if (!box) continue;
+                    if (d.x < box.x0 - 0.02 || d.x > box.x1 + 0.02) continue;
+                    if (d.y < box.y0 - 0.02 || d.y > box.y1 + 0.02) continue;
+                    const dist = Math.sqrt((node.x - d.x) * (node.x - d.x) + (node.y - d.y) * (node.y - d.y));
+                    if (dist < bestDist) { bestDist = dist; bestKey = k; }
+                }
+                return bestKey;
+            };
+
             drills.forEach((d, idx) => {
                 // 1. 埋盲孔跳过逻辑 (保持不变)
                 if (d.pairStart && d.pairEnd) {
@@ -1191,6 +1213,8 @@
                             matchedKey = k; 
                         } 
                     }
+                    // 2.3 槽孔兜底：中心落在焊盘范围内的，也算匹配
+                    if (!matchedKey && d.isSlot) matchedKey = findPadContaining(d);
                     if (matchedKey) { 
                         tryMergeDrillToPad(map.get(matchedKey), d);
                     }

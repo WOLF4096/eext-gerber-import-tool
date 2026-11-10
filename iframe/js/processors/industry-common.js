@@ -185,6 +185,8 @@
         // ---------- 锡膏 / 钢网（其余命名）----------
         { regex: re('\\.GTP$|\\.CRT$'), layerId: LAYER_ID.TOP_PASTE },                       // .GTP / Eagle .CRT
         { regex: re('\\.GBP$|\\.CRB$'), layerId: LAYER_ID.BOT_PASTE },                       // .GBP / Eagle .CRB
+        { regex: re('\\.GPT$'), layerId: LAYER_ID.TOP_PASTE },                               // Altium 另一种写法：GPastTop
+        { regex: re('\\.GPB$'), layerId: LAYER_ID.BOT_PASTE },                               // Altium 另一种写法：GPastBottom
         { regex: re('(?:paste|stencil)' + _SEPo + _BOT), layerId: LAYER_ID.BOT_PASTE },
         { regex: re(_BOT + _SEPo + '(?:solder' + _SEPo + 'paste|paste|stencil)'), layerId: LAYER_ID.BOT_PASTE },
         { regex: re('(?:paste|stencil)' + _SEPo + _TOP), layerId: LAYER_ID.TOP_PASTE },
