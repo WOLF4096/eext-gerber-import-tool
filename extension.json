@@ -3,7 +3,7 @@
 	"uuid": "0000eext0gerber0import00wolf4096",
 	"displayName": "Gerber 转 PCB (G2PCB)",
 	"description": "一键转换带网络可编辑的PCB。",
-	"version": "3.9.24",
+	"version": "3.9.25",
 	"publisher": "狼黑",
 	"engines": {
 		"eda": ">=2.2.45"

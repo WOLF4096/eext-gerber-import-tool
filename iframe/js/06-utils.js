@@ -848,8 +848,8 @@
     // 之前只认第 1 种且还要求复数「integers/decimals」，导致大量文件退回默认精度。
     function detectGerberDeclarations(content) {
         const out = {
-            gInt: null, gDec: null, gDeclared: false, gUnits: null,
-            dInt: null, dDec: null, dDeclared: false, dUnits: null,
+            gInt: null, gDec: null, gDeclared: false, gUnits: null, gZero: null,
+            dInt: null, dDec: null, dDeclared: false, dUnits: null, dZero: null,
             legacy274d: false, x2: false, x3: false
         };
         if (typeof content !== 'string' || !content) return out;
@@ -860,9 +860,13 @@
         if (/%TO\.C[,.]|%TO\.N[,.]|%TO\.P[,.]/.test(head)) out.x3 = true;
 
         // ---------- 1. 扩展指令 ----------
-        const fs = head.match(/%FS[LTAI]*X(\d)(\d)Y(\d)(\d)/i);
+        const fs = head.match(/%FS([LTAI]*)X(\d)(\d)Y(\d)(\d)/i);
         if (fs) {
-            out.gInt = parseInt(fs[1], 10); out.gDec = parseInt(fs[2], 10); out.gDeclared = true;
+            out.gInt = parseInt(fs[2], 10); out.gDec = parseInt(fs[3], 10); out.gDeclared = true;
+            // %FS 的第二、三位是「零省略策略」：
+            //   L = Leading zeros omitted → 数字右对齐，位数不足时补前导零
+            //   T = Trailing zeros omitted → 数字左对齐，位数不足时补尾零
+            out.gZero = fs[1].toUpperCase().indexOf('T') !== -1 ? 'end' : 'start';
         }
         if (/%MOIN/i.test(head)) out.gUnits = 'in';
         else if (/%MOMM/i.test(head)) out.gUnits = 'mm';
@@ -896,6 +900,11 @@
             // 单位
             if (/\bMETRIC\b/i.test(head)) out.dUnits = 'mm';
             else if (/\bINCH\b/i.test(head)) out.dUnits = 'in';
+            // 钻孔文件的 LZ / TZ 与 Gerber 的 %FS 语义**相反**（Excellon 里写的是「保留哪个」）：
+            //   LZ = Leading zeros kept（保留前导零，即尾零被省略）→ 左对齐 → 位数不足补尾零
+            //   TZ = Trailing zeros kept（保留尾零，即前导零被省略）→ 右对齐 → 位数不足补前导零
+            const zs = head.match(/(?:METRIC|INCH)\s*,\s*(LZ|TZ)/i);
+            if (zs) out.dZero = zs[1].toUpperCase() === 'LZ' ? 'end' : 'start';
             // METRIC,LZ,000.00000 —— 第三段是「整数位.小数位」的模板
             const tpl = head.match(/(?:METRIC|INCH)\s*,\s*[A-Z]*\s*,\s*(\d+)\.(\d+)/i);
             if (tpl) {
@@ -913,6 +922,36 @@
         }
 
         return out;
+    }
+
+    // ----------------------------------------------------------------------------------
+    // 无小数点坐标换算：按零省略策略补齐位数，再除以精度因子
+    // ----------------------------------------------------------------------------------
+    // Gerber / Excellon 的坐标都是「去掉小数点的定长整数」，位数不足时补哪一边完全取决于
+    // 文件声明的零省略方式 —— 补错一边就是 10 倍甚至 100 倍的偏差：
+    //   前导零省略（Gerber %FSLA、钻孔 TZ）→ 数字右对齐 → 补前导零（padMode='start'）
+    //   尾零省略  （Gerber %FST 、钻孔 LZ）→ 数字左对齐 → 补尾零  （padMode='end'）
+    // 历史缺陷：一律 parseFloat 后除以 10^dec。于是「METRIC,LZ + 4:3」钻孔文件里的
+    // X0019Y00005（本意 19.000 / 0.500 mm）被读成 0.019 / 0.005 mm —— 整板钻孔缩到
+    // 原点附近，过孔全部错位。
+    function gerberCoordValue(raw, intDigits, decDigits, div, padMode) {
+        // 热路径（一个 2MB 的丝印层就是几十万次调用）：入参一律是数字，
+        // 这里不做 String()/trim()/parseInt()/Math.pow() 这类额外转换。
+        const s = (typeof raw === 'string') ? raw : String(raw);
+        if (!s) return NaN;
+        if (s.indexOf('.') !== -1) return parseFloat(s);   // 已带小数点：绝对值，不再补位
+        let sign = 1;
+        let body = s;
+        const c0 = s.charCodeAt(0);
+        if (c0 === 43 || c0 === 45) { if (c0 === 45) sign = -1; body = s.slice(1); }
+        const digits = (intDigits || 0) + (decDigits || 0);
+        // 快路径：位数已经够（绝大多数生成器都写完整位数）→ 不做补位，直接换算
+        if (digits > 0 && body.length < digits) {
+            body = (padMode === 'end') ? body.padEnd(digits, '0') : body.padStart(digits, '0');
+        }
+        const v = Number(body);
+        if (v !== v) return parseFloat(s);                 // 含其它字符：交回原逻辑
+        return sign * v / ((div > 0) ? div : 1);
     }
 
     // 计算最大 ID 

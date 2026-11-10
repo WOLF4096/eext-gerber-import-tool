@@ -529,8 +529,17 @@
                         // 才能得到文件单位。历史上漏了这一步：只有 2.4 英寸（div=1e4）碰巧接近，
                         // 其它精度（例如嘉立创专业版 METRIC,LZ,000.00000 的 1e5）就整体差 10 倍。
                         const fdiv = (file.data.format && file.data.format.divX) ? file.data.format.divX : 10000;
+                        const fInt = (file.data.format && file.data.format.xInt) || 0;
+                        const fDec = (file.data.format && file.data.format.xDec) || 4;
+                        const fZero = (file.data.format && file.data.format.zeroPad) || 'start';
                         const drillUnitMult = (fileUnit === 'in') ? 25.4 : 1;
                         const manualToMM = (raw) => {
+                            // 位数不足的坐标要先按零省略策略补位（METRIC,LZ 的 X0019 = 19.000mm），
+                            // 否则槽孔同样会缩到原点附近
+                            if (typeof gerberCoordValue === 'function') {
+                                const v = gerberCoordValue(raw, fInt, fDec, fdiv, fZero);
+                                return (isFinite(v) ? v : 0) * drillUnitMult;
+                            }
                             const v = parseFloat(raw);
                             if (!isFinite(v)) return 0;
                             // 已经带小数点的是绝对值，不再除格式因子
@@ -902,6 +911,25 @@
                                 while (rotation > 90.1) { rotation -= 90; [w, h] = [h, w]; } while (rotation < -89.9) { rotation += 90; [w, h] = [h, w]; }
                                 rotation = parseFloat(rotation.toFixed(2)); if (Math.abs(rotation) < 0.01) rotation = 0;
                                 if (type.includes('OVAL')) shape = 'OVAL'; else { shape = 'RECT'; radiusRatio = PadTool.calcRadiusRatio(dia / 2, w, h); }
+                            } else if (type === 'P' || type === 'POLYGON') {
+                                // P（正多边形）光圈：参数是「外径 X 边数 X 旋转角」——
+                                // 第 2 个是**边数**，绝不能当高度用。旧实现把 p[1] 当 h，
+                                // 于是外径 1.65mm、8 边的八角形焊盘被放成 1.65 × 8mm 的长条矩形
+                                // （"8" 是边数不是 8mm），导入后形状完全不对。
+                                // 这里直接按顶点生成多边形路径，交给 POLYGON 通道输出。
+                                const od = toMM(p[0] || 0.1);
+                                const sides = Math.max(3, Math.min(64, Math.round(p[1] || 3)));
+                                const rotDeg = (p.length >= 3 && isFinite(parseFloat(p[2]))) ? parseFloat(p[2]) : 0;
+                                const pr = od / 2;
+                                const pts = [];
+                                for (let k = 0; k < sides; k++) {
+                                    const ang = (rotDeg + k * 360 / sides) * Math.PI / 180;
+                                    pts.push({ cmd: k === 0 ? 'M' : 'L', x: currX + pr * Math.cos(ang), y: currY + pr * Math.sin(ang) });
+                                }
+                                pts.push({ cmd: 'L', x: pts[0].x, y: pts[0].y });
+                                rawPads.push({ layerId, x: currX, y: currY, shape: 'POLYGON', path: pts, w: 0, h: 0, rotation: 0 });
+                                addPolyPadAt(layerId, currX, currY);
+                                continue;
                             } else if (type === 'O' || type.includes('OVAL') || type.includes('OBROUND')) {
                                 shape = 'OVAL'; w = toMM(p[0]); h = p.length > 1 ? toMM(p[1]) : w; if (p.length >= 3 && p[2]) rotation = parseFloat(p[2]);
                             } else {
@@ -1716,8 +1744,19 @@
                         const isEq = (o1, o2) => {
                             if (!o1 && !o2) return true;
                             if (!o1 || !o2) return false;
-                            // 异形焊盘暂时不支持作为 specialPads 的比较逻辑，因为 path 太复杂
-                            if (o1.shape === 'POLYGON' || o2.shape === 'POLYGON') return false;
+                            // 异形焊盘（宏光圈 / P 光圈）按顶点逐个比对。
+                            // 旧实现一律返回 false，于是「上下层是同一个多边形」也被判成不同形状，
+                            // 白搭出一个 10×10 的假 specialPad。
+                            if (o1.shape === 'POLYGON' || o2.shape === 'POLYGON') {
+                                if (o1.shape !== o2.shape) return false;
+                                const pa = o1.path || [], pb = o2.path || [];
+                                if (pa.length !== pb.length) return false;
+                                for (let k = 0; k < pa.length; k++) {
+                                    if (Math.abs((pa[k].x || 0) - (pb[k].x || 0)) > 0.005) return false;
+                                    if (Math.abs((pa[k].y || 0) - (pb[k].y || 0)) > 0.005) return false;
+                                }
+                                return true;
+                            }
 
                             return Math.abs(o1.w - o2.w) < 0.005 && Math.abs(o1.h - o2.h) < 0.005 && Math.abs((o1.rotation||0) - (o2.rotation||0)) < 0.1 && (o1.radiusRatio||0) === (o2.radiusRatio||0) && o1.shape === o2.shape;
                         };

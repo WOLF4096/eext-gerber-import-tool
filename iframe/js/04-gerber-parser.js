@@ -25,7 +25,7 @@
             this.state = { 
                 x: 0, y: 0, 
                 dCode: null, apertureCode: null, 
-                format: { xInt:2, xDec:4, divX:10000, yInt:2, yDec:4, divY:10000 }, 
+                format: { xInt:2, xDec:4, divX:10000, yInt:2, yDec:4, divY:10000, zeroPad:'start' }, 
                 units: 'mm',
                 isRegion: false,
                 regionPath: [], 
@@ -103,6 +103,11 @@
             this.state.format.xInt = intVal; this.state.format.yInt = intVal;
             this.state.format.xDec = decVal; this.state.format.yDec = decVal;
             this.state.format.divX = div; this.state.format.divY = div;
+            // 零省略策略：位数不足的坐标该补在前（前导零省略）还是补在后（尾零省略）。
+            // 钻孔的 LZ/TZ 与 Gerber 的 %FS 语义相反，已在 detectGerberDeclarations 里统一
+            // 折算成 'start' / 'end'。没声明时沿用历史行为（右对齐，补前导零）。
+            const zeroPad = decl ? (this.state.isDrill ? decl.dZero : decl.gZero) : null;
+            this.state.format.zeroPad = zeroPad || 'start';
 
             let cleanContent = content.replace(/[\r\n]+/g, '\n');
             // 匹配 %AMName*Content*% 格式，非贪婪匹配
@@ -131,7 +136,8 @@
                 isDrill: this.state.isDrill,
                 format: {
                     xInt: this.state.format.xInt, xDec: this.state.format.xDec, divX: this.state.format.divX,
-                    yInt: this.state.format.yInt, yDec: this.state.format.yDec, divY: this.state.format.divY
+                    yInt: this.state.format.yInt, yDec: this.state.format.yDec, divY: this.state.format.divY,
+                    zeroPad: this.state.format.zeroPad
                 },
                 decl: this.decl || null
             };
@@ -176,8 +182,19 @@
 
             if (line.startsWith('FS') && !keepFormat && !forceFormat) {
                 const mX = line.match(/X(\d)(\d)/), mY = line.match(/Y(\d)(\d)/);
-                if (mX) { this.state.format.xDec = parseInt(mX[2]); this.state.format.divX = Math.pow(10, this.state.format.xDec); }
-                if (mY) { this.state.format.yDec = parseInt(mY[2]); this.state.format.divY = Math.pow(10, this.state.format.yDec); }
+                if (mX) {
+                    this.state.format.xInt = parseInt(mX[1]);
+                    this.state.format.xDec = parseInt(mX[2]);
+                    this.state.format.divX = Math.pow(10, this.state.format.xDec);
+                }
+                if (mY) {
+                    this.state.format.yInt = parseInt(mY[1]);
+                    this.state.format.yDec = parseInt(mY[2]);
+                    this.state.format.divY = Math.pow(10, this.state.format.yDec);
+                }
+                // 同一行里的 L/T 决定补位方向：L = 前导零省略（补前），T = 尾零省略（补后）
+                const om = line.match(/^FS([LTAI]*)/i);
+                if (om) this.state.format.zeroPad = om[1].toUpperCase().indexOf('T') !== -1 ? 'end' : 'start';
             }
             if (line.startsWith('MO') && !keepUnits && !forceUnits) {
                 // 如果 config 指定了 units (非 auto)，则忽略文件内部单位设置
@@ -257,8 +274,22 @@
                 let val = parseFloat(valStr);
 
                 if (!valStr.includes('.') && ['X','Y','I','J'].includes(type)) {
-                    if (type === 'X' || type === 'I') val = val / this.state.format.divX;
-                    else if (type === 'Y' || type === 'J') val = val / this.state.format.divY;
+                    const isX = (type === 'X' || type === 'I');
+                    const f = this.state.format;
+                    if (f.zeroPad === 'end') {
+                        // 尾零省略（钻孔 METRIC,LZ / Gerber %FST）：位数不足时补的是尾零，
+                        // 数值会变，必须走补位换算。见 06-utils.js gerberCoordValue。
+                        val = (typeof gerberCoordValue === 'function')
+                            ? gerberCoordValue(valStr,
+                                isX ? f.xInt : f.yInt,
+                                isX ? f.xDec : f.yDec,
+                                isX ? f.divX : f.divY, 'end')
+                            : val / (isX ? f.divX : f.divY);
+                    } else {
+                        // 前导零省略（默认，绝大多数 Gerber）：补前导零不改变数值，
+                        // 直接除以精度因子即可 —— 与旧实现逐位一致，也不拖慢解析。
+                        val = val / (isX ? f.divX : f.divY);
+                    }
                 }
                 if (this.state.units === 'in' && ['X','Y','I','J'].includes(type)) val *= 25.4;
 
