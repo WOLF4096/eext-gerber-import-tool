@@ -1281,12 +1281,14 @@
 
         // 4. 软件名称 / 导出时间（从导入文件的头部注释解析）
         //    软件名称读不到 → 隐藏该行；导出时间读不到 → 回退用文件时间的最小值。
-        const src = (typeof detectEasyEdaSource === 'function') ? detectEasyEdaSource() : null;
+        const src = (typeof detectGerberSource === 'function') ? detectGerberSource() : null;
         const softRow = document.getElementById('row-prop-soft');
         const timeRow = document.getElementById('row-prop-time');
         if (softRow) {
             if (src && src.software) {
-                document.getElementById('prop-soft').textContent = src.software;
+                const softEl = document.getElementById('prop-soft');
+                softEl.textContent = src.software;
+                softEl.title = src.software;   // 名称过长时截断显示，悬停看全称
                 softRow.style.display = 'flex';
             } else {
                 softRow.style.display = 'none';

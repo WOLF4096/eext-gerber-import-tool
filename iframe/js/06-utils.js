@@ -1874,32 +1874,196 @@
         return (typeof ms === 'number' && isFinite(ms)) ? formatStamp(new Date(ms), false) : null;
     }
 
+    // ----------------------------------------------------------------------------------
+    // 来源软件识别
+    // ------------------------------------------------------------------------------------
+    // 各家导出的注释写法差别很大，这里按「可能性从高到低」依次尝试：
+    //   ① 标准 X2/X3 属性   TF.GenerationSoftware,<厂商>,<软件>,<版本>
+    //      Gerber   %TF.GenerationSoftware,Altium Limited,Altium Designer,24.8.2 (39)*%
+    //               G04 #@! TF.GenerationSoftware,KiCad,Pcbnew,7.0.10*
+    //      Excellon ;GenerationSoftware,Autodesk,EAGLE,9.7.0*%（没有 TF. 前缀）
+    //   ② 嘉立创私有         G04 EasyEDA Pro v2.2.32.3, 2024-11-18 13:44:47
+    //                        ;EasyEDA Pro Client v2.1.40.832e02bb.70b181, ...
+    //   ③ “Created by …”     G04 Created by KiCad (PCBNEW 7.0.10) date 2023-01-01 12:00:00*
+    //                        ; DRILL file {KiCad 7.0.10} date 2023-01-01T12:00:00
+    //   ④ 兜底：注释里出现已知软件名（拿不到版本也认）
+    // 软件名读不到就保持 null（由 UI 隐藏该行，不做臆测）。
+
+    /** 已知软件名（顺序即优先级：先具体、后笼统）；只用于兜底 */
+    const SOURCE_KNOWN_NAMES = [
+        [/Altium\s+Designer/i, 'Altium Designer'],
+        [/\bAltium\b/i, 'Altium Designer'],
+        [/\bProtel\b/i, 'Protel'],
+        [/\bEAGLE\b/i, 'EAGLE'],
+        [/\bKiCad\b|\bPcbnew\b|\bEeschema\b/i, 'KiCad'],
+        [/\bPADS\b/i, 'PADS'],
+        [/\bAllegro\b/i, 'Allegro'],
+        [/\bOrCAD\b/i, 'OrCAD'],
+        [/\bCAM350\b|\bCAMtastic\b/i, 'CAM350'],
+        [/\bDipTrace\b/i, 'DipTrace'],
+        [/\bGerbv\b/i, 'Gerbv'],
+        [/\bProteus\b/i, 'Proteus'],
+        [/\bCircuitStudio\b/i, 'CircuitStudio'],
+        [/\bCircuitMaker\b/i, 'CircuitMaker'],
+        [/\bZuken\b|\bCR-5000\b|\bCR-8000\b/i, 'Zuken'],
+        [/\bExpedition\b|\bXpedition\b/i, 'Xpedition'],
+        [/\bDesignSpark\b/i, 'DesignSpark'],
+        [/\bSprint-Layout\b/i, 'Sprint-Layout'],
+        [/\bFritzing\b/i, 'Fritzing'],
+        [/\bGC-Prevue\b|\bGraphiCode\b/i, 'GraphiCode'],
+        [/\bUcamco\b|\bUcamX\b/i, 'Ucamco'],
+        [/\bTARGET\s*3001\b/i, 'TARGET 3001'],
+        [/\bEasyEDA\b|嘉立创|立创EDA/i, '嘉立创EDA']
+    ];
+
     /**
-     * 扫描已导入文件的原文，识别产生该 Gerber 的软件与导出时间。
-     * 实测两种写法：
-     *   G04 EasyEDA Pro v2.2.32.3, 2024-11-18 13:44:47*
-     *   ;EasyEDA Pro Client v2.1.40.832e02bb.70b181, 2023-12-06 22:07:52
-     * 约定：EasyEDA = 标准版；EasyEDA Pro（含 Pro Client）= 专业版。
-     * 兜底：注释里读不到导出时间时，用「压缩包内各 Gerber 文件时间的最小值」；
-     *       软件名称读不到就保持 null（由 UI 隐藏该行，不做臆测）。
+     * 软件名的规范写法：已知厂商统一叫法，未知时优先产品名。
+     * 嘉立创要分「标准版 / 专业版」—— 这是本项目一贯的叫法。
+     */
+    function normalizeSourceName(vendor, product) {
+        const v = String(vendor === undefined || vendor === null ? '' : vendor).trim();
+        const p = String(product === undefined || product === null ? '' : product).trim();
+        const all = (v + ' ' + p).trim();
+        if (!all) return null;
+        if (/easyeda|嘉立创|立创eda/i.test(all)) {
+            return /pro/i.test(all) ? '嘉立创EDA专业版' : '嘉立创EDA标准版';
+        }
+        for (const pair of SOURCE_KNOWN_NAMES) {
+            if (pair[0].test(all)) return pair[1];
+        }
+        return p || v || null;
+    }
+
+    /**
+     * 版本号清洗：去 v 前缀、去尾部括号备注（24.8.2 (39) → 24.8.2）、
+     * 去哈希尾巴（2.1.40.832e02bb.70b181 → 2.1.40）。
+     * 「VX.2.4」这类不是以数字开头的版本整体保留。
+     */
+    function cleanSourceVersion(v) {
+        let s = String(v === undefined || v === null ? '' : v).trim();
+        if (!s) return '';
+        s = s.replace(/^[vV](?=\d)/, '').trim();
+        s = s.replace(/\([^)]*\)/g, ' ').trim();     // 去括号备注：24.8.2 (39) → 24.8.2
+        s = (s.split(',')[0] || '').trim();           // 逗号后是额外说明
+        s = (s.split(/\s+/)[0] || '').trim();         // 空格后是额外说明
+        // 逐段保留纯数字：2.1.40.832e02bb.70b181 → 2.1.40（哈希尾巴丢掉）
+        const parts = s.split('.');
+        const keep = [];
+        for (const p of parts) {
+            if (/^\d+$/.test(p)) keep.push(p); else break;
+        }
+        return keep.length ? keep.join('.') : s;      // VX.2.4 这类整体保留
+    }
+
+    /** 只收集头部注释行（G04 / ; / %TF 属性）—— 兜底匹配时不会扫到坐标数据 */
+    function collectCommentLines(head) {
+        const out = [];
+        const lines = String(head).split(/\r\n|\n|\r/);
+        for (let i = 0; i < lines.length && i < 400 && out.length < 300; i++) {
+            const s = lines[i].trim();
+            if (!s) continue;
+            if (s.startsWith('G04') || s.startsWith(';') || s.startsWith('%TF') || s.startsWith('%TA')) out.push(s);
+        }
+        return out;
+    }
+
+    /** 在文件头部找「生成软件」，返回 { name, raw, hasVer }（hasVer 用于多文件间挑最佳） */
+    function matchSourceSoftware(head) {
+        // ① 标准 X2/X3 属性（Excellon 的 ;GenerationSoftware 也走这条）
+        const m1 = head.match(/(?:TF\.)?GenerationSoftware\s*,\s*([^,*%\r\n]+)\s*,\s*([^,*%\r\n]+)\s*(?:,\s*([^*%\r\n]*))?/i);
+        if (m1) {
+            const name = normalizeSourceName(m1[1], m1[2]);
+            const ver = cleanSourceVersion(m1[3]);
+            if (name) return { name: ver ? `${name} ${ver}` : name, raw: m1[0].trim(), hasVer: !!ver };
+        }
+
+        // ② 嘉立创私有注释
+        const m2 = head.match(/(?:G04|;)\s*(EasyEDA(?:\s+Pro)?(?:\s+Client)?)\s+v?([0-9][^\s,]*)/i);
+        if (m2) {
+            const name = normalizeSourceName('', m2[1]);
+            const ver = cleanSourceVersion(m2[2]);
+            if (name) return { name: ver ? `${name} ${ver}` : name, raw: m2[0].trim(), hasVer: !!ver };
+        }
+
+        // ③ “Created by …” / “; DRILL file {…}”
+        //    ⚠️ DRILL file 必须紧跟花括号才算：老式钻孔头常写成
+        //       “; Drill file” + “; Format: 2.4 (00.0000)” 两行说明，
+        //       不限定花括号就会把下一行的 “; Format: 2.4” 拼成假的软件名。
+        const m3 = head.match(/\bCreated by\s+([^\r\n*]{1,100})/i);
+        const m4 = m3 ? null : head.match(/\bDRILL file\s*\{([^}\r\n]{1,80})\}/i);
+        const body = (m3 ? m3[1] : (m4 ? m4[1] : '')).replace(/\s+date\s+.*$/i, '').trim();
+        if (body) {
+            const verM = body.match(/\b[vV]?(\d+(?:\.\d+){1,3})\b/);
+            const ver = verM ? cleanSourceVersion(verM[1]) : '';
+            const nameSrc = body.replace(/\([^)]*\)/g, ' ').replace(/\b[vV]?\d[\w.]*/g, ' ').trim();
+            const name = normalizeSourceName('', nameSrc) || normalizeSourceName('', body);
+            // 只认「已知软件名」或「像名字的短串」，避免把 Format / 说明文字当软件
+            const isName = name && (SOURCE_KNOWN_NAMES.some(p => p[0].test(name))
+                || /^[A-Za-z][A-Za-z0-9 ._+-]{1,39}$/.test(name));
+            if (isName) return { name: ver ? `${name} ${ver}` : name, raw: (m3 || m4)[0].trim(), hasVer: !!ver };
+        }
+
+        // ④ 兜底：注释里直接出现已知软件名
+        const comments = collectCommentLines(head);
+        for (const line of comments) {
+            for (const pair of SOURCE_KNOWN_NAMES) {
+                if (pair[0].test(line)) return { name: pair[1], raw: line, hasVer: false };
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 从头部注释里取导出时间，统一成 'YYYY-MM-DD HH:MM:SS'。
+     * 带时区后缀（Z / +08:00）的先换算到本机时区，避免 UTC 时间差 8 小时。
+     */
+    function matchCreationTime(head) {
+        const stamp = (y, mo, d, h, mi, s, tz) => {
+            const dt = new Date(`${y}-${mo}-${d}T${h}:${mi}:${s}${tz || ''}`);
+            if (!isNaN(dt.getTime())) return formatStamp(dt, false);
+            return `${y}-${mo}-${d} ${h}:${mi}:${s}`;
+        };
+        // ① 标准属性 TF.CreationDate / Excellon 的 ;CreationDate
+        let m = head.match(/(?:TF\.)?CreationDate\s*,\s*(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})\s*(Z|[+-]\d{2}:?\d{2})?/i);
+        if (m) return stamp(m[1], m[2], m[3], m[4], m[5], m[6], m[7]);
+        // ② 嘉立创：G04 EasyEDA Pro v2.2.32.3, 2024-11-18 13:44:47
+        m = head.match(/(?:G04|;)\s*EasyEDA[^\r\n]*?,\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/i);
+        if (m) return stamp(m[1], m[2], m[3], m[4], m[5], m[6]);
+        // ③ KiCad：G04 Created by KiCad (PCBNEW 7.0.10) date 2023-01-01 12:00:00
+        m = head.match(/\bdate\s+(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/i);
+        if (m) return stamp(m[1], m[2], m[3], m[4], m[5], m[6]);
+        return null;
+    }
+
+    /**
+     * 扫描已导入文件的注释，识别产生这批 Gerber 的软件与导出时间。
+     * 兜底：注释里读不到导出时间时，用「压缩包内各 Gerber 文件时间的最小值」。
      * @returns {{software:string|null, time:string|null, raw:string}|null} 两者都没有时返回 null
      */
-    function detectEasyEdaSource() {
-        // 允许 G04 / ; 前缀，名称里可有 Pro / Client，版本号后可跟哈希段
-        const re = /(?:G04|;)\s*(EasyEDA(?:\s+Pro)?(?:\s+Client)?)\s+v([0-9][^\s,]*)\s*,\s*(\d{4}-\d{2}-\d{2}[ T][\d:]+)/i;
+    function detectGerberSource() {
         const files = (typeof rawFilesCache !== 'undefined' && Array.isArray(rawFilesCache)) ? rawFilesCache : [];
-        let software = null; let time = null; let raw = '';
+        let best = null;   // { name, raw, hasVer }
+        let time = null;
         for (const f of files) {
             if (!f || !f.content) continue;
-            const m = re.exec(f.content);
-            if (!m) continue;
-            const isPro = /pro/i.test(m[1]);
-            software = `${isPro ? '嘉立创EDA专业版' : '嘉立创EDA标准版'} v${trimVersionTail(m[2])}`;
-            time = m[3];
-            raw = m[0].trim();
-            break;
+            // 来源信息都在文件头，2MB 的图形层只看前 128KB 就够
+            const head = f.content.length > 131072 ? f.content.slice(0, 131072) : f.content;
+            if (!time) {
+                const t = matchCreationTime(head);
+                if (t) time = t;
+            }
+            // 软件名：**优先带版本号的结果** —— 同一批文件里，铜层的注释常只有
+            // “G04 EAGLE Gerber RS-274X export”（无版本），而钻孔头的
+            // “;GenerationSoftware,Autodesk,EAGLE,9.7.0” 才带版本，要取后者。
+            if (!best || !best.hasVer) {
+                const hit = matchSourceSoftware(head);
+                if (hit && (!best || (!best.hasVer && hit.hasVer))) best = hit;
+            }
+            if (best && best.hasVer && time) break;
         }
-        // 标记里没有导出时间 → 取压缩包内 Gerber 文件时间的最小值
+        const software = best ? best.name : null;
+        const raw = best ? best.raw : '';
+        // 注释里没有导出时间 → 取压缩包内 Gerber 文件时间的最小值
         if (!time) {
             let min = null;
             for (const f of files) {
@@ -1910,17 +2074,6 @@
         }
         if (!software && !time) return null;
         return { software, time, raw };
-    }
-
-    /** 版本号去掉尾部的哈希段：2.1.40.832e02bb.70b181 → 2.1.40；纯数字段全部保留 */
-    function trimVersionTail(v) {
-        const parts = String(v).split('.');
-        const keep = [];
-        for (const p of parts) {
-            if (/^\d+$/.test(p)) keep.push(p);
-            else break;
-        }
-        return keep.length ? keep.join('.') : String(v);
     }
 
     // ====================================================================================

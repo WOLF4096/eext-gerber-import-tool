@@ -1,6 +1,6 @@
 {
 	"name": "eext-gerber-import",
-	"version": "3.9.25",
+	"version": "3.9.26",
 	"description": "嘉立创 EDA 专业版扩展：把 Gerber 制造文件转成可编辑、带网络的 PCB（狼黑工具 · Gerber 转 PCB）",
 	"author": "WOLF4096",
 	"license": "Apache-2.0",
