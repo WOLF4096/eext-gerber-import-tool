@@ -29,6 +29,11 @@
 零省略（V3.9.25）：Gerber `%FSLA`=省略前导零（右对齐，补前）/ `%FST`=省略尾零（补后）；
 钻孔 `METRIC,LZ`=**保留**前导零（即省略尾零，补后）/ `TZ`=补前 —— **两边语义相反**。
 统一折算成 `format.zeroPad`（'start'|'end'）；只有 'end' 需要补位（补前导零不改数值，别为它加开销，2MB 层会慢 150ms）。
+⚠️ **钻孔孔径唯一入口 `drillApertureMM(data, raw)`**（V3.9.33）：Excellon（`data.isDrill` 靠 `M48` /
+`T<刀号>C<径>` 判定）在解析阶段已折成 mm，**Gerber 写法的钻孔**（`%ADD` + `D03`、无 `M48`，
+PADS / 部分国产 EDA 的 .txt）走普通 Gerber 通道、参数仍是文件单位。判据必须与渲染层
+`unitScale`（`09-ui.js`，`!isDrill && units==='in' ? 25.4 : 1`）一致。别直接 `mmOf()`：
+英寸板孔径会缩成 1/25.4，导入后焊盘/过孔钻孔整批消失（预览却正常，所以特别难查）。
 
 ## 4. Gerber 解析
 `extractRawData` 靠嘉立创私有 `G04` 标记；无标记走 `hasSectionMarkers`（层 + 指令推断）。

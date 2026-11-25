@@ -746,8 +746,9 @@
                     bufCtx.stroke(); bufCtx.beginPath();
                     
                     const ap = apertures[cmd.ap];
-                    // 获取钻刀直径（钻孔刀具在解析阶段已换算成 mm）
-                    const dia = (ap && ap.params && ap.params[0] > 0) ? ap.params[0] : 0.1;
+                    // 钻刀直径：Excellon 在解析阶段已换算成 mm（unitScale = 1），
+                    // Gerber 写法的钻孔文件仍是文件单位，要乘 unitScale，否则槽会被画细 25.4 倍。
+                    const dia = (ap && ap.params && ap.params[0] > 0) ? (ap.params[0] * unitScale) : 0.1;
                     // 起点缺失（老数据 / 异常文件）：退回成圆孔，别画出一条 NaN 路径
                     if (typeof cmd.startX !== 'number' || typeof cmd.startY !== 'number') {
                         bufCtx.beginPath();

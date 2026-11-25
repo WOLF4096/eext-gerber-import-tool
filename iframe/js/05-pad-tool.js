@@ -14,6 +14,21 @@
 // 4. 逆向工程工具 (Reverse Engineering Tool)
 // ====================================================================================
 
+    // 钻孔光圈直径 → mm。
+    // 两种钻孔文件的「光圈参数」单位并不一致：
+    //   · Excellon（含 M48 / T 刀具定义）：解析阶段已把刀具直径折算成 mm（data.isDrill = true）；
+    //   · Gerber 写法（%ADD + D03 闪绘，没有 M48 头，PADS / 部分国产 EDA 的 .txt 就是这种）：
+    //     走的是普通 Gerber 通道，光圈参数仍是**文件单位**。
+    // 少乘这一次 25.4，英寸文件的孔径会整体缩成 1/25.4（0.4mm 读成 0.0157mm，约 0.6mil），
+    // 落到 EDA 里等于 0 尺寸孔 —— 直插焊盘和过孔的钻孔全部消失。
+    // 画布预览看起来正常，是因为渲染层自己乘了 unitScale（09-ui.js），两边判断方式必须一致。
+    function drillApertureMM(data, raw) {
+        const v = Number(raw);
+        if (!isFinite(v)) return 0;
+        if (data && data.isDrill) return v;                          // 解析阶段已换算成 mm
+        return (data && data.units === 'in') ? v * 25.4 : v;         // 仍是文件单位
+    }
+
     const PadTool = {
         // --- 工具：单位转换 (mm -> mil) ---
         toMil: (mm) => {
@@ -504,12 +519,12 @@
                     if (typeof _c.x !== 'number' || !isFinite(_c.x)) continue;
                     if (typeof _c.y !== 'number' || !isFinite(_c.y)) continue;
                     if (_isDrill) {
-                        // 记录钻孔孔径（mm）：解析阶段已把钻孔刀具换算成 mm
+                        // 记录钻孔孔径（mm）：Excellon 刀具已换算，Gerber 写法的钻孔在此折算
                         const _ap = _f.data.apertures ? _f.data.apertures[_c.ap] : null;
                         let _dia = 0;
                         if (_ap && Array.isArray(_ap.params)) {
                             const _p = _ap.params.map(Number).filter(v => isFinite(v) && v > 0);
-                            if (_p.length) _dia = Math.min.apply(null, _p);
+                            if (_p.length) _dia = drillApertureMM(_f.data, Math.min.apply(null, _p));
                         }
                         const _di = _findOrPush(drillGroups, drillGrid, _c.x, _c.y);
                         if (_dia > 0) drillGroups[_di].dia = _dia;
@@ -522,7 +537,10 @@
             });
             const copperLayerCount = copperLayerIds.size;
             // 判定某个铜层 Flash 是否应作为「过孔」处理
-            const isViaFlash = (_lid, _cmd, _ap) => {
+            // _scale：该文件「光圈参数 → mm」的倍率（英寸文件是 25.4）。
+            // 铜环宽度必须和钻孔直径用同一单位比较 —— 拿英寸的光圈去减 mm 的孔径，
+            // 铜环恒为负，插件焊盘会被一律误判成过孔（焊盘消失、只剩一颗孔径错误的过孔）。
+            const isViaFlash = (_lid, _cmd, _ap, _scale) => {
                 if (_lid >= 15 && _lid <= 46) return true;              // 内层不可能是普通焊盘
                 if (copperLayerCount < 2) return false;                 // 单面板无从判断
                 const _t = String((_ap && _ap.type) || 'C').toUpperCase();
@@ -532,11 +550,13 @@
                 const _drill = _nearestDrill(_cmd.x, _cmd.y);
                 if (!_drill) return false;                              // 必须有对应钻孔
                 // 大孔 + 宽铜环 → 插件焊盘（不是过孔）
+                const _sc = (typeof _scale === 'number' && isFinite(_scale) && _scale > 0) ? _scale : 1;
                 let _flashDia = 0;
                 if (_ap && Array.isArray(_ap.params) && isFinite(_ap.params[0])) {
                     _flashDia = _ap.type === 'O' || _ap.type === 'R'
                         ? Math.min(Number(_ap.params[0]) || 0, Number(_ap.params[1]) || Infinity)
                         : Number(_ap.params[0]) || 0;
+                    _flashDia *= _sc;
                 }
                 if (_isThruHolePad(_flashDia, _drill)) return false;
                 return true;
@@ -684,8 +704,8 @@
                             const x1 = mmOf(cmd.startX); const y1 = mmOf(cmd.startY);
                             const x2 = mmOf(cmd.x); const y2 = mmOf(cmd.y);
                             const ap = file.data.apertures[cmd.ap];
-                            // 钻刀直径在解析阶段已换算成 mm
-                            let dia = (ap && ap.params && ap.params[0]) ? mmOf(ap.params[0]) : 0.1;
+                            // 钻刀直径：Excellon 已在解析阶段折算，Gerber 写法的钻孔在这里折算成 mm
+                            let dia = (ap && ap.params && ap.params[0]) ? drillApertureMM(file.data, ap.params[0]) : 0.1;
                             if (!(dia > 0)) dia = 0.1;
                             const dx = x2 - x1; const dy = y2 - y1;
                             const len = Math.sqrt(dx * dx + dy * dy);
@@ -722,8 +742,12 @@
                             const ap = file.data.apertures[cmd.ap];
                             if (ap) {
                                 let w = 0, h = 0; const p = ap.params;
-                                // 钻孔刀具的直径在解析阶段也已换算成 mm
-                                if (ap.type === 'C') { w = mmOf(p[0]); h = w; } else if (ap.type === 'O' || ap.type === 'R') { w = mmOf(p[0]); h = mmOf(p[1]); }
+                                // 钻刀直径：Excellon 已折算成 mm，Gerber 写法的钻孔在此折算
+                                if (ap.type === 'C') { w = drillApertureMM(file.data, p[0]); h = w; }
+                                else if (ap.type === 'O' || ap.type === 'R') {
+                                    w = drillApertureMM(file.data, p[0]);
+                                    h = drillApertureMM(file.data, p[1]);
+                                }
                                 // [修改 2] 在 push 时增加 pairStart 和 pairEnd
                                 if (w > 0) drills.push({ 
                                     x: cx, y: cy, w: w, h: h, 
@@ -784,7 +808,7 @@
                         // 区域：铜层 → 覆铜（按需求用「折线闭合轮廓」承载）；其它层 → 填充
                         : (cmd.type === 4) ? (isCopperLayer ? 'POUR' : 'FILL')
                         // Flash：内层 / 圆形+有钻孔+跨层 → 过孔；其余 → 焊盘
-                        : (cmd.type === 3) ? (isViaFlash(layerId, cmd, file.data.apertures[cmd.ap]) ? 'VIA' : 'PAD')
+                        : (cmd.type === 3) ? (isViaFlash(layerId, cmd, file.data.apertures[cmd.ap], toMM(1)) ? 'VIA' : 'PAD')
                         : (cmd.type === 1 || cmd.type === 2) ? (isCopperLayer ? 'TRACK' : 'POLY')
                         : mode;
                     
